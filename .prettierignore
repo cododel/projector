@@ -1,0 +1,7 @@
+PRD.md
+.tmp/
+out/
+node_modules/
+pnpm-lock.yaml
+test-results/
+playwright-report/

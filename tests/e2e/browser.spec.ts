@@ -1,0 +1,1032 @@
+import {
+  test,
+  expect,
+  _electron as electron,
+  type ElectronApplication,
+  type Page,
+} from '@playwright/test';
+import { build } from 'esbuild';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createServer, type Server } from 'node:http';
+
+let app: ElectronApplication;
+let root: string;
+let server: Server;
+let url: string;
+test.beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), 'bp-browser-'));
+  server = createServer((request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(
+      '<!doctype html><title>Browser fixture</title><style>body{min-height:2000px;background:#eef}h1{background:#ffc;padding:25px}</style><h1>External page</h1><a href="/next">Next page</a><p>' +
+        request.url +
+        '</p>',
+    );
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('No fixture server address');
+  url = `http://127.0.0.1:${address.port}/`;
+  await build({
+    entryPoints: [resolve('tests/fixtures/browser-main.ts')],
+    outfile: join(root, 'main.cjs'),
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node24',
+    external: ['electron'],
+  });
+  await build({
+    entryPoints: [resolve('src/preload/browser-overlay.ts')],
+    outfile: join(root, 'overlay.cjs'),
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node24',
+    external: ['electron'],
+  });
+  app = await electron.launch({
+    args: [join(root, 'main.cjs')],
+    env: { ...process.env, BLUEPRINT_BROWSER_TEST_DATA: root },
+  });
+  await app.firstWindow();
+});
+test.afterEach(async () => {
+  await app?.close();
+  await new Promise<void>((done, reject) =>
+    server?.close((error) => (error ? reject(error) : done())),
+  );
+  if (root) await rm(root, { recursive: true, force: true });
+});
+
+async function pageAt(predicate: (page: Page) => boolean) {
+  await expect.poll(() => app.context().pages().filter(predicate).length).toBeGreaterThan(0);
+  return app.context().pages().find(predicate)!;
+}
+
+test('native external views isolate project profiles and reject privileged navigation', async () => {
+  const first = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  expect(
+    await external.evaluate(() => ({
+      process: typeof (window as unknown as { process?: unknown }).process,
+      blueprint: typeof (window as unknown as { blueprint?: unknown }).blueprint,
+      capture: typeof (window as unknown as { blueprintCapture?: unknown }).blueprintCapture,
+    })),
+  ).toEqual({ process: 'undefined', blueprint: 'undefined', capture: 'undefined' });
+  await external.evaluate(() => {
+    document.cookie = 'privateproject=one;path=/';
+  });
+  await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-b',
+        projectId: 'project-b',
+        url: url + 'other',
+      }),
+    url,
+  );
+  const other = await pageAt((page) => page.url() === url + 'other');
+  await expect(other.getByRole('heading', { name: 'External page' })).toBeVisible();
+  expect(await other.evaluate(() => document.cookie)).not.toContain('privateproject=one');
+  await app.evaluate((_electron, id) => globalThis.browserTest.manager.select(id), first.id);
+  await external.evaluate(() => {
+    location.href = 'file:///etc/passwd';
+  });
+  await expect.poll(() => external.url()).toBe(url);
+  const denied = await app.evaluate(async (_electron, id) => {
+    try {
+      await globalThis.browserTest.manager.command({
+        tabId: id,
+        action: 'navigate',
+        url: 'blueprint://app/index.html',
+      });
+      return 'allowed';
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }, first.id);
+  expect(denied).toContain('INVALID_URL');
+  await app.evaluate(async (_electron, args) => globalThis.browserTest.manager.command(args), {
+    tabId: first.id,
+    action: 'navigate' as const,
+    url: url + 'next',
+  });
+  await expect.poll(() => external.url()).toBe(url + 'next');
+  await app.evaluate(
+    async (_electron, id) => globalThis.browserTest.manager.command({ tabId: id, action: 'back' }),
+    first.id,
+  );
+  await expect.poll(() => external.url()).toBe(url);
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'forward' }),
+    first.id,
+  );
+  await expect.poll(() => external.url()).toBe(url + 'next');
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'reload' }),
+    first.id,
+  );
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+});
+
+test('area annotation uses frozen viewport, private composer, and numbered captured PNG', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await app.evaluate(({ webContents }, url) => {
+    webContents
+      .getAllWebContents()
+      .find((contents) => contents.getURL() === url)!
+      .setZoomFactor(1.25);
+  }, url);
+  await external.evaluate(() => window.scrollTo(0, 140));
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+  await expect(overlay.locator('#capture')).toBeHidden();
+  await overlay.mouse.move(70, 50);
+  await overlay.mouse.down();
+  await overlay.mouse.move(230, 150);
+  await overlay.mouse.up();
+  await overlay.getByLabel('Area annotation comment').fill('Investigate this captured result');
+  await overlay.screenshot({ path: '.tmp/tasks/annotation-polish-20261010/browser-composer.png' });
+  await expect
+    .poll(() =>
+      app.evaluate(() => {
+        const drafts = globalThis.browserTest.drafts;
+        return (drafts.at(-1) as { comment?: string } | null)?.comment;
+      }),
+    )
+    .toBe('Investigate this captured result');
+  const original = await overlay.locator('#capture').getAttribute('src');
+  await external.evaluate(() => {
+    document.body.style.background = 'red';
+    document.querySelector('h1')!.textContent = 'Changed after capture';
+  });
+  await app.evaluate(async ({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find((contents) => contents.getURL() === url)!;
+    contents.setZoomFactor(1.5);
+    await contents.loadURL(url + 'changed');
+  }, url);
+  expect(await overlay.locator('#capture').getAttribute('src')).toBe(original);
+  await overlay.getByLabel('Area annotation comment').evaluate((element) => {
+    element.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }),
+    );
+  });
+  expect(await app.evaluate(() => globalThis.browserTest.annotations.length)).toBe(0);
+  await overlay.screenshot({ path: '.tmp/tasks/comment-composer-20261009/browser.png' });
+  await overlay.getByLabel('Area annotation comment').press('Shift+Enter');
+  await expect(overlay.getByLabel('Area annotation comment')).toHaveValue(
+    'Investigate this captured result\n',
+  );
+  await overlay.getByLabel('Area annotation comment').press('Backspace');
+  await overlay.getByLabel('Area annotation comment').press('Enter');
+  await expect.poll(() => app.evaluate(() => globalThis.browserTest.annotations.length)).toBe(1);
+  await expect(overlay.getByRole('status')).toContainText('Saved capture');
+  await expect(overlay.locator('#composer')).toBeHidden();
+  await expect(overlay.locator('#rectangle')).toBeVisible();
+  await expect(overlay.locator('#number')).toHaveText('1');
+  expect(await overlay.locator('#capture').getAttribute('src')).toBe(original);
+  const saved = await app.evaluate(() => globalThis.browserTest.annotations[0]);
+  expect(saved).toMatchObject({
+    artifactId: 'artifact-a',
+    revisionId: 'source-version-1',
+    comment: 'Investigate this captured result',
+    capture: {
+      source: {
+        kind: 'browser-area',
+        url,
+        zoomFactor: 1.25,
+        scroll: { x: 0, y: 140 },
+        viewport: { width: 840, height: 540 },
+      },
+    },
+  });
+  expect(saved.capture.source.rect?.x).toBeCloseTo(70);
+  expect(saved.capture.source.pointer?.x).toBeCloseTo(230);
+  expect(saved.capture.source.pointer?.y).toBeCloseTo(150);
+  expect(saved.capture.source.rect?.y).toBeCloseTo(50);
+  expect(saved.capture.source.rect?.width).toBeCloseTo(160);
+  expect(saved.capture.source.rect?.height).toBeCloseTo(100);
+  const decorated = await app.evaluate(async () => {
+    const capture = globalThis.browserTest.annotations[0].capture;
+    return globalThis.browserTest.manager.decorateCapture(
+      capture.png,
+      capture.source.rect!,
+      1,
+      capture.source.viewport,
+      capture.source.pointer,
+    );
+  });
+  expect(decorated).not.toBe(saved.capture.png);
+  expect(Buffer.from(decorated, 'base64').subarray(1, 4).toString()).toBe('PNG');
+  await app.evaluate(async () => {
+    const annotation = globalThis.browserTest.annotations[0];
+    await globalThis.browserTest.manager.showCapture({ ...annotation, number: 1 });
+  });
+  await expect(overlay.getByRole('status')).toContainText('Saved capture');
+  await expect(overlay.locator('#number')).toHaveText('1');
+  await expect(overlay.locator('#pointer-badge')).toBeVisible();
+  await expect(overlay.locator('#composer')).toBeHidden();
+  await expect(overlay.getByText('Investigate this captured result', { exact: true })).toHaveCount(
+    0,
+  );
+  await overlay.screenshot({ path: '.tmp/tasks/capture-no-comment-20261010/browser.png' });
+});
+
+async function nativeMarkerBounds() {
+  return app.evaluate(({ BrowserWindow, WebContentsView }) => {
+    const owner = BrowserWindow.getAllWindows()[0];
+    return owner.contentView.children.flatMap((view) => {
+      if (!(view instanceof WebContentsView)) return [];
+      const url = view.webContents.getURL();
+      if (
+        !url.startsWith('data:text/html;base64,') ||
+        !Buffer.from(url.split(',')[1], 'base64').toString().includes('id="marker"')
+      )
+        return [];
+      return [view.getBounds()];
+    });
+  });
+}
+
+async function nativeMarkerTips() {
+  return app.evaluate(async ({ BrowserWindow, WebContentsView }) => {
+    const owner = BrowserWindow.getAllWindows()[0];
+    const views = owner.contentView.children.filter(
+      (view) =>
+        view instanceof WebContentsView &&
+        view.webContents.getURL().startsWith('data:text/html;base64,') &&
+        Buffer.from(view.webContents.getURL().split(',')[1], 'base64')
+          .toString()
+          .includes('id="marker"'),
+    ) as import('electron').WebContentsView[];
+    return Promise.all(
+      views.map(async (view) => {
+        const tip = (await view.webContents.executeJavaScript(
+          "document.getElementById('badge').getAttribute('d').match(/^M([^ ]+) ([^ ]+)/).slice(1,3).map(Number)",
+        )) as number[];
+        const bounds = view.getBounds();
+        return { x: bounds.x + tip[0], y: bounds.y + tip[1] };
+      }),
+    );
+  });
+}
+
+async function saveSelectedElement(
+  tabId: string,
+  point: { x: number; y: number },
+  comment: string,
+) {
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tabId,
+  );
+  const overlay = await pageAt(
+    (page) =>
+      page.url().startsWith('data:text/html;base64,') &&
+      Buffer.from(page.url().split(',')[1], 'base64').toString().includes('id="layer"'),
+  );
+  await overlay.mouse.move(point.x, point.y);
+  await expect(overlay.locator('#rectangle')).toBeVisible();
+  await overlay.mouse.click(point.x, point.y);
+  await overlay.getByLabel('Area annotation comment').fill(comment);
+  await overlay.getByRole('button', { name: 'Save annotation', exact: true }).click();
+  await expect(overlay.locator('#composer')).toBeHidden();
+  await expect(overlay.locator('#rectangle')).toBeVisible();
+  return overlay;
+}
+
+test('live hover selects a table cell and markers follow DOM geometry, sticky scrolling and zoom', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await external.evaluate(() => {
+    document.body.innerHTML =
+      '<header id="sticky" style="position:sticky;top:0;height:38px;background:#ffc;z-index:2">Sticky header</header><table style="margin-top:120px;width:500px"><tr><td id="target-cell" style="height:60px;background:#dfd">Cell result</td><td>Other cell</td></tr></table><p>End</p>';
+  });
+  const cell = await external.locator('#target-cell').boundingBox();
+  if (!cell) throw new Error('Cell unavailable');
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  const overlay = await pageAt(
+    (page) =>
+      page.url().startsWith('data:text/html;base64,') &&
+      Buffer.from(page.url().split(',')[1], 'base64').toString().includes('id="layer"'),
+  );
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+  await overlay.mouse.move(cell.x + 30, cell.y + 20);
+  await expect(overlay.locator('#rectangle')).toBeVisible();
+  // Native hit testing is asynchronous; an initial body frame is not the requested cell frame.
+  await expect
+    .poll(async () => (await overlay.locator('#rectangle').boundingBox())?.height)
+    .toBeCloseTo(cell.height, 0);
+  await expect
+    .poll(async () => (await overlay.locator('#rectangle').boundingBox())?.width)
+    .toBeCloseTo(cell.width, 0);
+  // The page may change after Annotate activation; capture must use the state at selection.
+  await external.locator('#target-cell').evaluate((el) => {
+    el.textContent = 'Updated before selection';
+  });
+  await overlay.mouse.click(cell.x + 30, cell.y + 20);
+  await overlay.getByLabel('Area annotation comment').fill('Cell annotation');
+  await overlay.getByRole('button', { name: 'Save annotation', exact: true }).click();
+  await app.evaluate((_electron, id) => globalThis.browserTest.manager.select(id), tab.id);
+  await saveSelectedElement(tab.id, { x: 30, y: 20 }, 'Sticky annotation');
+  await app.evaluate((_electron, id) => globalThis.browserTest.manager.select(id), tab.id);
+  const annotations = await app.evaluate(() => globalThis.browserTest.annotations);
+  expect(annotations[0].capture.source.elementAnchor).toMatchObject({
+    tag: 'TD',
+    id: 'target-cell',
+  });
+  expect(annotations[1].capture.source.elementAnchor).toMatchObject({
+    tag: 'HEADER',
+    id: 'sticky',
+  });
+  expect(annotations[0].capture.source.pageId).toBeTruthy();
+  expect(annotations[0].capture.source.stateHash).toBeTruthy();
+  expect(annotations[0].capture.source.pointer).toEqual({ x: cell.x + 30, y: cell.y + 20 });
+  await app.evaluate(() =>
+    globalThis.browserTest.manager.setAnnotations(
+      'artifact-a',
+      globalThis.browserTest.annotations.map((a, index) => ({
+        id: 'note-' + index,
+        number: index + 1,
+        capture: a.capture,
+      })),
+    ),
+  );
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(2);
+  const initialTips = await nativeMarkerTips();
+  expect(initialTips[0].x).toBeCloseTo(20 + cell.x + 30);
+  expect(initialTips[0].y).toBeCloseTo(80 + cell.y + 20);
+  const initial = await nativeMarkerBounds();
+  await external.evaluate(() => window.scrollTo(0, 50));
+  await expect.poll(async () => (await nativeMarkerBounds())[0]?.y).toBeLessThan(initial[0].y - 35);
+  const scrolled = await nativeMarkerBounds();
+  expect(scrolled[1].y).toBeLessThanOrEqual(initial[1].y);
+  expect(scrolled[1].y).toBeGreaterThan(initial[1].y - 15);
+  await app.evaluate(
+    ({ webContents }, url) =>
+      webContents
+        .getAllWebContents()
+        .find((contents) => contents.getURL() === url)!
+        .setZoomFactor(1.25),
+    url,
+  );
+  await expect
+    .poll(async () => (await nativeMarkerTips())[0]?.x)
+    .toBeCloseTo(20 + (cell.x + 30) * 1.25);
+  // Changing the semantic state removes live markers rather than pretending old coordinates remain valid.
+  await external.locator('#target-cell').evaluate((el) => {
+    el.textContent = 'Different result';
+  });
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+});
+
+test('history push/replace/hash entries hide mismatched markers and back recovers matching page identity', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await saveSelectedElement(tab.id, { x: 60, y: 50 }, 'History marker');
+  await app.evaluate((_electron, id) => globalThis.browserTest.manager.select(id), tab.id);
+  const annotation = await app.evaluate(() => globalThis.browserTest.annotations[0]);
+  await app.evaluate(
+    (_electron, annotation) =>
+      globalThis.browserTest.manager.setAnnotations('artifact-a', [
+        { id: 'history-note', number: 1, capture: annotation.capture },
+      ]),
+    annotation,
+  );
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  const original = annotation.capture.source;
+  await external.evaluate(() => history.pushState({ step: 1 }, '', location.pathname + '?step=1'));
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+  await expect
+    .poll(() => app.evaluate(() => globalThis.browserTest.manager.snapshot().tabs[0].pageId))
+    .not.toBe(original.pageId);
+  const pushed = await app.evaluate(() => globalThis.browserTest.manager.snapshot().tabs[0]);
+  expect(pushed.pageId).not.toBe(original.pageId);
+  expect(pushed.stateHash).not.toBe(original.stateHash);
+  await external.evaluate(() => history.replaceState({ step: 2 }, '', location.href));
+  await expect
+    .poll(() => app.evaluate(() => globalThis.browserTest.manager.snapshot().tabs[0].stateHash))
+    .not.toBe(pushed.stateHash);
+  const replaced = await app.evaluate(() => globalThis.browserTest.manager.snapshot().tabs[0]);
+  expect(replaced.pageId).toBe(pushed.pageId);
+  await external.evaluate(() => history.back());
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  await external.evaluate(() => {
+    location.hash = 'section-two';
+  });
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+  await external.evaluate(() => history.back());
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  const restored = await app.evaluate(() => globalThis.browserTest.manager.snapshot().tabs[0]);
+  expect(restored.pageId).toBe(original.pageId);
+  expect(restored.stateHash).toBe(original.stateHash);
+  // An unselected tool contains no private composer and can safely yield to a requested document.
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  await app.evaluate(() => globalThis.browserTest.manager.select(null));
+  expect(await app.evaluate(() => globalThis.browserTest.manager.snapshot().annotating)).toBe(
+    false,
+  );
+});
+
+test('arbitrary regions retain document coordinates on stable layout and hide after layout or sticky scroll changes', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await external.evaluate(() => {
+    document.body.innerHTML =
+      '<div id="region" style="margin-top:220px;height:100px;background:#dfd">Region</div>';
+    const style = document.createElement('style');
+    style.id = 'geometry-style';
+    style.textContent = '#region{width:400px}';
+    document.head.append(style);
+  });
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  const overlay = await pageAt(
+    (page) =>
+      page.url().startsWith('data:text/html;base64,') &&
+      Buffer.from(page.url().split(',')[1], 'base64').toString().includes('id="layer"'),
+  );
+  await overlay.mouse.move(40, 240);
+  await overlay.mouse.down();
+  await overlay.mouse.move(180, 285);
+  await overlay.mouse.up();
+  await overlay.getByLabel('Area annotation comment').fill('Region annotation');
+  await overlay.getByRole('button', { name: 'Save annotation', exact: true }).click();
+  await app.evaluate((_electron, id) => globalThis.browserTest.manager.select(id), tab.id);
+  const region = await app.evaluate(() => globalThis.browserTest.annotations[0]);
+  expect(region.capture.source.elementAnchor).toBeUndefined();
+  await app.evaluate(
+    (_electron, annotation) =>
+      globalThis.browserTest.manager.setAnnotations('artifact-a', [
+        { id: 'region-note', number: 1, capture: annotation.capture },
+      ]),
+    region,
+  );
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  const original = (await nativeMarkerBounds())[0];
+  await external.evaluate(() => window.scrollTo(0, 60));
+  await expect.poll(async () => (await nativeMarkerBounds())[0]?.y).toBeLessThan(original.y - 45);
+  // Head CSS changes geometry without changing the semantic HTML of the body.
+  await external.evaluate(() => {
+    document.getElementById('geometry-style')!.textContent = '#region{width:200px}';
+  });
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+  await external.evaluate(() => {
+    window.scrollTo(0, 0);
+    document.body.innerHTML =
+      '<header id="fixed-area" style="position:sticky;top:0;height:50px;background:#ffd">Sticky region</header><div style="height:1700px">Scroll</div>';
+  });
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  await overlay.mouse.move(30, 15);
+  await overlay.mouse.down();
+  await overlay.mouse.move(170, 40);
+  await overlay.mouse.up();
+  await overlay.getByLabel('Area annotation comment').fill('Sticky arbitrary region');
+  await overlay.getByRole('button', { name: 'Save annotation', exact: true }).click();
+  await app.evaluate((_electron, id) => globalThis.browserTest.manager.select(id), tab.id);
+  const sticky = await app.evaluate(() => globalThis.browserTest.annotations[1]);
+  await app.evaluate(
+    (_electron, annotation) =>
+      globalThis.browserTest.manager.setAnnotations('artifact-a', [
+        { id: 'sticky-region', number: 2, capture: annotation.capture },
+      ]),
+    sticky,
+  );
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  await external.evaluate(() => window.scrollTo(0, 70));
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+});
+
+test('same-URL push after back creates a new entry binding even when URL, state and DOM match', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await external.evaluate(() => history.pushState(null, '', location.href));
+  await saveSelectedElement(tab.id, { x: 60, y: 50 }, 'Forward branch annotation');
+  await app.evaluate((_electron, id) => globalThis.browserTest.manager.select(id), tab.id);
+  const annotation = await app.evaluate(() => globalThis.browserTest.annotations[0]);
+  await app.evaluate(
+    (_electron, annotation) =>
+      globalThis.browserTest.manager.setAnnotations('artifact-a', [
+        { id: 'branch-note', number: 1, capture: annotation.capture },
+      ]),
+    annotation,
+  );
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  await external.evaluate(() => history.back());
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+  await external.evaluate(() => history.pushState(null, '', location.href));
+  await expect
+    .poll(() => app.evaluate(() => globalThis.browserTest.manager.snapshot().tabs[0].pageId))
+    .not.toBe(annotation.capture.source.pageId);
+  await expect
+    .poll(() => app.evaluate(() => globalThis.browserTest.manager.snapshot().tabs[0].stateHash))
+    .toBe(annotation.capture.source.stateHash);
+  expect((await nativeMarkerBounds()).length).toBe(0);
+});
+
+for (const change of ['content', 'layout'] as const) {
+  test(`a single ${change} update during capture retries with matching snapshot context`, async () => {
+    const tab = await app.evaluate(
+      async (_electron, url) =>
+        globalThis.browserTest.manager.open({
+          artifactId: 'artifact-a',
+          projectId: 'project-a',
+          url,
+        }),
+      url,
+    );
+    const external = await pageAt((page) => page.url() === url);
+    await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+    await app.evaluate(
+      ({ webContents }, { url, change }) => {
+        const contents = webContents.getAllWebContents().find((c) => c.getURL() === url)!;
+        const capture = contents.capturePage.bind(contents);
+        let count = 0;
+        contents.capturePage = async () => {
+          const image = await capture();
+          if (++count === 1)
+            await contents.executeJavaScript(
+              change === 'content'
+                ? "document.querySelector('h1').textContent='Updated result'"
+                : "document.querySelector('h1').style.transform='translateY(10px)'",
+            );
+          return image;
+        };
+      },
+      { url, change },
+    );
+    await app.evaluate(
+      async (_electron, id) =>
+        globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+      tab.id,
+    );
+    const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+    await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+    await overlay.mouse.click(60, 50);
+    await expect(overlay.getByLabel('Area annotation comment')).toBeVisible();
+    const draft = (await app.evaluate(() => globalThis.browserTest.drafts.at(-1))) as {
+      capture: { source: { stateHash: string; rect: { y: number } } };
+    };
+    const state = await app.evaluate(() => globalThis.browserTest.manager.snapshot().tabs[0]);
+    expect(draft.capture.source.stateHash).toBe(state.stateHash);
+    if (change === 'content')
+      await expect(external.getByRole('heading', { name: 'Updated result' })).toBeVisible();
+    else {
+      const heading = await external.getByRole('heading').boundingBox();
+      expect(draft.capture.source.rect.y).toBeCloseTo(heading!.y, 0);
+    }
+    expect(await app.evaluate(() => globalThis.browserTest.annotations.length)).toBe(0);
+  });
+}
+
+test('unrelated continuous updates do not prevent capturing a stable selected element', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await app.evaluate(({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find((c) => c.getURL() === url)!;
+    const capture = contents.capturePage.bind(contents);
+    let count = 0;
+    contents.capturePage = async () => {
+      const image = await capture();
+      await contents.executeJavaScript(
+        'document.body.dataset.tick=' + JSON.stringify(String(++count)),
+      );
+      return image;
+    };
+  }, url);
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+  await overlay.mouse.click(60, 50);
+  await expect(overlay.getByLabel('Area annotation comment')).toBeVisible();
+  const draft = (await app.evaluate(() => globalThis.browserTest.drafts.at(-1))) as {
+    capture: { png: string; source: { pointer: { x: number; y: number } } };
+  };
+  expect(draft.capture.source.pointer).toEqual({ x: 60, y: 50 });
+  expect(Buffer.from(draft.capture.png, 'base64').subarray(1, 4).toString()).toBe('PNG');
+});
+
+test('same-document history updates during tool activation do not cancel the uncaptured annotator', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  // Astro and other routers maintain scroll metadata through replaceState. Emit
+  // these real native events while the trusted overlay is initially loading.
+  await external.evaluate(() => {
+    const timer = setInterval(
+      () => history.replaceState({ scroll: scrollY }, '', location.href),
+      5,
+    );
+    setTimeout(() => clearInterval(timer), 500);
+  });
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+  expect(await app.evaluate(() => globalThis.browserTest.manager.snapshot().annotating)).toBe(true);
+});
+
+test('continuous selected-content changes stay recoverable and do not reject the Electron IPC handler', async () => {
+  const stderr: string[] = [];
+  app.process().stderr?.on('data', (chunk) => stderr.push(String(chunk)));
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await app.evaluate(({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find((c) => c.getURL() === url)!;
+    const capture = contents.capturePage.bind(contents);
+    let count = 0;
+    contents.capturePage = async () => {
+      const image = await capture();
+      await contents.executeJavaScript(
+        "document.querySelector('h1').textContent=" + JSON.stringify('Result ' + ++count),
+      );
+      if (count === 3) contents.capturePage = capture;
+      return image;
+    };
+  }, url);
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+  await overlay.mouse.click(60, 50);
+  await expect(overlay.getByRole('status')).toContainText('CAPTURE_CHANGED');
+  await expect(overlay.getByLabel('Area annotation comment')).toBeHidden();
+  expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(0);
+  expect(await app.evaluate(() => globalThis.browserTest.manager.snapshot().annotating)).toBe(true);
+  await expect(external.getByRole('heading')).toHaveText('Result 3');
+  await expect(overlay.locator('#rectangle')).toBeHidden();
+  await overlay.mouse.click(60, 50);
+  await expect(overlay.getByLabel('Area annotation comment')).toBeVisible();
+  expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(1);
+  expect(stderr.join('')).not.toContain(
+    "Error occurred in handler for 'blueprint:browser-overlay'",
+  );
+});
+
+test('capture retries never silently select a replacement element', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await app.evaluate(({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find((c) => c.getURL() === url)!;
+    const capture = contents.capturePage.bind(contents);
+    contents.capturePage = async () => {
+      const image = await capture();
+      await contents.executeJavaScript(
+        "document.querySelector('h1').outerHTML='<button style=\"width:300px;height:120px\">Replacement</button>'",
+      );
+      contents.capturePage = capture;
+      return image;
+    };
+  }, url);
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+  await overlay.mouse.click(60, 50);
+  await expect(overlay.getByRole('status')).toContainText('The selected element changed');
+  await expect(overlay.getByLabel('Area annotation comment')).toBeHidden();
+  expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(0);
+});
+
+test('zoom changing after viewport capture rejects the selection without creating a private composer', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await app.evaluate(({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find((contents) => contents.getURL() === url)!;
+    const capture = contents.capturePage.bind(contents);
+    contents.capturePage = async () => {
+      const image = await capture();
+      contents.setZoomFactor(1.5);
+      return image;
+    };
+  }, url);
+  await app.evaluate(
+    async (_electron, id) =>
+      globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  const overlay = await pageAt(
+    (page) =>
+      page.url().startsWith('data:text/html;base64,') &&
+      Buffer.from(page.url().split(',')[1], 'base64').toString().includes('id="layer"'),
+  );
+  await overlay.mouse.click(60, 50);
+  await expect(overlay.getByRole('status')).toContainText('CAPTURE_CHANGED');
+  await expect(overlay.getByLabel('Area annotation comment')).toBeHidden();
+  expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(0);
+});
+
+test('table markers follow nested scrolling and hide when the cell is fully clipped by overflow', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await external.evaluate(() => {
+    document.body.innerHTML =
+      '<h1>Outside the table</h1><div id="table-viewport" style="margin-top:30px;width:450px;height:140px;overflow:auto"><table style="border-collapse:collapse;width:420px"><tr><td style="height:60px">First row</td></tr><tr><td id="nested-cell" style="height:60px;background:#dfd">Chosen nested cell</td></tr><tr><td style="height:60px">Third row</td></tr><tr><td style="height:60px">Fourth row</td></tr><tr><td style="height:60px">Fifth row</td></tr></table></div>';
+  });
+  const cell = await external.locator('#nested-cell').boundingBox();
+  if (!cell) throw new Error('Cell unavailable');
+  await saveSelectedElement(tab.id, { x: cell.x + 30, y: cell.y + 20 }, 'Nested cell annotation');
+  await app.evaluate((_electron, id) => globalThis.browserTest.manager.select(id), tab.id);
+  const annotation = await app.evaluate(() => globalThis.browserTest.annotations[0]);
+  expect(annotation.capture.source.elementAnchor).toMatchObject({ tag: 'TD', id: 'nested-cell' });
+  await app.evaluate(
+    (_electron, annotation) =>
+      globalThis.browserTest.manager.setAnnotations('artifact-a', [
+        { id: 'nested-note', number: 1, capture: annotation.capture },
+      ]),
+    annotation,
+  );
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  const original = (await nativeMarkerBounds())[0];
+  await external.locator('#table-viewport').evaluate((el) => {
+    el.scrollTop = 20;
+  });
+  await expect.poll(async () => (await nativeMarkerBounds())[0]?.y).toBeLessThan(original.y - 15);
+  await external.locator('#table-viewport').evaluate((el) => {
+    el.scrollTop = 140;
+  });
+  // The clipped cell still has a positive viewport rect, but no pixels are visible.
+  expect((await external.locator('#nested-cell').boundingBox())?.y).toBeGreaterThan(0);
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+  await external.locator('#table-viewport').evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+});
+
+test('closing a native browser respects beforeunload and unregisters only on destruction', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await external.evaluate(() => {
+    window.onbeforeunload = () => '';
+  });
+  const cancelled = await app.evaluate(async ({ dialog }, id) => {
+    dialog.showMessageBoxSync = () => 1;
+    return globalThis.browserTest.manager.command({ tabId: id, action: 'close' });
+  }, tab.id);
+  expect(cancelled).toMatchObject({ cancelled: true, activeTabId: tab.id });
+  expect(cancelled.tabs.map((t) => t.id)).toContain(tab.id);
+  expect(external.isClosed()).toBe(false);
+  const closed = await app.evaluate(async ({ dialog }, id) => {
+    dialog.showMessageBoxSync = () => 0;
+    return globalThis.browserTest.manager.command({ tabId: id, action: 'close' });
+  }, tab.id);
+  expect(closed).toMatchObject({ cancelled: false, activeTabId: null, tabs: [] });
+  expect(external.isClosed()).toBe(true);
+  await app.evaluate(() => {
+    globalThis.browserTest.manager.dispose();
+    globalThis.browserTest.manager.dispose();
+  });
+});
+
+test('external webContents destruction unregisters tabs and dispose is idempotent', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  await app.evaluate(({ webContents }, url) => {
+    webContents
+      .getAllWebContents()
+      .find((c) => c.getURL() === url)!
+      .close();
+  }, url);
+  await expect
+    .poll(() => app.evaluate(() => globalThis.browserTest.manager.snapshot().tabs))
+    .toEqual([]);
+  await app.evaluate(() => {
+    globalThis.browserTest.manager.dispose();
+    globalThis.browserTest.manager.dispose();
+  });
+  expect(tab.id).toBeTruthy();
+});
+
+test('browser finishComment flushes latest text, cancels empty and blocks transition on failed private write', async () => {
+  const tab = await app.evaluate(
+    async (_electron, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+  const select = async () => {
+    await app.evaluate(
+      async (_electron, id) =>
+        globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+      tab.id,
+    );
+    const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+    await overlay.mouse.move(80, 80);
+    await overlay.mouse.down();
+    await overlay.mouse.move(220, 150);
+    await overlay.mouse.up();
+    await expect(overlay.getByLabel('Area annotation comment')).toBeVisible();
+    return overlay;
+  };
+  const first = await select();
+  await first.getByLabel('Area annotation comment').fill('Latest text before switching');
+  await app.evaluate(async () => {
+    await globalThis.browserTest.manager.finishComment();
+    globalThis.browserTest.manager.select(null);
+  });
+  expect(
+    await app.evaluate(() => globalThis.browserTest.annotations.map((a) => a.comment)),
+  ).toEqual(['Latest text before switching']);
+  expect(await app.evaluate(() => globalThis.browserTest.drafts.at(-1))).toBeNull();
+  await select();
+  await app.evaluate(async () => globalThis.browserTest.manager.finishComment());
+  expect(await app.evaluate(() => globalThis.browserTest.annotations.length)).toBe(1);
+  expect(await app.evaluate(() => globalThis.browserTest.drafts.at(-1))).toBeNull();
+  const failed = await select();
+  await app.evaluate(() => {
+    globalThis.browserTest.failDraft = true;
+  });
+  await failed.getByLabel('Area annotation comment').fill('Keep on disk failure');
+  const message = await app.evaluate(async () => {
+    try {
+      await globalThis.browserTest.manager.finishComment();
+      globalThis.browserTest.manager.select(null);
+      return 'switched';
+    } catch (error) {
+      return (error as Error).message;
+    }
+  });
+  expect(message).toContain('DISK_WRITE_FAILED');
+  await expect(failed.getByLabel('Area annotation comment')).toHaveValue('Keep on disk failure');
+  expect(await app.evaluate(() => globalThis.browserTest.manager.snapshot().activeTabId)).toBe(
+    tab.id,
+  );
+  expect(await app.evaluate(() => globalThis.browserTest.annotations.length)).toBe(1);
+  await app.evaluate(() => {
+    globalThis.browserTest.failDraft = false;
+  });
+  await failed.mouse.click(10, 10);
+  await expect(failed.locator('#composer')).toBeHidden();
+  await expect(failed.locator('#rectangle')).toBeVisible();
+  expect(
+    await app.evaluate(() => globalThis.browserTest.annotations.map((a) => a.comment)),
+  ).toEqual(['Latest text before switching', 'Keep on disk failure']);
+});

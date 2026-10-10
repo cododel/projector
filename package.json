@@ -1,0 +1,55 @@
+{
+  "name": "agentic-blueprint",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "pnpm build:services && electron-vite dev",
+    "build:services": "node scripts/build-services.mjs",
+    "build": "pnpm build:services && electron-vite build",
+    "start": "electron .",
+    "package:mac": "pnpm build && node scripts/package-mac.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:e2e": "pnpm build && playwright test",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "mermaid": "^12.1.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "remark-gfm": "^4.0.1",
+    "remark-mdx": "^3.1.1",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^24.19.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "44.7.0",
+    "electron-vite": "5.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.12.0",
+    "prettier": "^3.9.9",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^7.3.7",
+    "vitest": "^5.0.3"
+  }
+}

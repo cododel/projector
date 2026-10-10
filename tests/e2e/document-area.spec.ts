@@ -1,0 +1,194 @@
+import { test, expect, _electron as electron } from '@playwright/test';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { Mcp } from './mcp';
+
+test('document area capture stays private until Save and opens its numbered frozen viewport after resizing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'bp-doc-area-'));
+  const data = join(root, 'data');
+  const project = join(root, 'project');
+  const socket = join(root, 's.sock');
+  await mkdir(data);
+  await mkdir(project);
+  const app = await electron.launch({
+    args: [resolve('.')],
+    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: socket },
+  });
+  let mcp: Mcp | undefined;
+  try {
+    const page = await app.firstWindow();
+    await app.evaluate(({ dialog }, path) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] });
+    }, project);
+    await page.getByRole('button', { name: '+ Open project folder' }).click();
+    mcp = new Mcp(socket);
+    await mcp.initialize();
+    const context = await mcp.tool('get_blueprint_context', {});
+    const a = await mcp.tool('create_artifact', {
+      projectId: (context.project as { id: string }).id,
+      kind: 'blueprint',
+      title: 'Captured plan',
+      originSession: { harness: 'codex', sessionId: 'area-session' },
+      operationId: randomUUID(),
+    });
+    await writeFile(
+      join(String(a.sourcePath), 'plan.mdx'),
+      '# Captured plan\n\nInspect this visual section.\n\n| Owner | Member |\n|---|---|\n| Allowed | Pending |',
+    );
+    const r = await mcp.tool('publish_artifact', {
+      artifactId: a.artifactId,
+      expectedLatestRevision: null,
+      operationId: randomUUID(),
+    });
+    await mcp.tool('show_artifact', { artifactId: a.artifactId, revisionId: r.revisionId });
+    const frame = page.frameLocator('iframe');
+    await expect(frame.getByRole('heading', { name: 'Captured plan' })).toBeVisible();
+    const fixedHeader = await page.locator('.plan-header').boundingBox();
+    const strip = await page.locator('.tab-bar').boundingBox();
+    expect(fixedHeader!.y).toBeCloseTo(strip!.y + strip!.height, 0);
+    await frame.locator('body').evaluate(() => window.scrollTo(0, 100));
+    expect((await page.locator('.plan-header').boundingBox())!.y).toBe(fixedHeader!.y);
+    await frame.locator('body').evaluate(() => window.scrollTo(0, 0));
+    const originalWidth = (await page.locator('iframe').boundingBox())!.width;
+    await page.getByRole('button', { name: 'Hide projects sidebar' }).click();
+    await page.getByRole('button', { name: 'Hide feedback sidebar' }).click();
+    await expect
+      .poll(async () => (await page.locator('iframe').boundingBox())!.width)
+      .toBeGreaterThan(originalWidth + 300);
+    await page.getByRole('button', { name: 'Show projects sidebar' }).click();
+    await page.getByRole('button', { name: 'Show feedback sidebar' }).click();
+    await expect
+      .poll(async () => (await page.locator('iframe').boundingBox())!.width)
+      .toBe(originalWidth);
+    await page.screenshot({
+      path: resolve('.tmp/tasks/capture-toolbar-20261010/production-toolbar.png'),
+    });
+
+    await page.getByRole('button', { name: 'Annotate document', exact: true }).click();
+    const bounds = await frame.getByLabel('Select annotation area').boundingBox();
+    if (!bounds) throw Error('No area selection surface');
+    await page.mouse.move(bounds.x + 50, bounds.y + 110);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + 250, bounds.y + 210);
+    await page.mouse.up();
+    await expect(frame.getByLabel('Annotation comment')).toBeVisible();
+    await expect(frame.locator('.inline-annotation-number')).toHaveCount(1);
+    await frame.getByLabel('Annotation comment').fill('Review captured table');
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    expect(
+      await mcp.tool('read_artifact', { artifactId: a.artifactId, part: 'state' }),
+    ).toMatchObject({ savedState: null });
+    await frame.getByRole('button', { name: 'Save private annotation' }).click();
+    await expect(page.getByText('Review captured table', { exact: true })).toBeVisible();
+    const overlay = app
+      .context()
+      .pages()
+      .find((p) => p.url().startsWith('data:text/html'))!;
+    await expect(overlay.locator('#capture')).toBeVisible();
+    await expect(overlay.locator('#composer')).toBeHidden();
+    await expect(overlay.locator('#number')).toHaveText('1');
+    await overlay.screenshot({
+      path: resolve('.tmp/tasks/capture-no-comment-20261010/document.png'),
+    });
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    const saved = await mcp.tool('read_artifact', { artifactId: a.artifactId, part: 'state' });
+    const state = JSON.parse(String(saved.content)) as {
+      id: string;
+      annotations: {
+        number: number;
+        source: {
+          attachmentId: string;
+          capture: { rect: { width: number }; pointer: { x: number; y: number } };
+        };
+      }[];
+    };
+    expect(state.annotations[0].number).toBe(1);
+    expect(state.annotations[0].source.capture.rect.width).toBeCloseTo(200, 0);
+    expect(state.annotations[0].source.capture.pointer).toEqual({ x: 250, y: 210 });
+    const marker = frame.locator('.area-annotation-number').first();
+    await expect(marker).toHaveAttribute('data-pointer-x', '250');
+    await expect(marker).toHaveAttribute('data-pointer-y', '210');
+    const attachment = await mcp.tool('read_attachment', {
+      artifactId: a.artifactId,
+      savedStateId: state.id,
+      attachmentId: state.annotations[0].source.attachmentId,
+    });
+    expect(attachment.mimeType).toBe('image/svg+xml');
+    let imageParts = String(attachment.content);
+    let cursor = attachment.cursor;
+    while (cursor) {
+      const chunk = await mcp.tool('read_attachment', {
+        artifactId: a.artifactId,
+        savedStateId: state.id,
+        attachmentId: state.annotations[0].source.attachmentId,
+        cursor,
+      });
+      imageParts += String(chunk.content);
+      cursor = chunk.cursor;
+    }
+    const svg = Buffer.from(imageParts, 'base64').toString();
+    expect(svg).toContain('M250 210 ');
+    expect(svg).not.toContain('Review captured table');
+    // A click selects the hovered semantic paragraph; dragging above retained arbitrary geometry.
+    await page.getByRole('button', { name: 'Annotate document', exact: true }).click();
+    const paragraph = await frame
+      .locator('p')
+      .filter({ hasText: 'Inspect this visual section.' })
+      .boundingBox();
+    if (!paragraph) throw Error('Missing paragraph geometry');
+    await page.mouse.move(paragraph.x + 20, paragraph.y + paragraph.height / 2);
+    await expect(frame.locator('.element-hover-outline')).toBeVisible();
+    const hovered = await frame.locator('.element-hover-outline').boundingBox();
+    if (!hovered) throw Error('Missing semantic outline');
+    expect(hovered.width).toBeCloseTo(paragraph.width, 0);
+    await page.mouse.click(paragraph.x + 20, paragraph.y + paragraph.height / 2);
+    await expect(frame.getByLabel('Annotation comment')).toBeVisible();
+    await frame.getByLabel('Annotation comment').fill('Clicked paragraph element');
+    await frame.getByRole('button', { name: 'Save private annotation' }).click();
+    await expect(frame.getByLabel('Annotation comment')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    const clicked = JSON.parse(
+      String(
+        (await mcp.tool('read_artifact', { artifactId: a.artifactId, part: 'state' })).content,
+      ),
+    ) as {
+      annotations: {
+        source: { capture: { rect: { width: number } }; stateContext: { stateHash: string } };
+      }[];
+    };
+    expect(clicked.annotations[1].source.capture.rect.width).toBeCloseTo(paragraph.width, 0);
+    expect(clicked.annotations[1].source.stateContext.stateHash).toMatch(/^[a-f0-9]{64}$/);
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].setSize(1100, 750);
+    });
+    await page.locator('.annotation-jump').first().click();
+    await expect
+      .poll(() =>
+        app.evaluate(
+          ({ webContents }) =>
+            webContents.getAllWebContents().filter((w) => w.getURL().startsWith('data:text/html'))
+              .length,
+        ),
+      )
+      .toBe(1);
+    const frozen = await app.evaluate(async ({ webContents }) => {
+      const view = webContents
+        .getAllWebContents()
+        .find((w) => w.getURL().startsWith('data:text/html'))!;
+      return view.executeJavaScript(
+        '({number:document.getElementById("number").textContent,width:innerWidth,help:document.getElementById("help").textContent})',
+      ) as Promise<{ number: string; width: number; help: string }>;
+    });
+    expect(frozen.number).toBe('1');
+    expect(frozen.width).toBeGreaterThan(200);
+    expect(frozen.help).toContain('Saved capture');
+    await expect(overlay.locator('#composer')).toBeHidden();
+    await expect(overlay.getByText('Review captured table', { exact: true })).toHaveCount(0);
+  } finally {
+    mcp?.close();
+    await app.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

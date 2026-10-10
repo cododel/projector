@@ -1,0 +1,9 @@
+/.tmp/
+/.blueprint/
+node_modules/
+out/
+dist/
+playwright-report/
+test-results/
+.DS_Store
+/.codex/config.toml

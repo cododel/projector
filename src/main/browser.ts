@@ -1,0 +1,1153 @@
+import {
+  BrowserWindow,
+  WebContentsView,
+  ipcMain,
+  session,
+  screen,
+  dialog,
+  type WebContents,
+} from 'electron';
+import { randomUUID } from 'node:crypto';
+import { markerGeometry } from '../shared/annotation-marker';
+import { z } from 'zod';
+import { browserOverlayHtml, browserMarkerHtml } from './browser-overlay-html';
+import {
+  browserPartition,
+  browserUrl,
+  safeBrowserBounds,
+  validateArea,
+  browserStateHash,
+  type BrowserElementAnchor,
+  type AreaRect,
+} from './browser-policy';
+
+export type BrowserTab = {
+  id: string;
+  artifactId: string;
+  projectId: string;
+  url: string;
+  title: string;
+  loading: boolean;
+  error: string | null;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  pageId?: string;
+  stateHash?: string;
+};
+export type BrowserCapture = {
+  id: string;
+  png: string;
+  source: {
+    kind: 'browser-area';
+    url: string;
+    title: string;
+    capturedAt: string;
+    viewport: { width: number; height: number; deviceScaleFactor: number };
+    rect?: AreaRect;
+    pointer?: { x: number; y: number };
+    zoomFactor: number;
+    scroll: { x: number; y: number };
+    pageId?: string;
+    stateHash?: string;
+    layoutHash?: string;
+    elementAnchor?: BrowserElementAnchor;
+  };
+};
+type CaptureDraft = { capture: BrowserCapture; comment: string };
+type BrowserHooks = {
+  overlayPreload: string;
+  onChange: () => void;
+  getRevision?: (artifactId: string) => Promise<string | null>;
+  getAnnotations?: (artifactId: string) => Promise<BrowserMarkerAnnotation[]>;
+  onMarkerSelect?: (value: { artifactId: string; annotationId: string }) => Promise<unknown>;
+  onAnnotation: (
+    value: CaptureDraft & { artifactId: string; tabId: string; revisionId?: string },
+  ) => Promise<{ id: string; number: number }>;
+  onDraft?: (
+    value: (CaptureDraft & { artifactId: string; tabId: string; revisionId?: string }) | null,
+  ) => Promise<unknown>;
+};
+export type BrowserMarkerAnnotation = {
+  id: string;
+  number: number;
+  capture?: { source: BrowserCapture['source'] };
+};
+type InternalTab = {
+  state: BrowserTab;
+  view: WebContentsView;
+  contents: WebContents;
+  documentId: string;
+  entries: Map<number, string>;
+  annotations: BrowserMarkerAnnotation[];
+  navigationEpoch: number;
+};
+type PageProbe = {
+  url: string;
+  title: string;
+  scroll: { x: number; y: number };
+  history: unknown;
+  navigationKey: string | null;
+  semantic: string;
+  layout: unknown;
+  viewport: { width: number; height: number };
+  anchors: {
+    id: string;
+    rect: AreaRect | null;
+    bounds: AreaRect | null;
+    text: string;
+    tag: string;
+    elementId?: string;
+  }[];
+};
+const areaSchema = z
+  .object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() })
+  .strict();
+const editSchema = z
+  .object({ captureId: z.string(), rect: areaSchema.nullable(), comment: z.string().max(20000) })
+  .strict();
+
+class CaptureChangedError extends Error {
+  constructor(reason: string) {
+    super(`CAPTURE_CHANGED: ${reason} Select again.`);
+  }
+}
+
+// Shared read-only geometry for hover/selection and persisted element markers.
+// A viewport rect alone does not establish visibility inside nested scroll containers.
+const visibleElementRectScript = `const visibleRect=el=>{
+  const style=getComputedStyle(el);
+  if(style.visibility==='hidden'||style.visibility==='collapse'||!el.getClientRects().length)return null;
+  const r=el.getBoundingClientRect();
+  let left=Math.max(0,r.left),top=Math.max(0,r.top),right=Math.min(innerWidth,r.right),bottom=Math.min(innerHeight,r.bottom);
+  for(let parent=el.parentElement;parent;parent=parent.parentElement){
+    const css=getComputedStyle(parent),clipX=/^(auto|scroll|hidden|clip)$/.test(css.overflowX),clipY=/^(auto|scroll|hidden|clip)$/.test(css.overflowY);
+    if(!clipX&&!clipY)continue;
+    const box=parent.getBoundingClientRect(),scaleX=parent.offsetWidth?box.width/parent.offsetWidth:1,scaleY=parent.offsetHeight?box.height/parent.offsetHeight:1;
+    const x=box.left+parent.clientLeft*scaleX,y=box.top+parent.clientTop*scaleY;
+    if(clipX){left=Math.max(left,x);right=Math.min(right,x+parent.clientWidth*scaleX)}
+    if(clipY){top=Math.max(top,y);bottom=Math.min(bottom,y+parent.clientHeight*scaleY)}
+  }
+  return right>left&&bottom>top?{x:left,y:top,width:right-left,height:bottom-top}:null;
+};`;
+
+export class BrowserManager {
+  private tabs = new Map<string, InternalTab>();
+  private activeTabId: string | null = null;
+  private bounds: AreaRect = { x: 0, y: 0, width: 0, height: 0 };
+  private overlay: WebContentsView | null = null;
+  private overlayReady: Promise<void> | null = null;
+  private overlayContents: WebContents | null = null;
+  private closeOperations = new Map<string, Promise<boolean>>();
+  private capture:
+    | (CaptureDraft & {
+        artifactId: string;
+        tabId: string;
+        revisionId?: string;
+        readonly?: boolean;
+        number?: number;
+      })
+    | null = null;
+  private captureGeneration = 0;
+  private closed = false;
+  private operationChain: Promise<unknown> = Promise.resolve();
+  private tool: { tabId: string; revisionId?: string } | null = null;
+  private markerViews = new Map<
+    string,
+    { view: WebContentsView; contents: WebContents; artifactId: string; annotationId: string }
+  >();
+  private markerTimer: ReturnType<typeof setInterval>;
+  private markerBusy = false;
+  private downloadGuards = new Map<
+    string,
+    { session: Electron.Session; listener: (event: Electron.Event) => void }
+  >();
+
+  constructor(
+    private window: BrowserWindow,
+    private hooks: BrowserHooks,
+  ) {
+    ipcMain.handle('blueprint:browser-overlay', (event, action: unknown, value: unknown) => {
+      const marker = [...this.markerViews.values()].find((m) => m.contents === event.sender);
+      if (marker && event.senderFrame === event.sender.mainFrame) {
+        if (action !== 'marker') throw new Error('Unsupported marker operation');
+        return this.hooks.onMarkerSelect?.({
+          artifactId: marker.artifactId,
+          annotationId: marker.annotationId,
+        });
+      }
+      if (
+        !this.overlay ||
+        event.sender !== this.overlayContents ||
+        event.senderFrame !== event.sender.mainFrame
+      )
+        throw new Error('Untrusted browser overlay sender');
+      // Serialize draft writes and submission so the final composer value cannot be overwritten.
+      const next = this.operationChain
+        .catch(() => {})
+        .then(() => this.overlayAction(action, value));
+      this.operationChain = next;
+      return next.catch((error: unknown) => {
+        // A stale selection is an expected, recoverable tool result, not an IPC failure.
+        if (error instanceof CaptureChangedError) return { captureError: error.message };
+        throw error;
+      });
+    });
+    this.markerTimer = setInterval(() => {
+      void this.refreshMarkers().catch(() => {});
+    }, 200);
+    this.markerTimer.unref();
+    window.once('closed', () => this.dispose());
+  }
+
+  snapshot() {
+    return {
+      tabs: [...this.tabs.values()].map(({ state }) => ({ ...state })),
+      activeTabId: this.activeTabId,
+      annotating: Boolean(this.tool || (this.capture && !this.capture.readonly)),
+    };
+  }
+
+  async open(args: { artifactId: string; projectId: string; url: string; newTab?: boolean }) {
+    if (this.tool) this.hideOverlay();
+    if (this.capture && !this.capture.readonly)
+      throw new Error('UNFINISHED_COMMENT: Save or cancel the area annotation first.');
+    const url = browserUrl(args.url);
+    const existing = [...this.tabs.values()].find(
+      ({ state }) => state.artifactId === args.artifactId && state.url === url,
+    );
+    if (existing && !args.newTab) {
+      this.select(existing.state.id);
+      return { ...existing.state };
+    }
+    const partition = browserPartition(args.projectId);
+    const projectSession = session.fromPartition(partition);
+    if (!this.downloadGuards.has(partition)) {
+      const listener = (event: Electron.Event) => event.preventDefault();
+      projectSession.on('will-download', listener);
+      this.downloadGuards.set(partition, { session: projectSession, listener });
+    }
+    projectSession.setPermissionRequestHandler((_contents, _permission, callback) =>
+      callback(false),
+    );
+    projectSession.setPermissionCheckHandler(() => false);
+    const view = new WebContentsView({
+      webPreferences: {
+        session: projectSession,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+        webviewTag: false,
+      },
+    });
+    view.setBackgroundColor('#ffffff');
+    const state: BrowserTab = {
+      id: randomUUID(),
+      artifactId: args.artifactId,
+      projectId: args.projectId,
+      url,
+      title: url,
+      loading: true,
+      error: null,
+      canGoBack: false,
+      canGoForward: false,
+    };
+    const contents = view.webContents;
+    const internal: InternalTab = {
+      state,
+      view,
+      contents,
+      documentId: randomUUID(),
+      entries: new Map(),
+      annotations: [],
+      navigationEpoch: 0,
+    };
+    this.tabs.set(state.id, internal);
+    contents.once('destroyed', () => this.unregisterTab(internal));
+    const update = () => {
+      if (contents.isDestroyed()) return;
+      state.loading = contents.isLoading();
+      state.canGoBack = contents.navigationHistory.canGoBack();
+      state.canGoForward = contents.navigationHistory.canGoForward();
+      this.hooks.onChange();
+    };
+    const guard = (event: Electron.Event, target: string) => {
+      try {
+        browserUrl(target);
+      } catch {
+        event.preventDefault();
+        state.error = 'Only HTTP and HTTPS navigation is allowed.';
+        update();
+      }
+    };
+    contents.on('will-navigate', guard);
+    contents.on('will-redirect', guard);
+    contents.on('will-frame-navigate', (event) => guard(event, event.url));
+    contents.on('will-attach-webview', (event) => event.preventDefault());
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    contents.on('did-start-loading', () => {
+      ++internal.navigationEpoch;
+      if (this.activeTabId === state.id) this.clearMarkers();
+      state.error = null;
+      update();
+    });
+    contents.on('did-stop-loading', update);
+    contents.on('did-start-navigation', (event) => {
+      if (!event.isMainFrame) return;
+      ++internal.navigationEpoch;
+      if (this.activeTabId === state.id) this.clearMarkers();
+      // A live tool has no snapshot yet. Routers may replace scroll metadata in
+      // history.state while opening it; selection probes the current entry later.
+      // Real document navigation still tears down the uncaptured overlay.
+      if (!event.isSameDocument && this.tool?.tabId === state.id) this.hideOverlay();
+    });
+    contents.on('did-navigate', (_event, current) => {
+      internal.documentId = randomUUID();
+      internal.entries.clear();
+      state.url = current;
+      update();
+    });
+    contents.on('did-navigate-in-page', (_event, current, mainFrame) => {
+      if (mainFrame) {
+        state.url = current;
+        ++internal.navigationEpoch;
+        // Without a native entry key, an index can be reused by a new forward branch.
+        // Invalidate fallback identity on navigation instead of attaching old markers.
+        internal.entries.set(contents.navigationHistory.getActiveIndex(), randomUUID());
+        if (this.activeTabId === state.id) this.clearMarkers();
+      }
+      update();
+    });
+    contents.on('page-title-updated', (_event, title) => {
+      state.title = title;
+      update();
+    });
+    contents.on('did-fail-load', (_event, code, description, _url, mainFrame) => {
+      if (mainFrame && code !== -3) {
+        state.error = description;
+        update();
+      }
+    });
+    contents.on('render-process-gone', (_event, details) => {
+      state.error = 'Browser renderer stopped: ' + details.reason;
+      state.loading = false;
+      this.hooks.onChange();
+    });
+    this.select(state.id);
+    void this.refreshAnnotations().catch(() => {});
+    // Publication/show_content does not focus the window or remote web contents.
+    void contents.loadURL(url).catch((error: Error) => {
+      if (!contents.isDestroyed()) {
+        state.error = error.message;
+        state.loading = false;
+        this.hooks.onChange();
+      }
+    });
+    return { ...state };
+  }
+
+  private unregisterTab(tab: InternalTab) {
+    if (this.tabs.get(tab.state.id) !== tab) return;
+    this.tabs.delete(tab.state.id);
+    if (!this.window.isDestroyed()) this.window.contentView.removeChildView(tab.view);
+    ++tab.navigationEpoch;
+    if (this.activeTabId === tab.state.id) {
+      this.activeTabId = null;
+      this.clearMarkers();
+    }
+    if (this.tool?.tabId === tab.state.id || this.capture?.tabId === tab.state.id) {
+      ++this.captureGeneration;
+      this.hideOverlay();
+    }
+    if (!this.closed) this.hooks.onChange();
+  }
+
+  private closeTab(tab: InternalTab): Promise<boolean> {
+    const pending = this.closeOperations.get(tab.state.id);
+    if (pending) return pending;
+    const operation = new Promise<boolean>((resolve, reject) => {
+      const contents = tab.contents;
+      if (contents.isDestroyed()) {
+        this.unregisterTab(tab);
+        resolve(false);
+        return;
+      }
+      let settled = false;
+      let prompting = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        contents.removeListener('destroyed', destroyed);
+        contents.removeListener('will-prevent-unload', preventUnload);
+      };
+      const finish = (cancelled: boolean) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(cancelled);
+      };
+      const destroyed = () => finish(false);
+      const preventUnload = (event: Electron.Event) => {
+        if (prompting) return;
+        prompting = true;
+        try {
+          // Electron's veto override must occur before this event returns.
+          const response = dialog.showMessageBoxSync(this.window, {
+            type: 'question',
+            message: 'Close this tab?',
+            detail: 'This page reports unsaved changes. Closing may discard them.',
+            buttons: ['Close tab', 'Cancel'],
+            defaultId: 1,
+            cancelId: 1,
+            noLink: true,
+          });
+          if (response === 0) event.preventDefault();
+          else finish(true);
+        } catch (error) {
+          settled = true;
+          cleanup();
+          reject(error);
+        }
+      };
+      // A loading/hung renderer must not leave the shell transition locked forever.
+      const timer = setTimeout(() => finish(!contents.isDestroyed()), 15_000);
+      contents.once('destroyed', destroyed);
+      contents.on('will-prevent-unload', preventUnload);
+      contents.close({ waitForBeforeUnload: true });
+    });
+    this.closeOperations.set(tab.state.id, operation);
+    void operation.finally(() => this.closeOperations.delete(tab.state.id)).catch(() => {});
+    return operation;
+  }
+
+  async finishComment() {
+    if (this.closed) throw new Error('BROWSER_CLOSED');
+    if (this.capture && !this.capture.readonly) {
+      const contents = this.overlayContents;
+      if (!contents || contents.isDestroyed()) throw new Error('COMMENT_EDITOR_UNAVAILABLE');
+      await contents.executeJavaScript('window.blueprintFinishComment()');
+      await this.operationChain;
+    } else if (this.tool || this.capture?.readonly) {
+      this.hideOverlay();
+    }
+  }
+
+  select(tabId: string | null) {
+    if (this.tool && this.activeTabId !== tabId) this.hideOverlay();
+    if (this.capture && !this.capture.readonly && this.activeTabId !== tabId)
+      throw new Error('UNFINISHED_COMMENT: Save or cancel the area annotation first.');
+    if (tabId !== null && !this.tabs.has(tabId)) throw new Error('BROWSER_TAB_NOT_FOUND');
+    const previous = this.activeTabId && this.tabs.get(this.activeTabId);
+    if (previous) this.window.contentView.removeChildView(previous.view);
+    this.activeTabId = tabId;
+    this.clearMarkers();
+    if (tabId) {
+      const tab = this.tabs.get(tabId)!;
+      this.window.contentView.addChildView(tab.view);
+      tab.view.setBounds(this.bounds);
+    }
+    if (this.capture?.readonly) this.hideOverlay();
+    this.hooks.onChange();
+  }
+
+  setBounds(bounds: AreaRect) {
+    const [width, height] = this.window.getContentSize();
+    this.bounds = safeBrowserBounds(bounds, { width, height });
+    if (this.activeTabId) this.tabs.get(this.activeTabId)?.view.setBounds(this.bounds);
+    this.overlay?.setBounds(this.bounds);
+  }
+
+  async command(args: {
+    tabId: string;
+    action: 'back' | 'forward' | 'reload' | 'navigate' | 'close' | 'annotate';
+    url?: string;
+  }) {
+    const tab = this.tabs.get(args.tabId);
+    if (!tab) throw new Error('BROWSER_TAB_NOT_FOUND');
+    if (this.tool?.tabId === args.tabId && args.action === 'annotate') {
+      this.hideOverlay();
+      return this.snapshot();
+    }
+    if (args.action === 'close' && this.capture && !this.capture.readonly)
+      await this.finishComment();
+    if (this.tool && args.action !== 'close') this.hideOverlay();
+    if (this.capture && !this.capture.readonly)
+      throw new Error('UNFINISHED_COMMENT: Save or cancel the area annotation first.');
+    const contents = tab.contents;
+    if (contents.isDestroyed()) throw new Error('BROWSER_TAB_NOT_FOUND');
+    switch (args.action) {
+      case 'back':
+        if (contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
+        break;
+      case 'forward':
+        if (contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward();
+        break;
+      case 'reload':
+        contents.reload();
+        break;
+      case 'navigate':
+        await contents.loadURL(browserUrl(args.url ?? ''));
+        break;
+      case 'close': {
+        const cancelled = await this.closeTab(tab);
+        return { ...this.snapshot(), cancelled };
+      }
+      case 'annotate':
+        await this.beginArea(args.tabId);
+        break;
+      default:
+        throw new Error('UNSUPPORTED_BROWSER_ACTION');
+    }
+    this.hooks.onChange();
+    return this.snapshot();
+  }
+
+  private async ensureOverlay() {
+    if (this.closed) throw new Error('BROWSER_CLOSED');
+    if (!this.overlay) {
+      this.overlay = new WebContentsView({
+        webPreferences: {
+          preload: this.hooks.overlayPreload,
+          nodeIntegration: false,
+          contextIsolation: true,
+          sandbox: true,
+          webSecurity: true,
+          webviewTag: false,
+        },
+      });
+      this.overlayContents = this.overlay.webContents;
+      const overlay = this.overlay,
+        contents = this.overlayContents;
+      contents.once('destroyed', () => {
+        if (this.overlayContents !== contents) return;
+        if (!this.window.isDestroyed()) this.window.contentView.removeChildView(overlay);
+        this.overlay = null;
+        this.overlayContents = null;
+        this.overlayReady = null;
+        ++this.captureGeneration;
+        this.tool = null;
+        // Keep the private capture recoverable if its trusted renderer died.
+        if (!this.closed) this.hooks.onChange();
+      });
+      this.overlayContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      this.overlayContents.on('will-navigate', (event) => event.preventDefault());
+      this.overlayReady = this.overlayContents.loadURL(
+        'data:text/html;base64,' + Buffer.from(browserOverlayHtml).toString('base64'),
+      );
+    }
+    await this.overlayReady;
+    if (this.closed || !this.overlay || !this.overlayContents || this.overlayContents.isDestroyed())
+      throw new Error('BROWSER_CLOSED');
+    return this.overlay;
+  }
+
+  private async probe(
+    tab: InternalTab,
+  ): Promise<PageProbe & { pageId: string; stateHash: string; layoutHash: string }> {
+    const anchors = tab.annotations
+      .filter((a) => a.capture?.source.elementAnchor)
+      .map((a) => ({ id: a.id, path: a.capture!.source.elementAnchor!.path }));
+    const result = (await tab.contents.executeJavaScriptInIsolatedWorld(902, [
+      {
+        code: `(()=>{
+      ${visibleElementRectScript}
+      const rect=el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}};
+      const resolve=path=>{let el=document.documentElement;for(const i of path){el=el?.children[i];if(!el)return null}return el};
+      let state;try{state=JSON.parse(JSON.stringify(history.state))}catch{state={unserializable:true}}
+      const layout=[...document.body.querySelectorAll('*')].filter(el=>!['SCRIPT','STYLE','LINK'].includes(el.tagName)).map(el=>{
+        const r=rect(el);
+        return [el.tagName,Math.round((r.x+scrollX)*10),Math.round((r.y+scrollY)*10),Math.round(r.width*10),Math.round(r.height*10)];
+      });
+      const anchors=${JSON.stringify(anchors)}.map(a=>{const el=resolve(a.path);return {id:a.id,rect:el?visibleRect(el):null,bounds:el?rect(el):null,text:el?.textContent||'',tag:el?.tagName||'',elementId:el?.id||undefined}});
+      const forms=[...document.querySelectorAll('input,select,textarea')].map(el=>[el.tagName,el.type,el.type==='password'?'':el.value,el.checked]);
+      return {url:location.href,title:document.title,scroll:{x:scrollX,y:scrollY},history:state,navigationKey:window.navigation?.currentEntry?.key||null,semantic:document.body.outerHTML+JSON.stringify(forms),layout,viewport:{width:innerWidth,height:innerHeight},anchors};
+    })()`,
+      },
+    ])) as PageProbe;
+    if (this.closed || tab.contents.isDestroyed() || this.tabs.get(tab.state.id) !== tab)
+      throw new Error('BROWSER_CLOSED');
+    const index = tab.contents.navigationHistory.getActiveIndex();
+    if (!tab.entries.has(index)) tab.entries.set(index, randomUUID());
+    const pageId = tab.documentId + ':' + (result.navigationKey ?? tab.entries.get(index)!);
+    const stateHash = browserStateHash({
+      url: result.url,
+      history: result.history,
+      semantic: result.semantic,
+    });
+    const layoutHash = browserStateHash(result.layout);
+    const changed = tab.state.pageId !== pageId || tab.state.stateHash !== stateHash;
+    tab.state.pageId = pageId;
+    tab.state.stateHash = stateHash;
+    if (changed) this.hooks.onChange();
+    return { ...result, pageId, stateHash, layoutHash };
+  }
+
+  private async elementAt(tab: InternalTab, point: { x: number; y: number }) {
+    const zoom = tab.contents.getZoomFactor();
+    const result = (await tab.contents.executeJavaScriptInIsolatedWorld(902, [
+      {
+        code: `(()=>{
+      ${visibleElementRectScript}
+      const el=document.elementFromPoint(${point.x / zoom},${point.y / zoom});if(!el)return null;
+      let cursor=el;const path=[];while(cursor!==document.documentElement&&cursor.parentElement){path.unshift([...cursor.parentElement.children].indexOf(cursor));cursor=cursor.parentElement}
+      const rect=visibleRect(el);if(!rect)return null;
+      const bounds=el.getBoundingClientRect();
+      return {rect,bounds:{x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height},path,tag:el.tagName,id:el.id||undefined,text:el.textContent||''};
+    })()`,
+      },
+    ])) as {
+      rect: AreaRect;
+      bounds: AreaRect;
+      path: number[];
+      tag: string;
+      id?: string;
+      text: string;
+    } | null;
+    if (!result) return null;
+    const x = Math.max(0, result.rect.x * zoom),
+      y = Math.max(0, result.rect.y * zoom);
+    const rect = {
+      x,
+      y,
+      width: Math.max(
+        0,
+        Math.min(this.bounds.width, (result.rect.x + result.rect.width) * zoom) - x,
+      ),
+      height: Math.max(
+        0,
+        Math.min(this.bounds.height, (result.rect.y + result.rect.height) * zoom) - y,
+      ),
+    };
+    return {
+      rect,
+      elementAnchor: {
+        path: result.path,
+        tag: result.tag,
+        ...(result.id ? { id: result.id } : {}),
+        textHash: browserStateHash(result.text),
+        pointerOffset: { x: point.x / zoom - result.bounds.x, y: point.y / zoom - result.bounds.y },
+      },
+    };
+  }
+
+  // Compare the visible selected region, not the whole page: clocks, offscreen counters,
+  // and unrelated reactive attributes must not make a stable selection impossible.
+  private async captureRegionHash(tab: InternalTab, area: AreaRect, zoom: number) {
+    const region = {
+      x: area.x / zoom,
+      y: area.y / zoom,
+      width: area.width / zoom,
+      height: area.height / zoom,
+    };
+    const value = await tab.contents.executeJavaScriptInIsolatedWorld(902, [
+      {
+        code: `(()=>{
+      ${visibleElementRectScript}
+      const region=${JSON.stringify(region)};
+      return [...document.body.querySelectorAll('*'),document.body].flatMap(el=>{
+        if(['SCRIPT','STYLE','LINK','META'].includes(el.tagName))return [];
+        const rect=visibleRect(el);
+        if(!rect||rect.x>=region.x+region.width||rect.y>=region.y+region.height||rect.x+rect.width<=region.x||rect.y+rect.height<=region.y)return [];
+        const css=getComputedStyle(el);
+        const text=[...el.childNodes].filter(node=>node.nodeType===Node.TEXT_NODE).map(node=>node.textContent).join('');
+        const form=['INPUT','SELECT','TEXTAREA'].includes(el.tagName)?[el.type,el.type==='password'?'':el.value,el.checked]:null;
+        return [[el.tagName,el.id,rect,text,form,css.color,css.backgroundColor,css.opacity,css.font,css.transform,el.getAttribute('src')]];
+      });
+    })()`,
+      },
+    ]);
+    return browserStateHash(value);
+  }
+
+  async beginArea(tabId: string) {
+    const tab = this.tabs.get(tabId);
+    if (!tab) throw new Error('BROWSER_TAB_NOT_FOUND');
+    this.select(tabId);
+    if (this.bounds.width < 1 || this.bounds.height < 1) throw new Error('BROWSER_NOT_VISIBLE');
+    const generation = ++this.captureGeneration;
+    const revisionId = await this.hooks.getRevision?.(tab.state.artifactId);
+    if (this.hooks.getRevision && !revisionId)
+      throw new Error('DOCUMENT_REVISION_REQUIRED: Publish the document first.');
+    if (this.activeTabId !== tabId || generation !== this.captureGeneration)
+      throw new Error('CAPTURE_CHANGED: Browser selection changed before activation.');
+    this.capture = null;
+    this.tool = { tabId, revisionId: revisionId ?? undefined };
+    this.clearMarkers();
+    const overlay = await this.ensureOverlay();
+    if (!this.tool || this.activeTabId !== tabId || generation !== this.captureGeneration)
+      throw new Error('CAPTURE_CHANGED: Browser selection changed before activation.');
+    overlay.setBackgroundColor('#00000000');
+    overlay.setBounds(this.bounds);
+    this.window.contentView.addChildView(overlay);
+    this.overlayContents!.send('blueprint:browser-overlay-load', {
+      mode: 'live',
+      viewport: { width: this.bounds.width, height: this.bounds.height },
+    });
+    this.overlayContents!.focus();
+    this.hooks.onChange();
+    return { mode: 'live' };
+  }
+
+  private async captureSelection(value: unknown) {
+    if (!this.tool) throw new Error('ANNOTATE_TOOL_NOT_ACTIVE');
+    const input = z
+      .object({
+        point: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
+        rect: areaSchema.nullable(),
+      })
+      .strict()
+      .parse(value);
+    const tool = this.tool,
+      tab = this.tabs.get(tool.tabId);
+    if (!tab) throw new Error('BROWSER_TAB_NOT_FOUND');
+    const generation = this.captureGeneration;
+    const navigationEpoch = tab.navigationEpoch;
+    const viewport = { width: this.bounds.width, height: this.bounds.height };
+    const zoomFactor = tab.contents.getZoomFactor();
+    let capture: BrowserCapture | undefined;
+    let initialTarget: BrowserElementAnchor | undefined;
+    if (
+      input.point.x < 0 ||
+      input.point.y < 0 ||
+      input.point.x > viewport.width ||
+      input.point.y > viewport.height
+    )
+      throw new Error('INVALID_POINTER');
+    // Retry changes within the selection. Unrelated page activity is allowed; the frozen
+    // viewport PNG remains the reference even if the live page continues updating.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await this.probe(tab);
+      const selected = input.rect
+        ? { rect: validateArea(input.rect, this.bounds) }
+        : await this.elementAt(tab, input.point);
+      if (!selected || selected.rect.width < 1 || selected.rect.height < 1)
+        throw new Error('EMPTY_SELECTION');
+      if ('elementAnchor' in selected) {
+        const target = selected.elementAnchor;
+        if (
+          initialTarget &&
+          (initialTarget.tag !== target.tag ||
+            initialTarget.id !== target.id ||
+            JSON.stringify(initialTarget.path) !== JSON.stringify(target.path))
+        )
+          throw new CaptureChangedError('The selected element changed.');
+        initialTarget ??= target;
+      }
+      const regionBefore = await this.captureRegionHash(tab, selected.rect, zoomFactor);
+      const image = await tab.contents.capturePage();
+      const after = await this.probe(tab);
+      if (
+        this.closed ||
+        tab.contents.isDestroyed() ||
+        this.tabs.get(tab.state.id) !== tab ||
+        generation !== this.captureGeneration ||
+        this.tool !== tool ||
+        tab.navigationEpoch !== navigationEpoch ||
+        before.pageId !== after.pageId ||
+        viewport.width !== this.bounds.width ||
+        viewport.height !== this.bounds.height ||
+        zoomFactor !== tab.contents.getZoomFactor() ||
+        before.viewport.width !== after.viewport.width ||
+        before.viewport.height !== after.viewport.height ||
+        before.scroll.x !== after.scroll.x ||
+        before.scroll.y !== after.scroll.y
+      )
+        throw new CaptureChangedError('The page, viewport or scroll position changed.');
+      const selectedAfter = input.rect ? null : await this.elementAt(tab, input.point);
+      if (
+        initialTarget &&
+        (!selectedAfter ||
+          selectedAfter.elementAnchor.tag !== initialTarget.tag ||
+          selectedAfter.elementAnchor.id !== initialTarget.id ||
+          JSON.stringify(selectedAfter.elementAnchor.path) !== JSON.stringify(initialTarget.path))
+      )
+        throw new CaptureChangedError('The selected element changed.');
+      if (selectedAfter && JSON.stringify(selectedAfter.rect) !== JSON.stringify(selected.rect))
+        continue;
+      if (
+        'elementAnchor' in selected &&
+        selectedAfter &&
+        selectedAfter.elementAnchor.textHash !== selected.elementAnchor.textHash
+      )
+        continue;
+      const regionAfter = await this.captureRegionHash(tab, selected.rect, zoomFactor);
+      if (regionBefore !== regionAfter) continue;
+      const display = screen.getDisplayMatching(this.window.getBounds());
+      capture = {
+        id: randomUUID(),
+        png: image.toPNG().toString('base64'),
+        source: {
+          kind: 'browser-area',
+          url: browserUrl(after.url),
+          title: after.title,
+          capturedAt: new Date().toISOString(),
+          viewport: {
+            width: viewport.width,
+            height: viewport.height,
+            deviceScaleFactor: display.scaleFactor,
+          },
+          rect: selected.rect,
+          pointer: input.point,
+          zoomFactor,
+          scroll: after.scroll,
+          pageId: after.pageId,
+          stateHash: before.stateHash,
+          layoutHash: before.layoutHash,
+          ...('elementAnchor' in selected ? { elementAnchor: selected.elementAnchor } : {}),
+        },
+      };
+      break;
+    }
+    if (!capture) throw new CaptureChangedError('The page is still updating.');
+    this.tool = null;
+    this.capture = {
+      artifactId: tab.state.artifactId,
+      tabId: tool.tabId,
+      revisionId: tool.revisionId,
+      capture,
+      comment: '',
+    };
+    await this.hooks.onDraft?.({ ...this.capture });
+    await this.showOverlay();
+    this.hooks.onChange();
+    return { captureId: capture.id };
+  }
+
+  setAnnotations(artifactId: string, annotations: BrowserMarkerAnnotation[]) {
+    for (const tab of this.tabs.values())
+      if (tab.state.artifactId === artifactId) tab.annotations = annotations;
+    void this.refreshMarkers().catch(() => {});
+  }
+
+  async refreshAnnotations() {
+    for (const tab of this.tabs.values())
+      if (this.hooks.getAnnotations)
+        tab.annotations = await this.hooks.getAnnotations(tab.state.artifactId);
+    await this.refreshMarkers();
+  }
+
+  private clearMarkers() {
+    for (const marker of this.markerViews.values()) {
+      if (!this.window.isDestroyed()) this.window.contentView.removeChildView(marker.view);
+      if (!marker.contents.isDestroyed()) marker.contents.close();
+    }
+    this.markerViews.clear();
+  }
+
+  private async refreshMarkers() {
+    if (this.closed || this.markerBusy || !this.activeTabId || this.tool || this.capture) return;
+    const tab = this.tabs.get(this.activeTabId);
+    if (!tab || tab.contents.isDestroyed()) return;
+    if (tab.contents.isLoading()) {
+      this.clearMarkers();
+      return;
+    }
+    const navigationEpoch = tab.navigationEpoch;
+    if (!tab.annotations.length) {
+      this.clearMarkers();
+      return;
+    }
+    this.markerBusy = true;
+    try {
+      const probe = await this.probe(tab),
+        zoom = tab.contents.getZoomFactor(),
+        visible = new Set<string>();
+      if (
+        this.closed ||
+        tab.contents.isDestroyed() ||
+        this.tabs.get(tab.state.id) !== tab ||
+        this.tool ||
+        this.capture ||
+        this.activeTabId !== tab.state.id ||
+        tab.navigationEpoch !== navigationEpoch ||
+        tab.contents.isLoading()
+      )
+        return;
+      for (const annotation of tab.annotations) {
+        const source = annotation.capture?.source;
+        if (!source || source.pageId !== probe.pageId || source.stateHash !== probe.stateHash)
+          continue;
+        let rect: AreaRect;
+        let pointer: { x: number; y: number } | undefined;
+        if (source.elementAnchor) {
+          const anchor = probe.anchors.find((a) => a.id === annotation.id),
+            expected = source.elementAnchor;
+          if (
+            !anchor?.rect ||
+            anchor.tag !== expected.tag ||
+            anchor.elementId !== expected.id ||
+            browserStateHash(anchor.text) !== expected.textHash
+          )
+            continue;
+          rect = {
+            x: anchor.rect.x * zoom,
+            y: anchor.rect.y * zoom,
+            width: anchor.rect.width * zoom,
+            height: anchor.rect.height * zoom,
+          };
+          if (source.pointer && expected.pointerOffset && anchor.bounds)
+            pointer = {
+              x: (anchor.bounds.x + expected.pointerOffset.x) * zoom,
+              y: (anchor.bounds.y + expected.pointerOffset.y) * zoom,
+            };
+        } else {
+          if (!source.rect || !source.layoutHash || source.layoutHash !== probe.layoutHash)
+            continue;
+          rect = {
+            x: (source.rect.x / source.zoomFactor + source.scroll.x - probe.scroll.x) * zoom,
+            y: (source.rect.y / source.zoomFactor + source.scroll.y - probe.scroll.y) * zoom,
+            width: (source.rect.width / source.zoomFactor) * zoom,
+            height: (source.rect.height / source.zoomFactor) * zoom,
+          };
+          if (source.pointer)
+            pointer = {
+              x: (source.pointer.x / source.zoomFactor + source.scroll.x - probe.scroll.x) * zoom,
+              y: (source.pointer.y / source.zoomFactor + source.scroll.y - probe.scroll.y) * zoom,
+            };
+        }
+        pointer ??= { x: rect.x + rect.width, y: rect.y };
+        if (
+          rect.x + rect.width < 0 ||
+          rect.y + rect.height < 0 ||
+          rect.x > this.bounds.width ||
+          rect.y > this.bounds.height
+        )
+          continue;
+        if (
+          pointer.x < rect.x ||
+          pointer.y < rect.y ||
+          pointer.x > rect.x + rect.width ||
+          pointer.y > rect.y + rect.height ||
+          pointer.x < 0 ||
+          pointer.y < 0 ||
+          pointer.x > this.bounds.width ||
+          pointer.y > this.bounds.height
+        )
+          continue;
+        visible.add(annotation.id);
+        let marker = this.markerViews.get(annotation.id);
+        if (!marker) {
+          const view = new WebContentsView({
+            webPreferences: {
+              preload: this.hooks.overlayPreload,
+              nodeIntegration: false,
+              contextIsolation: true,
+              sandbox: true,
+              webSecurity: true,
+            },
+          });
+          view.setBackgroundColor('#00000000');
+          view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+          view.webContents.on('will-navigate', (e) => e.preventDefault());
+          marker = {
+            view,
+            contents: view.webContents,
+            artifactId: tab.state.artifactId,
+            annotationId: annotation.id,
+          };
+          this.markerViews.set(annotation.id, marker);
+          const created = marker;
+          marker.contents.once('destroyed', () => {
+            if (this.markerViews.get(annotation.id) !== created) return;
+            this.markerViews.delete(annotation.id);
+            if (!this.window.isDestroyed()) this.window.contentView.removeChildView(created.view);
+          });
+          await marker.contents.loadURL(
+            'data:text/html;base64,' + Buffer.from(browserMarkerHtml).toString('base64'),
+          );
+          if (
+            this.closed ||
+            tab.contents.isDestroyed() ||
+            this.tabs.get(tab.state.id) !== tab ||
+            this.tool ||
+            this.capture ||
+            this.activeTabId !== tab.state.id ||
+            tab.navigationEpoch !== navigationEpoch ||
+            tab.contents.isLoading()
+          ) {
+            this.clearMarkers();
+            return;
+          }
+          this.window.contentView.addChildView(view);
+        }
+        const { cx, cy } = markerGeometry(pointer, this.bounds);
+        const left = Math.max(0, Math.floor(Math.min(pointer.x, cx - 14))),
+          top = Math.max(0, Math.floor(Math.min(pointer.y, cy - 14)));
+        const width = Math.ceil(Math.max(pointer.x, cx + 14) - left),
+          height = Math.ceil(Math.max(pointer.y, cy + 14) - top);
+        marker.view.setBounds({ x: this.bounds.x + left, y: this.bounds.y + top, width, height });
+        marker.contents.send('blueprint:browser-overlay-load', {
+          number: annotation.number,
+          pointer: { x: pointer.x - left, y: pointer.y - top },
+          center: { x: cx - left, y: cy - top },
+        });
+      }
+      for (const [id, marker] of this.markerViews)
+        if (!visible.has(id)) {
+          this.window.contentView.removeChildView(marker.view);
+          if (!marker.contents.isDestroyed()) marker.contents.close();
+          this.markerViews.delete(id);
+        }
+    } finally {
+      this.markerBusy = false;
+    }
+  }
+
+  async restoreDraft(
+    value: CaptureDraft & { artifactId: string; tabId: string; revisionId?: string },
+  ) {
+    if (this.capture && !this.capture.readonly) throw new Error('UNFINISHED_COMMENT');
+    if (this.tool) this.hideOverlay();
+    this.capture = value;
+    await this.showOverlay();
+    this.hooks.onChange();
+  }
+
+  async showCapture(value: CaptureDraft & { artifactId: string; tabId?: string; number?: number }) {
+    if (this.capture && !this.capture.readonly) throw new Error('UNFINISHED_COMMENT');
+    if (this.tool) this.hideOverlay();
+    this.capture = { ...value, tabId: value.tabId ?? '', readonly: true };
+    await this.showOverlay();
+    this.hooks.onChange();
+  }
+
+  private async showOverlay() {
+    const overlay = await this.ensureOverlay();
+    if (!this.capture || this.closed) return;
+    overlay.setBounds(this.bounds);
+    this.window.contentView.addChildView(overlay);
+    this.overlayContents!.send('blueprint:browser-overlay-load', {
+      ...this.capture.capture,
+      comment: this.capture.comment,
+      readonly: Boolean(this.capture.readonly),
+      number: this.capture.number,
+    });
+    this.overlayContents!.focus();
+  }
+
+  private hideOverlay() {
+    ++this.captureGeneration;
+    if (this.overlay && !this.window.isDestroyed())
+      this.window.contentView.removeChildView(this.overlay);
+    this.capture = null;
+    this.tool = null;
+    this.hooks.onChange();
+  }
+
+  private async overlayAction(action: unknown, value: unknown) {
+    if (this.tool && (action === 'hover' || action === 'select' || action === 'wheel')) {
+      const tab = this.tabs.get(this.tool.tabId);
+      if (!tab) throw new Error('BROWSER_TAB_NOT_FOUND');
+      if (action === 'select') return this.captureSelection(value);
+      const point = z
+        .object({
+          x: z.number().finite().nonnegative(),
+          y: z.number().finite().nonnegative(),
+          deltaX: z.number().finite().optional(),
+          deltaY: z.number().finite().optional(),
+        })
+        .strict()
+        .parse(value);
+      if (point.x > this.bounds.width || point.y > this.bounds.height)
+        throw new Error('INVALID_POINTER');
+      if (action === 'wheel') {
+        tab.contents.sendInputEvent({
+          type: 'mouseWheel',
+          x: Math.round(point.x),
+          y: Math.round(point.y),
+          deltaX: point.deltaX ?? 0,
+          deltaY: point.deltaY ?? 0,
+        });
+        return { scrolled: true };
+      }
+      return this.elementAt(tab, point);
+    }
+    if (this.tool && action === 'cancel') {
+      this.hideOverlay();
+      return { cancelled: true };
+    }
+    if (!this.capture) throw new Error('CAPTURE_NOT_FOUND');
+    if (action === 'cancel') {
+      const editable = !this.capture.readonly;
+      this.hideOverlay();
+      // The runtime may release a queued show_artifact when editing becomes false.
+      // Remove the native editing surface first so that request can safely switch tabs.
+      if (editable) await this.hooks.onDraft?.(null);
+      return { cancelled: true };
+    }
+    if (this.capture.readonly) throw new Error('READ_ONLY_CAPTURE');
+    if (action !== 'draft' && action !== 'submit' && action !== 'finish')
+      throw new Error('UNSUPPORTED_OVERLAY_ACTION');
+    const input = editSchema.parse(value);
+    if (input.captureId !== this.capture.capture.id) throw new Error('CAPTURE_MISMATCH');
+    if (input.rect) validateArea(input.rect, this.capture.capture.source.viewport);
+    this.capture.capture.source.rect = input.rect ?? undefined;
+    this.capture.comment = input.comment;
+    if (action === 'draft') {
+      await this.hooks.onDraft?.({ ...this.capture });
+      return { savedPrivately: true };
+    }
+    if (action === 'finish' && !input.comment.trim()) {
+      this.hideOverlay();
+      await this.hooks.onDraft?.(null);
+      return { cancelled: true };
+    }
+    if (!input.rect || !input.comment.trim()) throw new Error('EMPTY_ANNOTATION');
+    const completed = { ...this.capture };
+    const result = await this.hooks.onAnnotation(completed);
+    this.hideOverlay();
+    try {
+      await this.hooks.onDraft?.(null);
+    } catch (error) {
+      this.capture = completed;
+      await this.showOverlay();
+      throw error;
+    }
+    await this.showCapture({ ...completed, number: result.number });
+    return result;
+  }
+
+  async decorateCapture(
+    png: string,
+    rect: AreaRect,
+    number: number,
+    viewport: { width: number; height: number },
+    pointer?: { x: number; y: number },
+  ) {
+    validateArea(rect, viewport);
+    if (
+      !Number.isInteger(number) ||
+      number < 1 ||
+      png.length > 40_000_000 ||
+      !/^[A-Za-z0-9+/=]+$/.test(png)
+    )
+      throw new Error('INVALID_CAPTURE');
+    await this.ensureOverlay();
+    return (await this.overlayContents!.executeJavaScript(
+      'window.blueprintDraw(' +
+        [png, rect, number, viewport, pointer ?? null]
+          .map((value) => JSON.stringify(value))
+          .join(',') +
+        ')',
+    )) as string;
+  }
+
+  dispose() {
+    if (this.closed) return;
+    this.closed = true;
+    clearInterval(this.markerTimer);
+    this.clearMarkers();
+    ++this.captureGeneration;
+    ipcMain.removeHandler('blueprint:browser-overlay');
+    for (const { contents } of [...this.tabs.values()])
+      if (!contents.isDestroyed()) contents.close();
+    this.tabs.clear();
+    this.activeTabId = null;
+    this.capture = null;
+    this.tool = null;
+    for (const guard of this.downloadGuards.values())
+      guard.session.removeListener('will-download', guard.listener);
+    this.downloadGuards.clear();
+    if (this.overlayContents && !this.overlayContents.isDestroyed()) this.overlayContents.close();
+  }
+}
