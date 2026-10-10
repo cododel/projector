@@ -5,9 +5,11 @@ import {
   session,
   screen,
   dialog,
+  shell,
   type WebContents,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { runtimeLimits } from '../shared/runtime-limits';
 import { markerGeometry } from '../shared/annotation-marker';
 import { z } from 'zod';
 import { browserOverlayHtml, browserMarkerHtml } from './browser-overlay-html';
@@ -28,6 +30,7 @@ export type BrowserTab = {
   url: string;
   title: string;
   loading: boolean;
+  zoomFactor: number;
   error: string | null;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -57,6 +60,7 @@ type CaptureDraft = { capture: BrowserCapture; comment: string };
 type BrowserHooks = {
   overlayPreload: string;
   onChange: () => void;
+  onTabOpened?: (tab: BrowserTab, background: boolean) => void;
   getRevision?: (artifactId: string) => Promise<string | null>;
   getAnnotations?: (artifactId: string) => Promise<BrowserMarkerAnnotation[]>;
   onMarkerSelect?: (value: { artifactId: string; annotationId: string }) => Promise<unknown>;
@@ -80,6 +84,9 @@ type InternalTab = {
   entries: Map<number, string>;
   annotations: BrowserMarkerAnnotation[];
   navigationEpoch: number;
+  gestureAt: number;
+  grants: Set<string>;
+  downloadNavigation?: string;
 };
 type PageProbe = {
   url: string;
@@ -157,9 +164,20 @@ export class BrowserManager {
   >();
   private markerTimer: ReturnType<typeof setInterval>;
   private markerBusy = false;
+  private downloadItems = new Map<Electron.DownloadItem, string>();
+  private downloads: {
+    id: string;
+    tabId: string;
+    filename: string;
+    status: string;
+    path?: string;
+  }[] = [];
   private downloadGuards = new Map<
     string,
-    { session: Electron.Session; listener: (event: Electron.Event) => void }
+    {
+      session: Electron.Session;
+      listener: (event: Electron.Event, item: Electron.DownloadItem, contents: WebContents) => void;
+    }
   >();
 
   constructor(
@@ -203,11 +221,18 @@ export class BrowserManager {
     return {
       tabs: [...this.tabs.values()].map(({ state }) => ({ ...state })),
       activeTabId: this.activeTabId,
+      downloads: this.downloads.map((value) => ({ ...value })),
       annotating: Boolean(this.tool || (this.capture && !this.capture.readonly)),
     };
   }
 
-  async open(args: { artifactId: string; projectId: string; url: string; newTab?: boolean }) {
+  async open(args: {
+    artifactId: string;
+    projectId: string;
+    url: string;
+    newTab?: boolean;
+    background?: boolean;
+  }) {
     if (this.tool) this.hideOverlay();
     if (this.capture && !this.capture.readonly)
       throw new Error('UNFINISHED_COMMENT: Save or cancel the area annotation first.');
@@ -221,15 +246,7 @@ export class BrowserManager {
     }
     const partition = browserPartition(args.projectId);
     const projectSession = session.fromPartition(partition);
-    if (!this.downloadGuards.has(partition)) {
-      const listener = (event: Electron.Event) => event.preventDefault();
-      projectSession.on('will-download', listener);
-      this.downloadGuards.set(partition, { session: projectSession, listener });
-    }
-    projectSession.setPermissionRequestHandler((_contents, _permission, callback) =>
-      callback(false),
-    );
-    projectSession.setPermissionCheckHandler(() => false);
+    this.configureSession(partition, projectSession);
     const view = new WebContentsView({
       webPreferences: {
         session: projectSession,
@@ -249,6 +266,7 @@ export class BrowserManager {
       url,
       title: url,
       loading: true,
+      zoomFactor: 1,
       error: null,
       canGoBack: false,
       canGoForward: false,
@@ -262,6 +280,8 @@ export class BrowserManager {
       entries: new Map(),
       annotations: [],
       navigationEpoch: 0,
+      gestureAt: 0,
+      grants: new Set(),
     };
     this.tabs.set(state.id, internal);
     contents.once('destroyed', () => this.unregisterTab(internal));
@@ -285,7 +305,38 @@ export class BrowserManager {
     contents.on('will-redirect', guard);
     contents.on('will-frame-navigate', (event) => guard(event, event.url));
     contents.on('will-attach-webview', (event) => event.preventDefault());
-    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    contents.on('before-mouse-event', (_event, input) => {
+      if (input.type === 'mouseDown' || input.type === 'mouseUp') internal.gestureAt = Date.now();
+    });
+    contents.on('before-input-event', (_event, input) => {
+      if (input.type === 'keyDown') internal.gestureAt = Date.now();
+    });
+    contents.setWindowOpenHandler((details) => {
+      const gesture = Date.now() - internal.gestureAt < 1000;
+      internal.gestureAt = 0;
+      if (gesture && !details.postBody) {
+        try {
+          const target = browserUrl(details.url);
+          const background =
+            details.disposition === 'background-tab' || this.activeTabId !== state.id;
+          void this.open({
+            artifactId: state.artifactId,
+            projectId: state.projectId,
+            url: target,
+            newTab: true,
+            background,
+          })
+            .then((tab) => this.hooks.onTabOpened?.(tab, background))
+            .catch((error) => {
+              state.error = String(error);
+              this.hooks.onChange();
+            });
+        } catch {
+          /* Privileged URLs never reach a native view. */
+        }
+      }
+      return { action: 'deny' };
+    });
     contents.on('did-start-loading', () => {
       ++internal.navigationEpoch;
       if (this.activeTabId === state.id) this.clearMarkers();
@@ -295,6 +346,12 @@ export class BrowserManager {
     contents.on('did-stop-loading', update);
     contents.on('did-start-navigation', (event) => {
       if (!event.isMainFrame) return;
+      if (Date.now() - internal.gestureAt < 1000) internal.downloadNavigation = event.url;
+      try {
+        if (new URL(event.url).origin !== new URL(state.url).origin) internal.grants.clear();
+      } catch {
+        internal.grants.clear();
+      }
       ++internal.navigationEpoch;
       if (this.activeTabId === state.id) this.clearMarkers();
       // A live tool has no snapshot yet. Routers may replace scroll metadata in
@@ -306,6 +363,7 @@ export class BrowserManager {
       internal.documentId = randomUUID();
       internal.entries.clear();
       state.url = current;
+      internal.downloadNavigation = undefined;
       update();
     });
     contents.on('did-navigate-in-page', (_event, current, mainFrame) => {
@@ -334,7 +392,7 @@ export class BrowserManager {
       state.loading = false;
       this.hooks.onChange();
     });
-    this.select(state.id);
+    if (!args.background) this.select(state.id);
     void this.refreshAnnotations().catch(() => {});
     // Publication/show_content does not focus the window or remote web contents.
     void contents.loadURL(url).catch((error: Error) => {
@@ -347,8 +405,149 @@ export class BrowserManager {
     return { ...state };
   }
 
+  private configureSession(partition: string, projectSession: Electron.Session) {
+    if (this.downloadGuards.has(partition)) return;
+    const listener = (
+      event: Electron.Event,
+      item: Electron.DownloadItem,
+      contents: WebContents,
+    ) => {
+      const tab = [...this.tabs.values()].find((value) => value.contents === contents);
+      if (
+        !tab ||
+        this.closed ||
+        this.activeTabId !== tab.state.id ||
+        (Date.now() - tab.gestureAt > 1000 &&
+          !item.getURLChain().includes(tab.downloadNavigation ?? ''))
+      ) {
+        event.preventDefault();
+        return;
+      }
+      tab.gestureAt = 0;
+      tab.downloadNavigation = undefined;
+      const record: { id: string; tabId: string; filename: string; status: string; path?: string } =
+        {
+          id: randomUUID(),
+          tabId: tab.state.id,
+          filename: item.getFilename(),
+          status: 'choosing',
+        };
+      this.downloads.push(record);
+      this.hooks.onChange();
+      // Choose synchronously inside will-download: returning without setSavePath
+      // would allow Electron's implicit download dialog to race the trusted one.
+      try {
+        const path = dialog.showSaveDialogSync(this.window, {
+          title: 'Save download',
+          defaultPath: item.getFilename(),
+        });
+        if (!path || this.closed || contents.isDestroyed()) {
+          record.status = 'cancelled';
+          event.preventDefault();
+        } else {
+          record.path = path;
+          record.status = 'downloading';
+          item.setSavePath(path);
+          this.downloadItems.set(item, tab.state.projectId);
+          item.on('updated', (_event, state) => {
+            record.status = state === 'interrupted' ? 'interrupted' : 'downloading';
+            if (!this.closed) this.hooks.onChange();
+          });
+          item.once('done', (_event, state) => {
+            this.downloadItems.delete(item);
+            record.status = state;
+            if (!this.closed) this.hooks.onChange();
+          });
+        }
+      } catch {
+        record.status = 'interrupted';
+        event.preventDefault();
+      }
+      if (!this.closed) this.hooks.onChange();
+    };
+    projectSession.on('will-download', listener);
+    this.downloadGuards.set(partition, { session: projectSession, listener });
+    projectSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
+      const tab = [...this.tabs.values()].find((value) => value.contents === contents);
+      if (!tab || !details.isMainFrame) return false;
+      const origin = new URL(tab.state.url).origin;
+      if (requestingOrigin !== origin) return false;
+      const capability = permission === 'media' ? details.mediaType : permission;
+      return Boolean(capability && tab.grants.has(origin + ':' + capability));
+    });
+    projectSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+      const tab = [...this.tabs.values()].find((value) => value.contents === contents);
+      const media = 'mediaTypes' in details ? details.mediaTypes : undefined;
+      const capabilities =
+        permission === 'media' ? media : permission === 'geolocation' ? ['geolocation'] : undefined;
+      if (
+        !tab ||
+        this.closed ||
+        this.activeTabId !== tab.state.id ||
+        !details.isMainFrame ||
+        !capabilities?.length
+      )
+        return callback(false);
+      let origin: string;
+      try {
+        origin = new URL(browserUrl(details.requestingUrl)).origin;
+      } catch {
+        return callback(false);
+      }
+      if (origin !== new URL(tab.state.url).origin) return callback(false);
+      if (capabilities.every((capability) => tab.grants.has(origin + ':' + capability)))
+        return callback(true);
+      const epoch = tab.navigationEpoch;
+      void dialog
+        .showMessageBox(this.window, {
+          type: 'question',
+          message: 'Allow website permission?',
+          detail:
+            origin +
+            ' requests ' +
+            capabilities
+              .map((value) =>
+                value === 'video' ? 'camera' : value === 'audio' ? 'microphone' : value,
+              )
+              .join(', ') +
+            '. Permission lasts only in this tab until leaving this origin.',
+          buttons: ['Allow', 'Deny'],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        })
+        .then((result) => {
+          const allowed =
+            result.response === 0 &&
+            !this.closed &&
+            !contents.isDestroyed() &&
+            this.tabs.get(tab.state.id) === tab &&
+            tab.navigationEpoch === epoch;
+          if (allowed)
+            for (const capability of capabilities) tab.grants.add(origin + ':' + capability);
+          callback(allowed);
+        })
+        .catch(() => callback(false));
+    });
+  }
+
+  async clearProjectProfile(projectId: string) {
+    await this.finishComment();
+    const tabs = [...this.tabs.values()].filter((tab) => tab.state.projectId === projectId);
+    const saved = tabs.map((tab) => ({ ...tab.state }));
+    for (const tab of tabs) {
+      if (await this.closeTab(tab)) return { cancelled: true, tabs: saved };
+    }
+    const profile = session.fromPartition(browserPartition(projectId));
+    for (const [item, owner] of this.downloadItems) if (owner === projectId) item.cancel();
+    await profile.clearStorageData();
+    await profile.clearCache();
+    return { cancelled: false, tabs: saved };
+  }
+
   private unregisterTab(tab: InternalTab) {
     if (this.tabs.get(tab.state.id) !== tab) return;
+    tab.grants.clear();
     this.tabs.delete(tab.state.id);
     if (!this.window.isDestroyed()) this.window.contentView.removeChildView(tab.view);
     ++tab.navigationEpoch;
@@ -459,7 +658,18 @@ export class BrowserManager {
 
   async command(args: {
     tabId: string;
-    action: 'back' | 'forward' | 'reload' | 'navigate' | 'close' | 'annotate';
+    action:
+      | 'back'
+      | 'forward'
+      | 'reload'
+      | 'stop'
+      | 'zoom'
+      | 'zoom-reset'
+      | 'external'
+      | 'navigate'
+      | 'close'
+      | 'annotate';
+    zoomFactor?: number;
     url?: string;
   }) {
     const tab = this.tabs.get(args.tabId);
@@ -485,8 +695,27 @@ export class BrowserManager {
       case 'reload':
         contents.reload();
         break;
+      case 'stop':
+        contents.stop();
+        break;
+      case 'zoom': {
+        const factor = args.zoomFactor;
+        if (typeof factor !== 'number' || !Number.isFinite(factor) || factor < 0.5 || factor > 2)
+          throw new Error('INVALID_ZOOM: Choose a scale between 50% and 200%.');
+        contents.setZoomFactor(factor);
+        tab.state.zoomFactor = contents.getZoomFactor();
+        break;
+      }
+      case 'zoom-reset':
+        contents.setZoomFactor(1);
+        tab.state.zoomFactor = 1;
+        break;
+      case 'external':
+        await shell.openExternal(browserUrl(contents.getURL()));
+        break;
       case 'navigate':
-        await contents.loadURL(browserUrl(args.url ?? ''));
+        tab.downloadNavigation = browserUrl(args.url ?? '');
+        await contents.loadURL(tab.downloadNavigation);
         break;
       case 'close': {
         const cancelled = await this.closeTab(tab);
@@ -664,6 +893,7 @@ export class BrowserManager {
     if (!tab) throw new Error('BROWSER_TAB_NOT_FOUND');
     this.select(tabId);
     if (this.bounds.width < 1 || this.bounds.height < 1) throw new Error('BROWSER_NOT_VISIBLE');
+    tab.state.error = null;
     const generation = ++this.captureGeneration;
     const revisionId = await this.hooks.getRevision?.(tab.state.artifactId);
     if (this.hooks.getRevision && !revisionId)
@@ -689,6 +919,43 @@ export class BrowserManager {
   }
 
   private async captureSelection(value: unknown) {
+    const generation = this.captureGeneration;
+    const tab = this.tool && this.tabs.get(this.tool.tabId);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const draft = await Promise.race([
+        this.captureSelectionWithinDeadline(value),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            if (generation === this.captureGeneration) {
+              if (tab) tab.state.error = 'Capture timed out. Select Annotate and try again.';
+              ++this.captureGeneration;
+              this.hideOverlay();
+            }
+            reject(new CaptureChangedError('Capture timed out.'));
+          }, runtimeLimits().captureTimeoutMs);
+        }),
+      ]);
+      // The capture deadline ends before beginning an acknowledged private write.
+      // Timing out an in-flight write would create an unknown-result/late-clear race.
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      if (generation !== this.captureGeneration || this.closed)
+        throw new CaptureChangedError('Capture was cancelled.');
+      this.tool = null;
+      this.capture = draft;
+      await this.hooks.onDraft?.({ ...draft });
+      if (generation !== this.captureGeneration || this.closed)
+        throw new CaptureChangedError('Capture was cancelled.');
+      await this.showOverlay();
+      this.hooks.onChange();
+      return { captureId: draft.capture.id };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async captureSelectionWithinDeadline(value: unknown) {
     if (!this.tool) throw new Error('ANNOTATE_TOOL_NOT_ACTIVE');
     const input = z
       .object({
@@ -799,18 +1066,15 @@ export class BrowserManager {
       break;
     }
     if (!capture) throw new CaptureChangedError('The page is still updating.');
-    this.tool = null;
-    this.capture = {
+    if (generation !== this.captureGeneration || this.closed)
+      throw new CaptureChangedError('Capture was cancelled.');
+    return {
       artifactId: tab.state.artifactId,
       tabId: tool.tabId,
       revisionId: tool.revisionId,
       capture,
       comment: '',
     };
-    await this.hooks.onDraft?.({ ...this.capture });
-    await this.showOverlay();
-    this.hooks.onChange();
-    return { captureId: capture.id };
   }
 
   setAnnotations(artifactId: string, annotations: BrowserMarkerAnnotation[]) {
@@ -1145,8 +1409,15 @@ export class BrowserManager {
     this.activeTabId = null;
     this.capture = null;
     this.tool = null;
-    for (const guard of this.downloadGuards.values())
+    for (const item of this.downloadItems.keys()) item.cancel();
+    this.downloadItems.clear();
+    for (const guard of this.downloadGuards.values()) {
+      guard.session.setPermissionRequestHandler((_contents, _permission, callback) =>
+        callback(false),
+      );
+      guard.session.setPermissionCheckHandler(() => false);
       guard.session.removeListener('will-download', guard.listener);
+    }
     this.downloadGuards.clear();
     if (this.overlayContents && !this.overlayContents.isDestroyed()) this.overlayContents.close();
   }

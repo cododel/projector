@@ -4,6 +4,8 @@ import mermaid from 'mermaid';
 import type { DocumentNode, WidgetDefinition } from '../document/types';
 import './style.css';
 import { markerGeometry, commentPosition } from '../shared/annotation-marker';
+import { GuideViewer } from './GuideViewer';
+import type { GuideResponse } from '../guide';
 import { CommentComposer, type CommentComposerHandle } from './CommentComposer';
 import type { WorkspaceSnapshot } from '../shared/workspace';
 import { captureTextSelection, anchorRange } from './anchors';
@@ -43,6 +45,7 @@ interface Annotation extends SelectionData {
 interface Project {
   id: string;
   path: string;
+  available?: boolean;
 }
 interface Artifact {
   id: string;
@@ -73,6 +76,12 @@ interface Snapshot {
   annotations?: Annotation[];
 }
 interface DocumentResult {
+  migrationSummary?: {
+    retained: string[];
+    added: string[];
+    requiresResponse: string[];
+    removed: string[];
+  };
   editor?: { selection: SelectionData; comment: string; annotationId?: string } | null;
   revision: { id: string; blocks: DocumentNode[]; widgets: WidgetDefinition[] } | null;
   preview?: { blocks: DocumentNode[]; widgets: WidgetDefinition[] };
@@ -97,14 +106,19 @@ interface BrowserTab {
   error: string | null;
   canGoBack: boolean;
   canGoForward: boolean;
+  zoomFactor: number;
 }
 interface BrowserSnapshot {
   tabs: BrowserTab[];
   activeTabId: string | null;
   annotating: boolean;
+  downloads?: { id: string; tabId: string; filename: string; status: string }[];
 }
 interface Bridge {
   invoke(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  onOperationStatus?(
+    callback: (status: { waiting: boolean; operation?: string }) => void,
+  ): () => void;
   onRefresh(callback: () => void): (() => void) | void;
 }
 const isSurface = new URLSearchParams(window.location.search).get('surface') === '1';
@@ -247,8 +261,24 @@ function App(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
   const [projectId, setProjectId] = useState('');
   const [error, setError] = useState('');
+  const [waiting, setWaiting] = useState(false);
+  useEffect(() => bridge.onOperationStatus?.((value) => setWaiting(value.waiting)), []);
   const [busy, setBusy] = useState(false);
   const [setup, setSetup] = useState<import('../shared/protocol').McpSetup | null>(null);
+  const guideBrowser = useRef<string | null>(null);
+  const guideFocus = useRef<HTMLElement | null>(null);
+  const revokeIntent = useRef<Record<string, unknown> | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [runtimeNotice, setRuntimeNotice] = useState(false);
+  const guideLoad = useCallback(
+    (input: { topic?: string; reference?: string }) => invoke<GuideResponse>('guide', input),
+    [],
+  );
+  useEffect(() => {
+    void invoke<{ dismissed: boolean }>('runtimeNotice')
+      .then((value) => setRuntimeNotice(!value.dismissed))
+      .catch((error) => setError(message(error)));
+  }, []);
   const [notification, setNotification] = useState('');
   const [document, setDocument] = useState<DocumentResult | null>(null);
   const [editing, setEditing] = useState<Annotation | null>(null);
@@ -285,7 +315,7 @@ function App(): React.JSX.Element {
   );
   const [retryTransition, setRetryTransition] = useState<(() => Promise<void>) | null>(null);
   const frame = useRef<HTMLIFrameElement>(null);
-  const saveIntent = useRef<Record<string, unknown> | null>(null);
+  const saveIntents = useRef(new Map<string, Record<string, unknown>>());
   const browserArea = useRef<HTMLDivElement>(null);
   const homeAddress = useRef<HTMLInputElement>(null);
   const restoredEditing = useRef<string | null>(null);
@@ -298,9 +328,12 @@ function App(): React.JSX.Element {
   const readView = useCallback(async (isCurrent: () => boolean) => {
     const next = await invoke<Snapshot>('snapshot');
     if (!isCurrent()) return;
-    const loaded = next.selected
-      ? await invoke<DocumentResult>('getDocument', next.selected)
-      : null;
+    const selectionExists =
+      next.selected && next.artifacts.some((a) => a.id === next.selected!.artifactId);
+    const loaded =
+      selectionExists && next.selected
+        ? await invoke<DocumentResult>('getDocument', next.selected)
+        : null;
     if (!isCurrent()) return;
     const nextBrowser = await invoke<BrowserSnapshot>('browserSnapshot');
     if (!isCurrent()) return;
@@ -486,7 +519,11 @@ function App(): React.JSX.Element {
     window.document.addEventListener('pointerdown', outside);
     return () => window.document.removeEventListener('pointerdown', outside);
   });
-  async function transition(callback: () => Promise<unknown>, retry = false): Promise<void> {
+  async function transition(
+    callback: () => Promise<unknown>,
+    retry = false,
+    backgroundRefresh = false,
+  ): Promise<void> {
     if (transitioning.current) return;
     transitioning.current = true;
     const resume = refreshQueue.pause();
@@ -497,21 +534,38 @@ function App(): React.JSX.Element {
       setBusy(true);
       await callback();
       resume();
-      await reload();
+      if (backgroundRefresh) refreshQueue.invalidate();
+      else await reload();
       setRetryTransition(null);
     } catch (error) {
       setError(message(error));
-      setRetryTransition(() => () => transition(callback, true));
+      setRetryTransition(() => () => transition(callback, true, backgroundRefresh));
     } finally {
       resume();
       transitioning.current = false;
       setBusy(false);
     }
   }
-  const tabCommand = (action: string, tabId?: string) =>
-    transition(() =>
-      invoke('workspaceCommand', { artifactId: selected?.artifactId, action, tabId }),
+  const tabCommand = (action: string, tabId?: string) => {
+    const destination = planTabs?.tabs.find((tab) => tab.id === tabId);
+    const samePlanBrowserSelection =
+      action === 'select' && activeTab?.kind === 'browser' && destination?.kind === 'browser';
+    return transition(
+      async () => {
+        const result = await invoke<WorkspaceSnapshot>('workspaceCommand', {
+          artifactId: selected?.artifactId,
+          action,
+          tabId,
+        });
+        // This is acknowledged local metadata, never an optimistic persistent write.
+        // A paused refresh invalidates older reads; later publications remain queued.
+        if (samePlanBrowserSelection && result.plans) setWorkspace(result);
+        return result;
+      },
+      false,
+      samePlanBrowserSelection,
     );
+  };
   async function toggleSidebar(side: 'left' | 'right'): Promise<void> {
     const previous = workspace.layout ?? { leftSidebarVisible: true, rightSidebarVisible: true };
     const layout = {
@@ -809,7 +863,9 @@ function App(): React.JSX.Element {
             <section key={item.id}>
               <button
                 className={`project-row ${item.id === projectId ? 'current' : ''}`}
-                title={item.path}
+                title={
+                  item.available === false ? 'Project folder unavailable · ' + item.path : item.path
+                }
                 aria-expanded={!collapsed.has(item.id)}
                 onClick={() =>
                   setCollapsed((previous) => {
@@ -824,6 +880,30 @@ function App(): React.JSX.Element {
                 <Icon name="folder" />
                 <span>{item.path.split('/').filter(Boolean).at(-1)}</span>
               </button>
+              {!collapsed.has(item.id) && (
+                <div className="project-actions">
+                  {item.available === false && (
+                    <>
+                      <small>Folder unavailable</small>
+                      <button
+                        onClick={() =>
+                          void transition(() => invoke('locateProject', { projectId: item.id }))
+                        }
+                      >
+                        Locate folder
+                      </button>
+                    </>
+                  )}
+                  <button
+                    aria-label={`Remove ${item.path.split('/').at(-1)} from list`}
+                    onClick={() =>
+                      void transition(() => invoke('removeProject', { projectId: item.id }))
+                    }
+                  >
+                    Remove from list
+                  </button>
+                </div>
+              )}
               {!collapsed.has(item.id) &&
                 snapshot.artifacts
                   .filter((a) => a.projectId === item.id)
@@ -891,6 +971,19 @@ function App(): React.JSX.Element {
           </button>
         </div>
         <div className="sidebar-bottom">
+          <button
+            className="subtle full"
+            onClick={() =>
+              void transition(async () => {
+                guideBrowser.current = activeBrowser?.id ?? null;
+                guideFocus.current = window.document.activeElement as HTMLElement;
+                await invoke('browserSelect', { tabId: null });
+                setGuideOpen(true);
+              })
+            }
+          >
+            Blueprint guide
+          </button>
           <span className="runtime-dot" /> Local runtime active
           <button
             className="subtle full"
@@ -901,6 +994,29 @@ function App(): React.JSX.Element {
         </div>
       </aside>
       <main className="workspace">
+        {waiting && (
+          <div className="runtime-notice" role="status">
+            Waiting for local storage. The operation may complete; do not repeat it until its result
+            is reconciled.
+          </div>
+        )}
+        {runtimeNotice && (
+          <div className="runtime-notice" role="status">
+            <span>
+              Closing this window keeps the local runtime running. Use Quit Blueprint to stop it.
+            </span>
+            <button
+              onClick={() =>
+                void action(async () => {
+                  await invoke('dismissRuntimeNotice');
+                  setRuntimeNotice(false);
+                })
+              }
+            >
+              Got it
+            </button>
+          </div>
+        )}
         {error && (
           <div role="alert" className="error-banner">
             {error}
@@ -1075,14 +1191,47 @@ function App(): React.JSX.Element {
                     →
                   </button>
                   <button
-                    aria-label="Reload"
+                    aria-label={activeBrowser.loading ? 'Stop' : 'Reload'}
                     onClick={() =>
                       void transition(() =>
-                        invoke('browserCommand', { tabId: activeBrowser.id, action: 'reload' }),
+                        invoke('browserCommand', {
+                          tabId: activeBrowser.id,
+                          action: activeBrowser.loading ? 'stop' : 'reload',
+                        }),
                       )
                     }
                   >
-                    ↻
+                    {activeBrowser.loading ? '■' : '↻'}
+                  </button>
+                  <select
+                    aria-label="Browser zoom"
+                    value={activeBrowser.zoomFactor ?? 1}
+                    onChange={(event) =>
+                      void transition(() =>
+                        invoke('browserCommand', {
+                          tabId: activeBrowser.id,
+                          action: 'zoom',
+                          zoomFactor: Number(event.target.value),
+                        }),
+                      )
+                    }
+                  >
+                    {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((factor) => (
+                      <option key={factor} value={factor}>
+                        {factor === 1 ? '100% · Reset' : Math.round(factor * 100) + '%'}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    aria-label="Open page in external browser"
+                    title="Open externally · sign-in remains in that browser"
+                    onClick={() =>
+                      void action(() =>
+                        invoke('browserCommand', { tabId: activeBrowser.id, action: 'external' }),
+                      )
+                    }
+                  >
+                    ↗
                   </button>
                   <form
                     onSubmit={(e) => {
@@ -1211,6 +1360,20 @@ function App(): React.JSX.Element {
         {artifact && (
           <details className="artifact-properties">
             <summary>Artifact properties</summary>
+            <p className="muted">
+              Some sign-in providers block embedded browsers. Open the page externally;
+              authentication is not imported back.
+            </p>
+            <button
+              className="secondary full"
+              onClick={() =>
+                void transition(() =>
+                  invoke('browserClearProfile', { projectId: artifact.projectId }),
+                )
+              }
+            >
+              Clear project browser profile
+            </button>
             <small>Origin: {artifact.originSession.harness} · availability unverified</small>
             <button
               className="secondary full"
@@ -1218,6 +1381,39 @@ function App(): React.JSX.Element {
             >
               Copy session link
             </button>
+          </details>
+        )}
+        {document?.migrationSummary && artifact && (artifact.revisions?.length ?? 0) > 1 && (
+          <details className="migration-summary">
+            <summary>Answers in this version</summary>
+            {(['retained', 'added', 'requiresResponse', 'removed'] as const).map((key) => (
+              <p key={key}>
+                <strong>
+                  {
+                    {
+                      retained: 'Retained',
+                      added: 'New',
+                      requiresResponse: 'Requires response',
+                      removed: 'Removed',
+                    }[key]
+                  }
+                </strong>
+                : {document.migrationSummary![key].join(', ') || 'None'}
+              </p>
+            ))}
+            <small>
+              Authored defaults are not confirmed answers. Previous versions retain their state.
+            </small>
+          </details>
+        )}
+        {(browser.downloads?.length ?? 0) > 0 && (
+          <details className="package-history">
+            <summary>Downloads</summary>
+            {browser.downloads?.map((download) => (
+              <p key={download.id} role="status">
+                {download.filename} · {download.status}
+              </p>
+            ))}
           </details>
         )}
         <div className="section-label spaced">
@@ -1323,21 +1519,23 @@ function App(): React.JSX.Element {
             }
             onClick={() =>
               void action(async () => {
-                saveIntent.current ??= {
+                const key = JSON.stringify(selected);
+                const intent = saveIntents.current.get(key) ?? {
                   ...selected,
                   operationId: crypto.randomUUID(),
                   expectedLatestSavedStateId: document?.latestSavedStateId ?? null,
                 };
+                saveIntents.current.set(key, intent);
                 try {
                   const result = await invoke<{ id: string; notification: string }>(
                     'saveState',
-                    saveIntent.current,
+                    intent,
                   );
-                  saveIntent.current = null;
+                  saveIntents.current.delete(key);
                   setNotification(result.notification);
                 } catch (e) {
                   if (/STATE_CONFLICT|INVALID_STATE|UNFINISHED_ANNOTATION/.test(message(e)))
-                    saveIntent.current = null;
+                    saveIntents.current.delete(key);
                   throw e;
                 }
               })
@@ -1347,7 +1545,7 @@ function App(): React.JSX.Element {
               ? 'Working…'
               : savingCount > 0
                 ? 'Autosaving…'
-                : saveIntent.current
+                : saveIntents.current.has(JSON.stringify(selected))
                   ? 'Retry Save'
                   : 'Save'}
           </button>
@@ -1376,12 +1574,24 @@ function App(): React.JSX.Element {
                   key.startsWith(`${selected?.artifactId}:`),
                 ) ||
                 Boolean(editing) ||
-                document?.approved ||
-                document?.dirty
+                (!document?.approved && document?.dirty)
               }
-              onClick={() => void action(() => invoke('approve', selected))}
+              onClick={() =>
+                void action(async () => {
+                  if (document?.approved) {
+                    if (
+                      revokeIntent.current?.artifactId !== selected.artifactId ||
+                      revokeIntent.current?.revisionId !== selected.revisionId
+                    ) {
+                      revokeIntent.current = { ...selected, operationId: crypto.randomUUID() };
+                    }
+                    await invoke('revokeApproval', revokeIntent.current);
+                    revokeIntent.current = null;
+                  } else await invoke('approve', selected ?? {});
+                })
+              }
             >
-              {document?.approved ? 'This version is approved' : 'Approve this version'}
+              {document?.approved ? 'Revoke approval' : 'Approve this version'}
             </button>
           )}
           <small>Approval records agreement. It does not authorize implementation.</small>
@@ -1422,6 +1632,18 @@ function App(): React.JSX.Element {
           </details>
         )}
       </aside>
+      {guideOpen && (
+        <GuideViewer
+          load={guideLoad}
+          close={() => {
+            setGuideOpen(false);
+            const tabId = guideBrowser.current;
+            guideBrowser.current = null;
+            if (tabId) void action(() => invoke('browserSelect', { tabId }));
+            guideFocus.current?.focus();
+          }}
+        />
+      )}
       {setup && (
         <div className="modal-backdrop">
           <section className="modal" role="dialog" aria-modal="true" aria-label="MCP connection">
@@ -1654,6 +1876,7 @@ function DocumentSurface(): React.JSX.Element {
     blockId: string;
   } | null>(null);
   const hoverRef = useRef<typeof hovered>(null);
+  const keyboardAreaIndex = useRef(-1);
   const gesture = useRef<{
     start: { x: number; y: number };
     end: { x: number; y: number };
@@ -1773,6 +1996,7 @@ function DocumentSurface(): React.JSX.Element {
   }, [contextPending]);
   useEffect(() => {
     if (!areaMode) return;
+    keyboardAreaIndex.current = -1;
     window.document.querySelector<HTMLElement>('.area-selection-overlay')?.focus();
     const cancel = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -2524,7 +2748,36 @@ function DocumentSurface(): React.JSX.Element {
             void finishArea();
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              const blocks = Array.from(
+                article.current?.querySelectorAll<HTMLElement>('[data-block-id]') ?? [],
+              ).filter(
+                (block) => block.getClientRects().length > 0 && !block.closest('.annotation-layer'),
+              );
+              if (!blocks.length) return;
+              keyboardAreaIndex.current =
+                (keyboardAreaIndex.current + (e.key === 'ArrowDown' ? 1 : -1) + blocks.length) %
+                blocks.length;
+              const block = blocks[keyboardAreaIndex.current];
+              block.scrollIntoView({ block: 'center' });
+              const bounds = block.getBoundingClientRect();
+              const next = {
+                x: Math.max(0, bounds.x),
+                y: Math.max(0, bounds.y),
+                width: Math.min(bounds.right, innerWidth) - Math.max(0, bounds.x),
+                height: Math.min(bounds.bottom, innerHeight) - Math.max(0, bounds.y),
+                blockId: block.dataset.blockId ?? 'document',
+              };
+              hoverRef.current = next;
+              setHovered(next);
+            } else if (e.key === 'Enter' && hoverRef.current && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              const rect = hoverRef.current;
+              const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+              gesture.current = { start: point, end: point, hover: rect };
+              void finishArea();
+            } else if (e.key === 'Escape') {
               setAreaMode(false);
               gesture.current = null;
               setAreaStart(null);
@@ -2533,7 +2786,7 @@ function DocumentSurface(): React.JSX.Element {
           }}
         >
           <span className="area-instructions">
-            Click an element or drag an area · Escape to cancel
+            Click an element or drag an area · ↑/↓ select · Enter annotate · Escape cancel
           </span>
           {hovered && !areaStart && (
             <div

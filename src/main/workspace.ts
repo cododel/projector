@@ -85,7 +85,12 @@ export class Workspace {
     if (entry.kind !== 'home') throw new Error('WORKSPACE_HOME_REQUIRED');
     entry.address = address;
   }
-  browser(artifactId: string, value: { id: string; url: string; title: string }, homeId?: string) {
+  browser(
+    artifactId: string,
+    value: { id: string; url: string; title: string },
+    homeId?: string,
+    background = false,
+  ) {
     const plan = this.plan(artifactId);
     const existing = homeId
       ? this.find(artifactId, homeId)
@@ -99,7 +104,7 @@ export class Workspace {
     };
     if (existing) plan.tabs[plan.tabs.indexOf(existing)] = entry;
     else plan.tabs.push(entry);
-    plan.activeTabId = entry.id;
+    if (!background) plan.activeTabId = entry.id;
     return entry;
   }
   select(artifactId: string, id: string) {

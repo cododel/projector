@@ -17,6 +17,9 @@ import { connect } from 'node:net';
 import { createInterface } from 'node:readline';
 import { readFile, mkdir, unlink } from 'node:fs/promises';
 import type { RpcResponse } from '../shared/protocol';
+import { runtimeLimits } from '../shared/runtime-limits';
+import { getGuide } from '../guide';
+import { atomicJson } from '../runtime/files';
 import { getMcpSetup } from './mcp-setup';
 import { BrowserManager } from './browser';
 import { Workspace } from './workspace';
@@ -67,15 +70,25 @@ let connection: ReturnType<typeof connect> | null = null;
 let quitting = false;
 let browser: BrowserManager | null = null;
 let browserDraftArtifact: string | null = null;
-const requests = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+const requests = new Map<
+  string,
+  {
+    resolve: (v: unknown) => void;
+    reject: (e: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }
+>();
 function failRpcRequests(): void {
-  for (const pending of requests.values())
+  for (const pending of requests.values()) {
+    clearTimeout(pending.timer);
     pending.reject(
       new Error(
         'UNKNOWN_RESULT: Blueprint runtime disconnected. An operation may have completed; reconcile before retrying. Restart Blueprint and reconnect MCP.',
       ),
     );
+  }
   requests.clear();
+  window?.webContents.send('blueprint:operation-status', { waiting: false });
 }
 function rpc(name: string, args: unknown = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -84,7 +97,10 @@ function rpc(name: string, args: unknown = {}): Promise<unknown> {
       return;
     }
     const id = randomUUID();
-    requests.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      window?.webContents.send('blueprint:operation-status', { waiting: true, operation: name });
+    }, 10000);
+    requests.set(id, { resolve, reject, timer });
     connection.write(
       JSON.stringify({ id, method: 'operator', params: { name, args }, token }) + '\n',
       (error) => {
@@ -165,6 +181,10 @@ function createWindow(background = false) {
           },
         }));
     },
+    onTabOpened: (tab, background) => {
+      workspace.browser(tab.artifactId, tab, undefined, background);
+      void workspace.save().then(workspaceRefresh).catch(console.error);
+    },
     onMarkerSelect: ({ artifactId, annotationId }) =>
       showCapturedAnnotation(artifactId, annotationId),
     getRevision: async (artifactId) => {
@@ -200,6 +220,25 @@ function createWindow(background = false) {
       });
       return z.object({ id: z.string(), number: z.number().int().positive() }).parse(result);
     },
+  });
+  const recoverShell = async (reason: string) => {
+    const target = window;
+    if (!target || target.isDestroyed() || quitting || isBackgroundE2E()) return;
+    const answer = await dialog.showMessageBox(target, {
+      type: 'warning',
+      message: 'Blueprint view stopped responding',
+      detail: `${reason}. Reload restores confirmed local work. An interrupted Save must be reconciled before retrying.`,
+      buttons: ['Cancel', 'Reload view'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (answer.response === 1 && !target.isDestroyed()) target.webContents.reload();
+  };
+  window.webContents.on('render-process-gone', (_event, details) => {
+    void recoverShell(details.reason);
+  });
+  window.on('unresponsive', () => {
+    void recoverShell('Renderer unresponsive');
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
@@ -263,6 +302,7 @@ void app
           label: 'Blueprint',
           submenu: [
             { role: 'about' },
+            { label: 'Closing a window keeps Blueprint runtime running', enabled: false },
             { type: 'separator' },
             { role: 'quit', label: 'Quit Blueprint' },
           ],
@@ -398,9 +438,16 @@ void app
       const response = JSON.parse(line) as RpcResponse;
       const pending = requests.get(response.id);
       if (!pending) return;
+      clearTimeout(pending.timer);
       requests.delete(response.id);
+      window?.webContents.send('blueprint:operation-status', { waiting: false });
       if (response.error)
-        pending.reject(new Error(response.error.code + ': ' + response.error.message));
+        pending.reject(
+          Object.assign(new Error(response.error.code + ': ' + response.error.message), {
+            code: response.error.code,
+            details: response.error.details,
+          }),
+        );
       else pending.resolve(response.result);
     });
     ipcMain.handle('blueprint:invoke', async (event, name: string, args: unknown) => {
@@ -437,10 +484,25 @@ void app
           })
           .strict()
           .parse(args);
-        const artifact = (await rpc('artifactProperties', { artifactId: input.artifactId })) as {
-          projectId: string;
-          latestRevision: string | null;
-        };
+        // Selecting an already registered native page needs no document/manifest scan.
+        // Lazy restoration and opening URLs still resolve the artifact from the runtime.
+        const existing =
+          input.action === 'select' && input.tabId
+            ? workspace.find(input.artifactId, input.tabId)
+            : null;
+        const liveSelection =
+          existing?.kind === 'browser' &&
+          browser
+            ?.snapshot()
+            .tabs.some(
+              (tab) => tab.id === existing.nativeId && tab.artifactId === input.artifactId,
+            );
+        const artifact = liveSelection
+          ? null
+          : ((await rpc('artifactProperties', { artifactId: input.artifactId })) as {
+              projectId: string;
+              latestRevision: string | null;
+            });
         if (input.action !== 'address') await browser?.finishComment();
         const previous = workspace.snapshot();
         // Detect metadata write failures before destroying a site's live view.
@@ -455,7 +517,7 @@ void app
             workspace.address(input.artifactId, entry.id, z.string().parse(input.url));
           if (input.action === 'select') await selectWorkspaceTab(input.artifactId, entry.id);
           if (input.action === 'open') {
-            if (!artifact.latestRevision)
+            if (!artifact?.latestRevision)
               throw new Error('Publish the plan before opening browser content.');
             if (entry.kind !== 'home' || !browser) throw new Error('WORKSPACE_HOME_REQUIRED');
             const native = await browser.open({
@@ -530,6 +592,26 @@ void app
           await workspace.save();
           return native;
         }
+        if (name === 'browserClearProfile') {
+          const projectId = z.string().parse(input.projectId);
+          await browser.finishComment();
+          const answer = await dialog.showMessageBox(window!, {
+            type: 'warning',
+            message: 'Clear browser data for this project?',
+            detail:
+              'Closes project pages and clears cookies, site storage and cache. You will be signed out. Plans, private work and annotation images remain.',
+            buttons: ['Cancel', 'Clear profile'],
+            defaultId: 0,
+            cancelId: 0,
+          });
+          if (answer.response !== 1) return { cancelled: true };
+          await workspace.save();
+          const result = await browser.clearProjectProfile(projectId);
+          // Native views can have closed before a later page cancels. URLs stay in workspace metadata.
+          await workspace.save();
+          workspaceRefresh();
+          return result;
+        }
         if (name === 'browserSelect') {
           browser.select(z.string().nullable().parse(input.tabId));
           return browser.snapshot();
@@ -545,7 +627,19 @@ void app
           const command = z
             .object({
               tabId: z.string(),
-              action: z.enum(['back', 'forward', 'reload', 'navigate', 'close', 'annotate']),
+              action: z.enum([
+                'back',
+                'forward',
+                'reload',
+                'stop',
+                'zoom',
+                'zoom-reset',
+                'external',
+                'navigate',
+                'close',
+                'annotate',
+              ]),
+              zoomFactor: z.number().min(0.5).max(2).optional(),
               url: z.string().optional(),
             })
             .strict()
@@ -631,7 +725,16 @@ void app
         await window.webContents.executeJavaScript(
           'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))',
         );
-        const image = await window.webContents.capturePage(bounds);
+        let captureTimer: ReturnType<typeof setTimeout> | undefined;
+        const image = await Promise.race([
+          window.webContents.capturePage(bounds),
+          new Promise<never>((_resolve, reject) => {
+            captureTimer = setTimeout(
+              () => reject(new Error('CAPTURE_TIMEOUT: Capture exceeded its time limit')),
+              runtimeLimits().captureTimeoutMs,
+            );
+          }),
+        ]).finally(() => clearTimeout(captureTimer));
         return {
           id: randomUUID(),
           png: image.toPNG().toString('base64'),
@@ -646,10 +749,83 @@ void app
           },
         };
       }
+      if (name === 'guide')
+        return getGuide(
+          z
+            .object({ topic: z.string().optional(), reference: z.string().optional() })
+            .strict()
+            .parse(args ?? {}),
+        );
+      if (name === 'runtimeNotice') {
+        try {
+          return JSON.parse(
+            await readFile(join(app.getPath('userData'), 'runtime-notice.json'), 'utf8'),
+          );
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          return { dismissed: false };
+        }
+      }
+      if (name === 'dismissRuntimeNotice') {
+        await atomicJson(join(app.getPath('userData'), 'runtime-notice.json'), { dismissed: true });
+        return { dismissed: true };
+      }
       if (name === 'chooseProject') {
         const result = await dialog.showOpenDialog(window!, { properties: ['openDirectory'] });
         if (result.canceled) return null;
-        return rpc('register', { path: result.filePaths[0] });
+        const path = result.filePaths[0];
+        try {
+          return await rpc('register', { path });
+        } catch (error) {
+          const conflict = error as Error & {
+            code?: string;
+            details?: { projectId?: string; originalPath?: string };
+          };
+          if (conflict.code !== 'PROJECT_ID_CONFLICT' || !conflict.details?.projectId) throw error;
+          const answer = await dialog.showMessageBox(window!, {
+            type: 'question',
+            message: 'This folder copies an existing Blueprint project',
+            detail: `Registered original: ${conflict.details.originalPath}. A new empty project preserves copied history in a backup folder and imports no private work.`,
+            buttons: ['Cancel', 'Open original', 'Create empty project'],
+            defaultId: 0,
+            cancelId: 0,
+          });
+          if (answer.response === 1) {
+            await rpc('register', { path: conflict.details.originalPath });
+            return rpc('selectProject', { projectId: conflict.details.projectId });
+          }
+          if (answer.response === 2)
+            return rpc('registerCopy', { path, projectId: conflict.details.projectId });
+          return null;
+        }
+      }
+      if (name === 'locateProject') {
+        const projectId = z.object({ projectId: z.string() }).parse(args).projectId;
+        const result = await dialog.showOpenDialog(window!, { properties: ['openDirectory'] });
+        if (result.canceled) return null;
+        return rpc('relocateProject', { projectId, path: result.filePaths[0] });
+      }
+      if (name === 'removeProject') {
+        const projectId = z.object({ projectId: z.string() }).parse(args).projectId;
+        const answer = await dialog.showMessageBox(window!, {
+          type: 'question',
+          message: 'Remove project from the list?',
+          detail:
+            'Project files and private work remain on disk. Choose the same folder again to restore it.',
+          buttons: ['Cancel', 'Remove from list'],
+          defaultId: 0,
+          cancelId: 0,
+        });
+        if (answer.response !== 1) return { removed: false };
+        const result = await rpc('removeProject', { projectId });
+        const currentBrowser = browser?.snapshot();
+        if (
+          currentBrowser?.tabs.some(
+            (tab) => tab.id === currentBrowser.activeTabId && tab.projectId === projectId,
+          )
+        )
+          browser?.select(null);
+        return result;
       }
       if (name === 'setup') {
         return getMcpSetup({
@@ -699,6 +875,7 @@ void app
         'deleteAnnotation',
         'submit',
         'approve',
+        'revokeApproval',
         'editing',
         'demo',
       ];

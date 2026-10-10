@@ -7,6 +7,7 @@ const background = process.env.BLUEPRINT_E2E_BACKGROUND === '1';
 
 export default defineConfig({
   testDir: 'tests/e2e',
+  testIgnore: '**/stage-performance.spec.ts',
   // Hidden scenarios have disposable app data, sockets and dynamically assigned ports.
   // Visible windows share OS focus and must remain sequential.
   fullyParallel: background,

@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdir, readFile, readdir, realpath, unlink, access } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, unlink, access, rename } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -21,6 +21,7 @@ import {
   commitDirectory,
 } from './files';
 import { BlueprintError, VERSION } from '../shared/protocol';
+import { revisionSummary } from './revision-summary';
 import { ArtifactStates, type TextAnchor, type Capture } from './artifact-state';
 import {
   canonicalString,
@@ -94,12 +95,13 @@ function digest(value: unknown) {
 }
 function isApprovedState(
   state: State,
-  approval: { stateHash: string; savedStateId?: string | null } | null,
+  approval: { stateHash?: string; savedStateId?: string | null; type?: string } | null,
   saved: { id: string } | null,
   dirty: boolean,
 ) {
   return (
     !dirty &&
+    approval?.type !== 'revoked' &&
     approval?.stateHash === digest(state) &&
     (approval?.savedStateId === undefined || approval.savedStateId === (saved?.id ?? null))
   );
@@ -132,13 +134,20 @@ export class Store {
     this.db.exec(
       'PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,path TEXT UNIQUE,recipient TEXT); CREATE TABLE IF NOT EXISTS operations(key TEXT PRIMARY KEY,hash TEXT,result TEXT)',
     );
+    if (
+      !this.db
+        .prepare('PRAGMA table_info(projects)')
+        .all()
+        .some((row) => row.name === 'removed')
+    )
+      this.db.exec('ALTER TABLE projects ADD COLUMN removed INTEGER NOT NULL DEFAULT 0');
   }
   close() {
     this.db.close();
   }
-  projects(): Project[] {
+  projects(includeRemoved = false): Project[] {
     return this.db
-      .prepare('SELECT * FROM projects')
+      .prepare(includeRemoved ? 'SELECT * FROM projects' : 'SELECT * FROM projects WHERE removed=0')
       .all()
       .map((row) => ({
         id: String(row.id),
@@ -147,14 +156,22 @@ export class Store {
       }));
   }
   project(id: string) {
-    const p = this.projects().find((p) => p.id === id);
+    const p = this.projects(true).find((p) => p.id === id);
     if (!p) throw new BlueprintError('UNKNOWN_PROJECT', 'Select a registered project');
     return p;
   }
   async register(path: string) {
     const canonical = await realpath(path);
-    const old = this.projects().find((p) => p.path === canonical);
-    if (old) return old;
+    const old = this.projects(true).find((p) => p.path === canonical);
+    if (old) {
+      const metadata = await json<{ id: string }>(
+        await inside(canonical, join(canonical, '.blueprint', 'project.json')),
+      );
+      if (metadata.id !== old.id)
+        throw new BlueprintError('PROJECT_ID_MISMATCH', 'Folder identity changed');
+      this.db.prepare('UPDATE projects SET removed=0 WHERE id=?').run(old.id);
+      return old;
+    }
     let id: string = randomUUID();
     const base = await writableInside(canonical, join(canonical, '.blueprint'));
     await mkdir(base, { recursive: true });
@@ -170,8 +187,95 @@ export class Store {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       await atomicJson(join(base, 'project.json'), { id, formatVersion: 1 });
     }
-    this.db.prepare('INSERT INTO projects VALUES(?,?,NULL)').run(id, canonical);
+    const conflict = this.projects(true).find((p) => p.id === id);
+    if (conflict)
+      throw new BlueprintError(
+        'PROJECT_ID_CONFLICT',
+        'This folder copies an existing project identity',
+        { projectId: id, originalPath: conflict.path },
+      );
+    this.db.prepare('INSERT INTO projects(id,path,recipient) VALUES(?,?,NULL)').run(id, canonical);
     return this.project(id);
+  }
+  async projectAvailability(includeRemoved = false) {
+    return Promise.all(
+      this.projects(includeRemoved).map(async (project) => {
+        try {
+          const meta = await json<{ id: string }>(
+            await inside(project.path, join(project.path, '.blueprint', 'project.json')),
+          );
+          return { ...project, available: meta.id === project.id };
+        } catch (error) {
+          if (!['ENOENT', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? ''))
+            throw error;
+          return { ...project, available: false };
+        }
+      }),
+    );
+  }
+  async relocate(projectId: string, path: string) {
+    this.project(projectId);
+    const canonical = await realpath(path);
+    const current = (await this.projectAvailability(true)).find((p) => p.id === projectId);
+    if (current?.available && current.path !== canonical)
+      throw new BlueprintError(
+        'PROJECT_ID_CONFLICT',
+        'The original folder still exists. Open the original or register a new empty copy.',
+      );
+    const other = this.projects(true).find((p) => p.path === canonical && p.id !== projectId);
+    if (other)
+      throw new BlueprintError('PROJECT_ID_CONFLICT', 'Folder already belongs to another project');
+    let meta: { id: string; formatVersion: number };
+    try {
+      meta = await json(await inside(canonical, join(canonical, '.blueprint', 'project.json')));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      throw new BlueprintError(
+        'PROJECT_ID_MISMATCH',
+        'Choose the folder containing the original project identity',
+      );
+    }
+    if (meta.id !== projectId || meta.formatVersion !== 1)
+      throw new BlueprintError(
+        'PROJECT_ID_MISMATCH',
+        'The selected folder has a different project identity',
+      );
+    this.db.prepare('UPDATE projects SET path=?,removed=0 WHERE id=?').run(canonical, projectId);
+    return this.project(projectId);
+  }
+  removeProject(projectId: string) {
+    this.project(projectId);
+    this.db.prepare('UPDATE projects SET removed=1 WHERE id=?').run(projectId);
+    return { removed: true };
+  }
+  async registerCopy(path: string, expectedProjectId: string) {
+    const canonical = await realpath(path);
+    const original = this.project(expectedProjectId);
+    if (canonical === original.path || this.projects(true).some((p) => p.path === canonical))
+      throw new BlueprintError(
+        'PROJECT_ID_CONFLICT',
+        'The registered original cannot be reset as a copy',
+      );
+    const base = await inside(canonical, join(canonical, '.blueprint'));
+    const meta = await json<{ id: string; formatVersion: number }>(
+      await inside(canonical, join(base, 'project.json')),
+    );
+    if (meta.id !== expectedProjectId || meta.formatVersion !== 1)
+      throw new BlueprintError(
+        'PROJECT_ID_MISMATCH',
+        'The copied identity changed; select the folder again',
+      );
+    const backupPath = join(canonical, '.blueprint-backup-' + randomUUID());
+    await rename(base, backupPath);
+    try {
+      return { ...(await this.register(canonical)), backupPath };
+    } catch (error) {
+      throw new BlueprintError(
+        'PROJECT_COPY_FAILED',
+        'Copied history is preserved in the backup folder. Registration did not complete.',
+        { backupPath, cause: (error as NodeJS.ErrnoException).code },
+      );
+    }
   }
   async bind(projectId: string, sessionId: string) {
     this.project(projectId);
@@ -208,7 +312,7 @@ export class Store {
   }
   private async readArtifacts(): Promise<Artifact[]> {
     const output: Artifact[] = [];
-    for (const p of this.projects()) {
+    for (const p of (await this.projectAvailability()).filter((p) => p.available)) {
       const root = join(await this.base(p), 'artifacts');
       let dirs: string[] = [];
       try {
@@ -816,7 +920,9 @@ export class Store {
         return packet;
       }
     }
-    for (const other of this.projects().filter((other) => other.id !== p.id)) {
+    for (const other of (await this.projectAvailability()).filter(
+      (other) => other.available && other.id !== p.id,
+    )) {
       if ((await this.packages(other.id)).some((packet) => packet.id === operationId))
         throw new BlueprintError(
           'OPERATION_CONFLICT',
@@ -869,7 +975,7 @@ export class Store {
   async recover() {
     await this.recoverChanges();
     for (const artifact of await this.artifacts()) await this.states.draft(artifact.id);
-    for (const p of this.projects()) {
+    for (const p of (await this.projectAvailability()).filter((p) => p.available)) {
       for (const packet of await this.packages(p.id)) await this.reconcilePacket(packet);
     }
   }
@@ -877,7 +983,7 @@ export class Store {
     return `# Blueprint feedback ${p.id}\n\nRecipient: ${p.recipient.harness}/${p.recipient.sessionId}\n\nImplementation authorization: none\n\n## Answers\n\n${JSON.stringify(p.answers, null, 2)}\n\n## Annotations\n\n${p.annotations.map((a) => `### ${a.id}\nArtifact ${a.artifactId}, revision ${a.revisionId}, block ${a.blockId}\n\n> ${a.quote}\n\n${a.comment}`).join('\n\n')}`;
   }
   async feedback(id: string) {
-    for (const p of this.projects()) {
+    for (const p of (await this.projectAvailability()).filter((p) => p.available)) {
       const item = (await this.packages(p.id)).find((x) => x.id === id);
       if (item) return item;
     }
@@ -888,7 +994,13 @@ export class Store {
     await this.revision(artifactId, revisionId);
     const p = this.project(a.projectId);
     const base = await this.base(p);
-    type Approval = { stateHash: string; savedStateId?: string | null; annotationHash?: string };
+    type Approval = {
+      type?: 'approved' | 'revoked';
+      operationId?: string;
+      stateHash?: string;
+      savedStateId?: string | null;
+      annotationHash?: string;
+    };
     const history: Approval[] = [];
     try {
       history.push(
@@ -963,6 +1075,7 @@ export class Store {
         revisionId,
         stateHash: digest(state),
         savedStateId: saved?.id ?? null,
+        type: 'approved',
         annotationHash: digest((await this.states.draft(artifactId)).annotations),
         state,
         createdAt: new Date().toISOString(),
@@ -970,6 +1083,44 @@ export class Store {
       },
     );
     return { approved: true };
+  }
+  async revokeApproval(artifactId: string, revisionId: string, operationId: string) {
+    const a = await this.artifact(artifactId);
+    const key = 'revoke:' + operationId;
+    const hash = digest({ artifactId, revisionId });
+    const prior = this.operation<{ approved: false }>(key, hash);
+    if (prior) return prior;
+    const history = await this.approvalHistory(artifactId, revisionId);
+    if (!history.some((event) => event.operationId === operationId)) {
+      const directory = join(
+        await this.base(this.project(a.projectId)),
+        'approvals',
+        'history',
+        artifactId,
+        revisionId,
+      );
+      await atomicJson(
+        await writableInside(
+          this.project(a.projectId).path,
+          join(
+            directory,
+            String(history.length + 1).padStart(8, '0') + '-' + randomUUID() + '.json',
+          ),
+        ),
+        {
+          type: 'revoked',
+          id: randomUUID(),
+          operationId,
+          artifactId,
+          revisionId,
+          createdAt: new Date().toISOString(),
+          implementationAuthorized: false,
+        },
+      );
+    }
+    const result = { approved: false as const };
+    this.record(key, hash, result);
+    return result;
   }
   async editor(artifactId: string, revisionId: string) {
     const path = beneath(this.data, 'editors', artifactId, revisionId + '.json');
@@ -1132,6 +1283,12 @@ export class Store {
     const dirty = await this.states.dirty(id);
     return {
       revision: await this.revision(id, rev),
+      migrationSummary: revisionSummary(
+        a.revisions.findIndex((r) => r.id === rev) > 0
+          ? await this.revision(id, a.revisions[a.revisions.findIndex((r) => r.id === rev) - 1].id)
+          : null,
+        await this.revision(id, rev),
+      ),
       editor: await this.editor(id, rev),
       state,
       view: await this.viewState(id, rev),

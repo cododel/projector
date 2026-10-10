@@ -2,9 +2,9 @@ import packageMetadata from '../../package.json';
 import { guideTopics, guideReferences } from './materials';
 
 /** Bundled once; all instruction delivery channels consume these exports. */
-export const GUIDE_VERSION = packageMetadata.version;
+export const GUIDE_VERSION = `${packageMetadata.version}+guide.2`;
 export const SERVER_INSTRUCTIONS =
-  'Blueprint supports visual planning and agreement on requirements, with optional interactive prototypes. Use it for interdependent decisions, significant uncertainty, or cases that benefit from visual exploration. Call get_blueprint_guide(topic="overview") before authoring artifacts or processing feedback; load topic guides and examples as needed. Follow user instructions and project contracts. Draft feedback is private until Save; approval does not authorize implementation.';
+  'Blueprint supports visual planning and agreement through MDX plans, widgets and annotations. Use it for interdependent decisions, significant uncertainty, or cases that benefit from visual exploration. Call get_blueprint_guide(topic="overview") before authoring artifacts or processing feedback; load topic guides and examples as needed. Follow user instructions and project contracts. Draft feedback is private until Save; approval does not authorize implementation.';
 
 export const GUIDE_TOPICS = [
   'overview',

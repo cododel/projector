@@ -18,7 +18,8 @@
     "test:e2e:visible": "pnpm build && playwright test --config playwright.full.config.ts",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e",
     "check:full": "node scripts/testing/full.mjs",
-    "hooks:install": "node scripts/testing/install-hook.mjs"
+    "hooks:install": "node scripts/testing/install-hook.mjs",
+    "test:performance": "pnpm build && node scripts/testing/stage-performance.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

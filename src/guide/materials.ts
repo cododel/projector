@@ -10,6 +10,8 @@ User instructions and repository contracts retain their authority. Blueprint add
 
 Alpha supports restricted MDX, built-in questions, exact text annotations, document/browser area annotations, saved-state snapshots and artifact-associated HTTP(S) browser tabs. Arbitrary TSX, prototype case capture and chat/file annotation are later capabilities. Automatic steer is unavailable. Session metadata is not proof that a harness is reachable. Connecting MCP installs no skills, hooks, AGENTS.md or shared rules.
 
+The offline Blueprint guide is also available in the app without a project. Closing its window keeps the local runtime running; Quit stops Blueprint. Project folder relocation and copy creation are explicit operator actions; a copied history is backed up before a new empty identity is created.
+
 Autosaved working values, comments, unfinished composers and images remain private until explicit Save. Save does not clear comments. The server validates formats and allowed operations independently of whether you read the guide. read_artifact(part="state") exposes saved snapshots only, never current private work.`,
   planning: `Make a standalone planning document: goals, scope, requirements, constraints, meaningful alternatives with tradeoffs, explicit assumptions, unresolved questions, risks and observable acceptance criteria. Include details required to understand the agreement even if they were mentioned earlier in chat.
 
@@ -28,11 +30,13 @@ Supported content is Markdown/GFM tables, fenced Mermaid diagrams, Details, Call
 
 Call publish_artifact with expectedLatestRevision=null for a first publication; otherwise supply the actual latest revision ID. A stale expectation is a conflict: inspect current data before changing source. Reuse operationId only to recover the same uncertain operation; changed input under that ID is a conflict. A failed build preserves the prior publication.
 
-show_artifact takes artifactId and an explicit revisionId, reuses the document tab without taking focus, and may defer while the operator writes a comment. Published revisions are immutable; edit source and publish another revision. Compatible values may transfer, but annotations retain original anchors and approval never transfers.
+show_artifact takes artifactId and an explicit revisionId, reuses the document tab without taking focus, and may defer while the operator writes a comment. Published revisions are immutable; edit source and publish another revision. Compatible values may transfer, but annotations retain original anchors and approval never transfers. The operator sees Retained, New, Requires response and Removed categories; authored defaults are not confirmed answers.
 
 read_artifact accepts part="manifest"|"source"|"state", optional revisionId, optional savedStateId for state, and cursor. State defaults to the latest explicit Save snapshot; an exact savedStateId reads that immutable snapshot. Pin the returned savedStateId on every following state page, and the returned revisionId on every following source page, so a concurrent Save or publication cannot mix versions. Follow all cursors and source revision references. Absence of a saved state does not reveal defaults as operator answers. read_attachment({artifactId,savedStateId,attachmentId,cursor?}) reads only attachments committed with that snapshot.
 
-show_content({artifactId,url}) opens an artifact-associated browser tab for the operator. Only HTTP and HTTPS, including localhost, are accepted. You receive no browser-control, DOM, cookie or arbitrary capture API. Opening a URL grants no access to private drafts and does not Save anything.`,
+show_content({artifactId,url}) opens an artifact-associated browser tab for the operator. Only HTTP and HTTPS, including localhost, are accepted. You receive no browser-control, DOM, cookie or arbitrary capture API. Opening a URL grants no access to private drafts and does not Save anything. Downloads, permission grants and profile cleanup are operator-only actions. External-browser authentication is not imported back.
+
+get_blueprint_context.capabilities.limits reports effective versioned document, image, request and read-page limits. Runtime defaults are 30 seconds for compilation and 10 seconds for capture. A delayed write or UNKNOWN_RESULT is not proof of cancellation: reconcile the same operationId and saved manifest before retrying, rather than publishing a second uncertain state.`,
   widgets: `Alpha 1 provides Choice, TextAnswer and Checklist. Every question declares a stable id, meaning, semanticsVersion and defaultValue. The meaning is also its visible label. Choice and Checklist require options. Reuse IDs across revisions only for the same decision and semantics.
 
 Values are serializable JSON: Choice is one allowed string, TextAnswer a string, Checklist an array of allowed strings. The application derives and validates schemas. Changes in schema, semantic definition or semanticsVersion prevent transfer. New questions receive authored defaults and remain unanswered by the operator. Explain each alternative's consequences in semantic text, rather than render code alone.
@@ -54,7 +58,7 @@ Handle each answer/comment under user instructions and project rules. Clarify co
 
 Legacy Submit packages remain readable through list_feedback/read_feedback and existing report_feedback statements remain historical agent reports. They are not new saved states and do not expose migrated private drafts. report_feedback records an agent statement about a legacy package, not correctness, operator resolution or authority to implement.
 
-Approval is a separate operator action for a concrete revision and substantive saved state. It does not send a message, Save a draft or authorize implementation. Autosaved changes cannot inherit an older approval.`,
+Approval is a separate operator action for a concrete revision and substantive saved state. It does not send a message, Save a draft or authorize implementation. Autosaved changes cannot inherit an older approval. Revoke approval appends an immutable history event. Older events without a type remain approvals; the current status follows the event history and concrete saved state. Revocation grants no implementation authority.`,
 } satisfies Record<string, string>;
 
 export const guideReferences: Record<

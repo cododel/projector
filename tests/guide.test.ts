@@ -14,8 +14,12 @@ describe('bundled agent guidance', () => {
 
   it('defaults to a versioned overview and navigable bundled references', () => {
     const result = getGuide();
-    expect(result.guideVersion).toBe(metadata.version);
-    expect(GUIDE_VERSION).toBe(metadata.version);
+    expect(result.guideVersion).toBe(GUIDE_VERSION);
+    expect(GUIDE_VERSION).toMatch(
+      new RegExp(
+        '^' + metadata.version.replaceAll('.', '\\.').replaceAll('+', '\\+') + '\\+guide\\.',
+      ),
+    );
     expect(result.topic).toBe('overview');
     expect(result.content).toContain('skills');
     expect(result.references.map((item) => item.id)).toContain('permissions-plan');
@@ -24,7 +28,7 @@ describe('bundled agent guidance', () => {
   it.each(GUIDE_TOPICS)('serves the %s topic offline with its version', (topic) => {
     const result = getGuide({ topic });
     expect(result.topic).toBe(topic);
-    expect(result.guideVersion).toBe(metadata.version);
+    expect(result.guideVersion).toBe(GUIDE_VERSION);
     expect(result.content.length).toBeGreaterThan(300);
   });
 
@@ -35,6 +39,9 @@ describe('bundled agent guidance', () => {
     expect(all).toContain('read_attachment');
     expect(all).toContain('show_content');
     expect(all).toContain('Copy update message');
+    expect(all).toContain('Revoke approval');
+    expect(all).toContain('capabilities.limits');
+    expect(all).toContain('operator-only actions');
     expect(all).not.toContain('bind a session');
     expect(all).not.toContain('private until Submit');
   });

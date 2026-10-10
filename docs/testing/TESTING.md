@@ -43,3 +43,9 @@ no CoreGraphics native smoke is required by pre-push.
 
 A focused full run is expected to interrupt desktop work briefly; use it before
 infrequent pushes. Neither Tart nor a macOS restore image is a development dependency.
+
+## Current-stage qualification
+
+`pnpm test:performance` builds production sources and runs a separate disposable load profile: 50 artifacts, 10 revisions and saved states each, 20 widgets/annotations, three local browser pages and at least 100 warmed actions per metric. Report includes actual host RAM/CPU and the owned process tree. This benchmark is deliberately outside routine functional E2E selection; it never turns a budget failure into a skip. It is a release qualification, not a pre-push latency claim.
+
+New stage tests cover relocated/copied projects, private answer retention, offline guide and append-only approval revocation. Browser tests use real views/sessions and controlled native dialog answers. Permission callback tests do not use hardware or grant host TCC privileges. File faults are injected at write and directory-sync boundaries; they prove known versus uncertain publication outcomes, not physical device durability.

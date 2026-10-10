@@ -47,7 +47,22 @@ test('relocated packaged app uses its own stdio helper without system Node and p
         BLUEPRINT_SOCKET: socket,
       },
     });
+    await app.evaluate(({ session }) => {
+      session.defaultSession.webRequest.onBeforeRequest(
+        { urls: ['http://*/*', 'https://*/*'] },
+        (_details, callback) => callback({ cancel: true }),
+      );
+    });
     const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Blueprint guide', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toContainText(
+      'Available offline',
+    );
+    await page
+      .getByRole('dialog', { name: 'Blueprint guide' })
+      .getByRole('button', { name: 'Close', exact: true })
+      .click();
+
     await expect(
       page.getByRole('heading', { name: 'Make decisions before implementation' }),
     ).toBeVisible();

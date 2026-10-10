@@ -407,3 +407,56 @@ it('restores the agreed compatible baseline when discarding edits in a newer rev
   await store.discard(p.id);
   expect((await store.state(a.artifactId, next.revisionId)).values.invite).toBe('Member');
 });
+
+it('revokes approval append-only, retries idempotently and does not alter the saved document', async () => {
+  const { a, r } = await setup();
+  await store.approve(a.artifactId, r.revisionId);
+  const before = await store.approvalHistory(a.artifactId, r.revisionId);
+  const operationId = randomUUID();
+  await store.revokeApproval(a.artifactId, r.revisionId, operationId);
+  await store.revokeApproval(a.artifactId, r.revisionId, operationId);
+  const after = await store.approvalHistory(a.artifactId, r.revisionId);
+  expect(after).toHaveLength(before.length + 1);
+  expect(after.slice(0, -1)).toEqual(before);
+  expect(after.at(-1)).toMatchObject({ type: 'revoked', operationId });
+  store.db.prepare('DELETE FROM operations WHERE key=?').run('revoke:' + operationId);
+  await store.revokeApproval(a.artifactId, r.revisionId, operationId);
+  expect(await store.approvalHistory(a.artifactId, r.revisionId)).toEqual(after);
+  expect((await store.document(a.artifactId, r.revisionId)).approved).toBe(false);
+  await store.approve(a.artifactId, r.revisionId);
+  expect((await store.document(a.artifactId, r.revisionId)).approved).toBe(true);
+});
+it('reports retained, new, changed and removed fields without discarding old values', async () => {
+  const { a, r } = await setup();
+  await store.setValue(a.artifactId, r.revisionId, 'invite', 'Member');
+  const extra =
+    '<Choice id="new" meaning="New" semanticsVersion="1" options={["Yes","No"]} defaultValue="No" />';
+  await writeFile(join(a.sourcePath, 'plan.mdx'), source + '\n\n' + extra);
+  const next = await store.publish({
+    artifactId: a.artifactId,
+    expectedLatestRevision: r.revisionId,
+    operationId: randomUUID(),
+  });
+  expect((await store.document(a.artifactId, next.revisionId)).migrationSummary).toEqual({
+    retained: ['invite'],
+    added: ['new'],
+    requiresResponse: [],
+    removed: [],
+  });
+  await writeFile(
+    join(a.sourcePath, 'plan.mdx'),
+    source.replace('semanticsVersion="1"', 'semanticsVersion="2"'),
+  );
+  const last = await store.publish({
+    artifactId: a.artifactId,
+    expectedLatestRevision: next.revisionId,
+    operationId: randomUUID(),
+  });
+  expect((await store.document(a.artifactId, last.revisionId)).migrationSummary).toEqual({
+    retained: [],
+    added: [],
+    requiresResponse: ['invite'],
+    removed: ['new'],
+  });
+  expect((await store.state(a.artifactId, r.revisionId)).values.invite).toBe('Member');
+});

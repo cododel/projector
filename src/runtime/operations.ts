@@ -1,3 +1,4 @@
+import { runtimeLimits } from '../shared/runtime-limits';
 import { z } from 'zod';
 import { writeFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -279,6 +280,7 @@ export class Operations {
             savedStates: true,
             chat: false,
             automaticDelivery: false,
+            limits: runtimeLimits(),
           },
         };
       }
@@ -466,7 +468,7 @@ export class Operations {
     const required = (key: string) => id.parse(args[key]);
     switch (name) {
       case 'snapshot': {
-        const projects = this.store.projects();
+        const projects = await this.store.projectAvailability();
         const artifacts = await this.store.artifacts();
         const annotations = (
           await Promise.all(
@@ -499,9 +501,16 @@ export class Operations {
             }),
           ),
           savedStates,
-          selected: this.selected,
+          selected:
+            this.selected && artifacts.some((a) => a.id === this.selected!.artifactId)
+              ? this.selected
+              : null,
           draft: { annotations },
-          packages: (await Promise.all(projects.map((p) => this.store.packages(p.id)))).flat(),
+          packages: (
+            await Promise.all(
+              projects.filter((p) => p.available).map((p) => this.store.packages(p.id)),
+            )
+          ).flat(),
         };
       }
       case 'register': {
@@ -509,6 +518,28 @@ export class Operations {
         this.selectedProject = p.id;
         this.refresh();
         return p;
+      }
+      case 'registerCopy': {
+        const p = await this.store.registerCopy(z.string().parse(args.path), required('projectId'));
+        this.selectedProject = p.id;
+        this.refresh();
+        return p;
+      }
+      case 'relocateProject': {
+        const p = await this.store.relocate(required('projectId'), z.string().parse(args.path));
+        this.refresh();
+        return p;
+      }
+      case 'removeProject': {
+        const projectId = required('projectId');
+        const selectedArtifact =
+          this.selected &&
+          (await this.store.artifacts()).find((a) => a.id === this.selected!.artifactId);
+        if (selectedArtifact?.projectId === projectId || !selectedArtifact) this.selected = null;
+        const result = this.store.removeProject(projectId);
+        if (this.selectedProject === projectId) this.selectedProject = null;
+        this.refresh();
+        return result;
       }
       case 'selectProject':
         this.selectedProject = this.store.project(required('projectId')).id;
@@ -704,6 +735,15 @@ export class Operations {
       }
       case 'discard': {
         const result = await this.store.discard(required('projectId'));
+        this.refresh();
+        return result;
+      }
+      case 'revokeApproval': {
+        const result = await this.store.revokeApproval(
+          required('artifactId'),
+          required('revisionId'),
+          required('operationId'),
+        );
         this.refresh();
         return result;
       }

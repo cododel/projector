@@ -92,7 +92,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   bridge = new Mcp(socket);
   await bridge.initialize();
   const guide = await bridge.tool('get_blueprint_guide', {});
-  expect(guide.guideVersion).toBe('0.1.0-alpha.1');
+  expect(guide.guideVersion).toBe('0.1.0-alpha.1+guide.2');
   const context = await bridge.tool('get_blueprint_context', {});
   const projectId = (context.project as { id: string }).id;
   const a = await bridge.tool('create_artifact', {
@@ -236,7 +236,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   await expect(page.getByText('In review', { exact: true })).toBeVisible();
   // Close last window: macOS runtime survives and bridge still answers.
   await page.close();
-  expect((await bridge.tool('get_blueprint_guide', {})).guideVersion).toBe('0.1.0-alpha.1');
+  expect((await bridge.tool('get_blueprint_guide', {})).guideVersion).toBe('0.1.0-alpha.1+guide.2');
   bridge.close();
   await app.close();
   app = await launch();

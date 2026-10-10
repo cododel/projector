@@ -7,7 +7,10 @@ import { openStore } from './store';
 import { Operations } from './operations';
 import { BlueprintError, type RpcRequest, type RpcResponse } from '../shared/protocol';
 import { ZodError } from 'zod';
+import { storageError } from './files';
+import { runtimeLimits } from '../shared/runtime-limits';
 async function main() {
+  const limits = runtimeLimits();
   const data = process.env.BLUEPRINT_DATA!;
   const socketPath = process.env.BLUEPRINT_SOCKET!;
   const token = process.env.BLUEPRINT_OPERATOR_TOKEN!;
@@ -35,7 +38,7 @@ async function main() {
         .then(async () => {
           let request: RpcRequest | undefined;
           try {
-            if (Buffer.byteLength(line) > 32_000_000)
+            if (Buffer.byteLength(line) > limits.requestBytes)
               throw new BlueprintError('INPUT_TOO_LARGE', 'Request too large');
             request = JSON.parse(line) as RpcRequest;
             if (quitting) throw new BlueprintError('SHUTTING_DOWN', 'Blueprint is shutting down');
@@ -55,27 +58,26 @@ async function main() {
                 ? (error as Error & { code?: string; guideReference?: string })
                 : null;
             const err =
-              error instanceof BlueprintError
-                ? error
-                : typed?.code === 'INVALID_INPUT'
-                  ? new BlueprintError(typed.code, typed.message, {
-                      guideReference: typed.guideReference ?? 'overview',
-                    })
-                  : new BlueprintError(
-                      error instanceof ZodError ? 'INVALID_INPUT' : 'OPERATION_FAILED',
-                      error instanceof ZodError
-                        ? 'Request does not match the operation schema'
-                        : 'Operation failed; check local storage and document diagnostics',
-                      error instanceof ZodError
-                        ? {
-                            issues: error.issues.map((issue) => ({
-                              path: issue.path,
-                              message: issue.message,
-                            })),
-                            guideReference: 'overview',
-                          }
-                        : {},
-                    );
+              storageError(error) ??
+              (typed?.code === 'INVALID_INPUT'
+                ? new BlueprintError(typed.code, typed.message, {
+                    guideReference: typed.guideReference ?? 'overview',
+                  })
+                : new BlueprintError(
+                    error instanceof ZodError ? 'INVALID_INPUT' : 'OPERATION_FAILED',
+                    error instanceof ZodError
+                      ? 'Request does not match the operation schema'
+                      : 'Operation failed; check local storage and document diagnostics',
+                    error instanceof ZodError
+                      ? {
+                          issues: error.issues.map((issue) => ({
+                            path: issue.path,
+                            message: issue.message,
+                          })),
+                          guideReference: 'overview',
+                        }
+                      : {},
+                  ));
             if (request)
               respond({
                 id: request.id,
