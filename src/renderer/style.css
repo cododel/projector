@@ -96,9 +96,51 @@ h3 {
   --left-sidebar-width: 232px;
   --right-sidebar-width: 310px;
   grid-template-columns: var(--left-sidebar-width) minmax(0, 1fr) var(--right-sidebar-width);
+  grid-template-rows: 40px minmax(0, 1fr);
   height: 100vh;
   min-height: 600px;
   overflow: hidden;
+}
+.window-titlebar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 8px 0 82px;
+  background: #f1f3f6;
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.window-titlebar button {
+  -webkit-app-region: no-drag;
+}
+.window-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0 12px;
+  font-size: 12px;
+  font-weight: 550;
+  color: #596579;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar,
+.workspace,
+.feedback-panel {
+  grid-row: 2;
+  min-height: 0;
+}
+.sidebar {
+  grid-column: 1;
+}
+.workspace {
+  grid-column: 2;
+}
+.feedback-panel {
+  grid-column: 3;
 }
 .sidebar {
   padding: 40px 16px 16px;
@@ -1070,13 +1112,6 @@ h3 {
   .document-save-status {
     display: none;
   }
-}
-.workspace-welcome-toolbar {
-  display: flex;
-  justify-content: space-between;
-  background: #edf0f5;
-  border-bottom: 1px solid var(--border);
-  padding: 4px;
 }
 .project-tree {
   flex: 1;

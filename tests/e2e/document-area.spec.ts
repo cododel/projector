@@ -19,6 +19,25 @@ test('document area capture stays private until Save and opens its numbered froz
   let mcp: Mcp | undefined;
   try {
     const page = await app.firstWindow();
+    const titlebar = page.getByRole('toolbar', { name: 'Window toolbar' });
+    await expect(titlebar).toBeVisible();
+    await expect(titlebar.getByRole('button', { name: 'Hide projects sidebar' })).toBeVisible();
+    await expect(titlebar.getByRole('button', { name: 'Hide feedback sidebar' })).toBeVisible();
+    expect(
+      await titlebar.evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region')),
+    ).toBe('drag');
+    expect(
+      await titlebar
+        .locator('button')
+        .first()
+        .evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region')),
+    ).toBe('no-drag');
+    expect(
+      await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].getWindowButtonPosition(),
+      ),
+    ).toEqual({ x: 14, y: 13 });
+    await page.screenshot({ path: resolve('.tmp/tasks/titlebar-20261010/welcome.png') });
     await app.evaluate(({ dialog }, path) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] });
     }, project);
@@ -54,6 +73,9 @@ test('document area capture stays private until Save and opens its numbered froz
     const originalWidth = (await page.locator('iframe').boundingBox())!.width;
     await page.getByRole('button', { name: 'Hide projects sidebar' }).click();
     await page.getByRole('button', { name: 'Hide feedback sidebar' }).click();
+    await expect(titlebar.getByRole('button', { name: 'Show projects sidebar' })).toBeVisible();
+    await expect(titlebar.getByRole('button', { name: 'Show feedback sidebar' })).toBeVisible();
+    await page.screenshot({ path: resolve('.tmp/tasks/titlebar-20261010/hidden.png') });
     await expect
       .poll(async () => (await page.locator('iframe').boundingBox())!.width)
       .toBeGreaterThan(originalWidth + 300);
@@ -63,7 +85,7 @@ test('document area capture stays private until Save and opens its numbered froz
       .poll(async () => (await page.locator('iframe').boundingBox())!.width)
       .toBe(originalWidth);
     await page.screenshot({
-      path: resolve('.tmp/tasks/capture-toolbar-20261010/production-toolbar.png'),
+      path: resolve('.tmp/tasks/titlebar-20261010/production.png'),
     });
 
     await page.getByRole('button', { name: 'Annotate document', exact: true }).click();
@@ -82,6 +104,15 @@ test('document area capture stays private until Save and opens its numbered froz
     ).toMatchObject({ savedState: null });
     await frame.getByRole('button', { name: 'Save private annotation' }).click();
     await expect(page.getByText('Review captured table', { exact: true })).toBeVisible();
+    await expect
+      .poll(
+        () =>
+          app
+            .context()
+            .pages()
+            .filter((p) => p.url().startsWith('data:text/html')).length,
+      )
+      .toBe(1);
     const overlay = app
       .context()
       .pages()
@@ -93,6 +124,9 @@ test('document area capture stays private until Save and opens its numbered froz
       path: resolve('.tmp/tasks/capture-no-comment-20261010/document.png'),
     });
     await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(
+      page.getByRole('button', { name: 'Copy update message', exact: true }),
+    ).toBeVisible();
     const saved = await mcp.tool('read_artifact', { artifactId: a.artifactId, part: 'state' });
     const state = JSON.parse(String(saved.content)) as {
       id: string;
@@ -149,6 +183,7 @@ test('document area capture stays private until Save and opens its numbered froz
     await frame.getByRole('button', { name: 'Save private annotation' }).click();
     await expect(frame.getByLabel('Annotation comment')).toHaveCount(0);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.locator('.submit-area')).toContainText('Saved state is unchanged');
     const clicked = JSON.parse(
       String(
         (await mcp.tool('read_artifact', { artifactId: a.artifactId, part: 'state' })).content,
@@ -173,6 +208,7 @@ test('document area capture stays private until Save and opens its numbered froz
         ),
       )
       .toBe(1);
+    await expect(overlay.locator('#number')).toHaveText('1');
     const frozen = await app.evaluate(async ({ webContents }) => {
       const view = webContents
         .getAllWebContents()

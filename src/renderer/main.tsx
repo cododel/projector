@@ -732,6 +732,45 @@ function App(): React.JSX.Element {
     <div
       className={`app ${workspace.layout?.leftSidebarVisible === false ? 'left-sidebar-hidden' : ''} ${workspace.layout?.rightSidebarVisible === false ? 'right-sidebar-hidden' : ''}`}
     >
+      <header className="window-titlebar" role="toolbar" aria-label="Window toolbar">
+        <button
+          className="sidebar-toggle"
+          aria-label={
+            workspace.layout?.leftSidebarVisible === false
+              ? 'Show projects sidebar'
+              : 'Hide projects sidebar'
+          }
+          title={
+            workspace.layout?.leftSidebarVisible === false
+              ? 'Show projects sidebar'
+              : 'Hide projects sidebar'
+          }
+          aria-pressed={workspace.layout?.leftSidebarVisible !== false}
+          onClick={() => void toggleSidebar('left')}
+        >
+          <Icon name="sidebar-left" />
+        </button>
+        <span className="window-title" title={artifact?.title ?? 'Blueprint'}>
+          {artifact?.title ?? 'Blueprint'}
+        </span>
+        <button
+          className="sidebar-toggle"
+          aria-label={
+            workspace.layout?.rightSidebarVisible === false
+              ? 'Show feedback sidebar'
+              : 'Hide feedback sidebar'
+          }
+          title={
+            workspace.layout?.rightSidebarVisible === false
+              ? 'Show feedback sidebar'
+              : 'Hide feedback sidebar'
+          }
+          aria-pressed={workspace.layout?.rightSidebarVisible !== false}
+          onClick={() => void toggleSidebar('right')}
+        >
+          <Icon name="sidebar-right" />
+        </button>
+      </header>
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">B</span>
@@ -861,23 +900,6 @@ function App(): React.JSX.Element {
         {selected ? (
           <>
             <div className="tab-bar">
-              <button
-                className="sidebar-toggle"
-                aria-label={
-                  workspace.layout?.leftSidebarVisible === false
-                    ? 'Show projects sidebar'
-                    : 'Hide projects sidebar'
-                }
-                title={
-                  workspace.layout?.leftSidebarVisible === false
-                    ? 'Show projects sidebar'
-                    : 'Hide projects sidebar'
-                }
-                aria-pressed={workspace.layout?.leftSidebarVisible !== false}
-                onClick={() => void toggleSidebar('left')}
-              >
-                <Icon name="sidebar-left" />
-              </button>
               <nav className="content-tabs" role="tablist" aria-label="Plan tabs">
                 {planTabs?.tabs.map((tab) => (
                   <div
@@ -935,23 +957,6 @@ function App(): React.JSX.Element {
                   +
                 </button>
               </nav>
-              <button
-                className="sidebar-toggle"
-                aria-label={
-                  workspace.layout?.rightSidebarVisible === false
-                    ? 'Show feedback sidebar'
-                    : 'Hide feedback sidebar'
-                }
-                title={
-                  workspace.layout?.rightSidebarVisible === false
-                    ? 'Show feedback sidebar'
-                    : 'Hide feedback sidebar'
-                }
-                aria-pressed={workspace.layout?.rightSidebarVisible !== false}
-                onClick={() => void toggleSidebar('right')}
-              >
-                <Icon name="sidebar-right" />
-              </button>
             </div>
             <header className="plan-header">
               <h1 title={artifact?.title}>{artifact?.title ?? 'Blueprint'}</h1>{' '}
@@ -1158,32 +1163,6 @@ function App(): React.JSX.Element {
           </>
         ) : (
           <>
-            <div className="workspace-welcome-toolbar">
-              <button
-                className="sidebar-toggle"
-                aria-label={
-                  workspace.layout?.leftSidebarVisible === false
-                    ? 'Show projects sidebar'
-                    : 'Hide projects sidebar'
-                }
-                title="Toggle projects sidebar"
-                onClick={() => void toggleSidebar('left')}
-              >
-                <Icon name="sidebar-left" />
-              </button>
-              <button
-                className="sidebar-toggle"
-                aria-label={
-                  workspace.layout?.rightSidebarVisible === false
-                    ? 'Show feedback sidebar'
-                    : 'Hide feedback sidebar'
-                }
-                title="Toggle feedback sidebar"
-                onClick={() => void toggleSidebar('right')}
-              >
-                <Icon name="sidebar-right" />
-              </button>
-            </div>
             <div className="welcome">
               <div className="welcome-symbol">◇</div>
               <h2>Make decisions before implementation</h2>

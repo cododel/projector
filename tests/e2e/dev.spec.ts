@@ -101,6 +101,7 @@ test('development renderer proxy loads the isolated document without production 
       await expect(
         page.getByRole('button', { name: 'Annotate document', exact: true }),
       ).toBeEnabled();
+      const originalWidth = (await page.locator('iframe').boundingBox())!.width;
       await page.getByRole('button', { name: 'Hide feedback sidebar' }).click();
       await expect(page.getByRole('button', { name: 'Show feedback sidebar' })).toBeVisible();
       await expect
@@ -115,10 +116,23 @@ test('development renderer proxy loads the isolated document without production 
             ),
         );
       await page.screenshot({
-        path: resolve('.tmp/tasks/capture-toolbar-20261010/development-toolbar.png'),
+        path: resolve('.tmp/tasks/titlebar-20261010/development.png'),
       });
       await page.getByRole('button', { name: 'Show feedback sidebar' }).click();
+      await expect
+        .poll(async () => (await page.locator('iframe').boundingBox())!.width)
+        .toBe(originalWidth);
+      // Wait for Chromium to paint the restored sidebar before dispatching native mouse input.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
       await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(
+        page.getByRole('button', { name: 'Copy update message', exact: true }),
+      ).toBeVisible();
       const saved = await mcp.tool('read_artifact', { artifactId: a.artifactId, part: 'state' });
       expect(String(saved.content)).toContain('Use the existing contract');
       await page.screenshot({ path: '.tmp/tasks/compact-tabs-20261009/dev-document.png' });

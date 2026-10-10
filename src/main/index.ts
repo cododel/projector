@@ -124,6 +124,8 @@ function createWindow(background = false) {
     minWidth: 980,
     minHeight: 650,
     title: 'Blueprint',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 14, y: 13 },
     show: !background,
     webPreferences: {
       preload: join(here, '../preload/index.cjs'),
