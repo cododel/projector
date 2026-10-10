@@ -15,6 +15,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "pnpm build && playwright test",
+    "test:e2e:visible": "BLUEPRINT_E2E_VISIBLE=1 pnpm test:e2e",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e"
   },
   "pnpm": {

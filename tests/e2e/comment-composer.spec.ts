@@ -35,11 +35,20 @@ function Fixture(){const [value,setValue]=useState(''),[open,setOpen]=useState(t
     join(root, 'index.html'),
     `<html><head><style>${css}</style></head><body><div id="root"></div><script src="renderer.js"></script></body></html>`,
   );
-  await writeFile(
-    join(root, 'main.cjs'),
-    `const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(root, 'data'))});app.whenReady().then(()=>{const w=new BrowserWindow({width:680,height:520,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});w.loadFile(${JSON.stringify(join(root, 'index.html'))})});app.on('window-all-closed',()=>app.quit());`,
-  );
-  app = await electron.launch({ args: [join(root, 'main.cjs')], timeout: 15000 });
+  await build({
+    entryPoints: [resolve('tests/fixtures/composer-main.ts')],
+    outfile: join(root, 'main.cjs'),
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node24',
+    external: ['electron'],
+  });
+  app = await electron.launch({
+    args: [join(root, 'main.cjs')],
+    timeout: 15000,
+    env: { ...process.env, BLUEPRINT_COMPOSER_TEST_DATA: root },
+  });
   page = await app.firstWindow();
   await expect(page.getByLabel('Comment', { exact: true })).toBeVisible();
 });

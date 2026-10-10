@@ -1,7 +1,9 @@
 import { app, BrowserWindow } from 'electron';
 import { join } from 'node:path';
 import { BrowserManager, type BrowserCapture } from '../../src/main/browser';
+import { auditE2EWindows, e2eWindowOptions } from '../../src/main/e2e-window';
 
+auditE2EWindows(app);
 app.setName('Blueprint Browser Test');
 app.setPath('userData', process.env.BLUEPRINT_BROWSER_TEST_DATA!);
 type TestState = {
@@ -14,11 +16,13 @@ declare global {
   var browserTest: TestState;
 }
 void app.whenReady().then(async () => {
-  const window = new BrowserWindow({
-    width: 900,
-    height: 700,
-    webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
-  });
+  const window = new BrowserWindow(
+    e2eWindowOptions({
+      width: 900,
+      height: 700,
+      webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
+    }),
+  );
   const drafts: unknown[] = [];
   const annotations: TestState['annotations'] = [];
   const manager = new BrowserManager(window, {

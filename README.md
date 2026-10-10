@@ -93,6 +93,10 @@ pnpm check
 
 The checks use disposable projects and app data. Electron and Unix-socket tests need an environment that permits local GUI processes and sockets. They never edit your Codex configuration or use real project sessions. The standard suite tests a real MCP client transport and Electron. The opt-in `BLUEPRINT_CODEX_TEST=1 pnpm exec playwright test tests/e2e/codex.spec.ts` also invokes your authenticated Codex CLI and a model in a disposable project; it uses ephemeral command-line MCP/approval settings and makes no config-file edits. See `docs/CODEX-COMPATIBILITY.md` for the separately recorded Codex evidence.
 
+`pnpm check`, `pnpm test:e2e` and direct `pnpm exec playwright test` run Electron in the background by default: windows stay hidden and cannot take native focus; background throttling is disabled so rendering, input and captures continue. This also applies to development, packaged-app tests and standalone fixtures. A native-event audit fails the run if a test window is shown or receives focus, or the app becomes active; its log is retained in `.tmp/e2e-window-audit-*/windows.jsonl`. Normal `pnpm dev` / `pnpm start` behavior is unchanged.
+
+For deliberate visible debugging, use `pnpm test:e2e:visible`, or `BLUEPRINT_E2E_VISIBLE=1 pnpm exec playwright test <test-file>`. These commands can interrupt desktop work. Hidden rendering is not a replacement for separate checks of native focus, system IME, menus/dialogs or normal visibility/throttling behavior. Background E2E is verified on macOS with Electron 44.7.0; it still requires a graphical session and is not a headless backend.
+
 `BLUEPRINT_DATA` and `BLUEPRINT_SOCKET` allow isolated test runtimes. The normal application needs no environment variables.
 
 ## Status

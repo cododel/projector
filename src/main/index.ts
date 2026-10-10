@@ -20,10 +20,12 @@ import type { RpcResponse } from '../shared/protocol';
 import { getMcpSetup } from './mcp-setup';
 import { BrowserManager } from './browser';
 import { Workspace } from './workspace';
+import { auditE2EWindows, e2eWindowOptions, isBackgroundE2E } from './e2e-window';
 import { safeBrowserBounds, validateArea } from './browser-policy';
 import { z } from 'zod';
 const here = dirname(fileURLToPath(import.meta.url));
 const developmentUrl = app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL;
+auditE2EWindows(app);
 app.setName('Blueprint');
 if (process.env.BLUEPRINT_DATA) app.setPath('userData', process.env.BLUEPRINT_DATA);
 const workspace = new Workspace(join(app.getPath('userData'), 'workspace.json'));
@@ -118,22 +120,24 @@ async function showCapturedAnnotation(artifactId: string, annotationId: string) 
   return { shown: true };
 }
 function createWindow(background = false) {
-  window = new BrowserWindow({
-    width: 1360,
-    height: 900,
-    minWidth: 980,
-    minHeight: 650,
-    title: 'Blueprint',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 13 },
-    show: !background,
-    webPreferences: {
-      preload: join(here, '../preload/index.cjs'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-    },
-  });
+  window = new BrowserWindow(
+    e2eWindowOptions({
+      width: 1360,
+      height: 900,
+      minWidth: 980,
+      minHeight: 650,
+      title: 'Blueprint',
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 14, y: 13 },
+      show: !background,
+      webPreferences: {
+        preload: join(here, '../preload/index.cjs'),
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    }),
+  );
   browser = new BrowserManager(window, {
     overlayPreload: join(here, '../preload/browser-overlay.cjs'),
     onChange: () => {
@@ -211,7 +215,7 @@ function createWindow(background = false) {
     window = null;
     if (!quitting) void rpc('editing', { active: false }).catch(() => {});
   });
-  if (background) {
+  if (background && !isBackgroundE2E()) {
     const created = window;
     created.once('ready-to-show', () => {
       if (!created.isDestroyed()) created.showInactive();
@@ -251,7 +255,7 @@ void app
     }
     app.on('second-instance', () => {
       if (!window) createWindow();
-      window?.show();
+      if (!isBackgroundE2E()) window?.show();
     });
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
