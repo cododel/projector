@@ -457,6 +457,11 @@ export class Operations {
     throw new BlueprintError('UNKNOWN_TOOL', 'Unsupported tool');
   }
   async operator(name: string, input: unknown): Promise<unknown> {
+    if (name === 'snapshot' || name === 'getDocument')
+      return this.store.withReadScope(() => this.performOperator(name, input));
+    return this.performOperator(name, input);
+  }
+  private async performOperator(name: string, input: unknown): Promise<unknown> {
     const args = z.record(z.string(), z.unknown()).parse(input ?? {});
     const required = (key: string) => id.parse(args[key]);
     switch (name) {
@@ -487,15 +492,9 @@ export class Operations {
           selectedProject: this.selectedProject,
           artifacts: await Promise.all(
             artifacts.map(async (artifact) => {
-              const document = await this.store.document(artifact.id, artifact.latestRevision);
               return {
                 ...artifact,
-                displayStatus: document.draft
-                  ? 'Draft'
-                  : document.approved
-                    ? 'Approved'
-                    : 'In review',
-                privateChanges: Boolean(document.dirty || document.editor),
+                ...(await this.store.artifactStatus(artifact)),
               };
             }),
           ),

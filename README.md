@@ -71,6 +71,8 @@ Each plan retains its own document, **New tab** and browser tabs. The plus butto
 
 Cross buttons and middle-click share the same close behavior. Tab/plan changes first complete any comment and wait for private writes. Closing a tab preserves Blueprint answers and annotations locally; it does not **Save**, approve, notify the agent or delete the plan. A failed write blocks closing and offers Retry or Cancel. A site's `beforeunload` warning separately asks **Close tab / Cancel**, with Cancel as the default, before its native view is destroyed.
 
+Refresh notifications are coalesced into one reader. Updates received during a read, plan transition or private autosave remain pending and are read afterward; a departing document ignores refreshes for a different artifact/version. The plan list reads status metadata without compiling document previews. Repeated registry/state reads share a cache only within one read operation; subsequent operations revalidate the files.
+
 Tab order, selected document version, browser URLs and sidebar visibility are local app metadata. Browser views restore lazily by URL after restart; unsaved website form contents and full browser history are not restored. Frozen annotation captures retain their original context. Repeated cleanup or a page destroyed before window shutdown must not cause a lifecycle exception.
 
 ## Authoring

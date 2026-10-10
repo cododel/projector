@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, realpath, unlink, access } from 'node:fs/prom
 import { join, relative } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   parseDocument,
   areWidgetsCompatible,
@@ -91,9 +92,36 @@ export interface Feedback {
 function digest(value: unknown) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
+function isApprovedState(
+  state: State,
+  approval: { stateHash: string; savedStateId?: string | null } | null,
+  saved: { id: string } | null,
+  dirty: boolean,
+) {
+  return (
+    !dirty &&
+    approval?.stateHash === digest(state) &&
+    (approval?.savedStateId === undefined || approval.savedStateId === (saved?.id ?? null))
+  );
+}
 export class Store {
   db: DatabaseSync;
   states: ArtifactStates;
+  private reads = new AsyncLocalStorage<Map<string, Promise<unknown>>>();
+  /** Only snapshot/document reads enter this scope; writes never share cached values. */
+  withReadScope<T>(read: () => Promise<T>): Promise<T> {
+    return this.reads.run(new Map(), read);
+  }
+  memoRead<T>(key: readonly string[], read: () => Promise<T>): Promise<T> {
+    const scope = this.reads.getStore();
+    if (!scope) return read();
+    const name = JSON.stringify(key);
+    const previous = scope.get(name);
+    if (previous) return previous as Promise<T>;
+    const result = read();
+    scope.set(name, result);
+    return result;
+  }
   constructor(
     public data: string,
     private compile: (source: string) => Promise<ParsedDocument> = async (source) =>
@@ -176,6 +204,9 @@ export class Store {
     return path;
   }
   async artifacts(): Promise<Artifact[]> {
+    return this.memoRead(['artifacts'], () => this.readArtifacts());
+  }
+  private async readArtifacts(): Promise<Artifact[]> {
     const output: Artifact[] = [];
     for (const p of this.projects()) {
       const root = join(await this.base(p), 'artifacts');
@@ -400,6 +431,11 @@ export class Store {
     return result;
   }
   async revision(artifactId: string, revisionId: string) {
+    return this.memoRead(['revision', artifactId, revisionId], () =>
+      this.readRevision(artifactId, revisionId),
+    );
+  }
+  private async readRevision(artifactId: string, revisionId: string) {
     const a = await this.artifact(artifactId);
     if (!a.revisions.some((r) => r.id === revisionId))
       throw new BlueprintError('UNKNOWN_REVISION', 'Unknown published revision');
@@ -428,6 +464,9 @@ export class Store {
     return beneath(this.data, 'states', id, rev + '.json');
   }
   async state(id: string, rev: string): Promise<State> {
+    return this.memoRead(['state', id, rev], () => this.readState(id, rev));
+  }
+  private async readState(id: string, rev: string): Promise<State> {
     await this.recoverChanges();
     const revision = await this.revision(id, rev);
     try {
@@ -497,6 +536,9 @@ export class Store {
     await this.recoverChanges();
   }
   async recoverChanges() {
+    return this.memoRead(['recoverChanges'], () => this.readChanges());
+  }
+  private async readChanges() {
     const directory = join(this.data, 'changes');
     let names: string[];
     try {
@@ -538,6 +580,11 @@ export class Store {
     }
   }
   async publicState(artifactId: string, revisionId: string): Promise<State> {
+    return this.memoRead(['publicState', artifactId, revisionId], () =>
+      this.readPublicState(artifactId, revisionId),
+    );
+  }
+  private async readPublicState(artifactId: string, revisionId: string): Promise<State> {
     const a = await this.artifact(artifactId);
     const saved = await this.states.read(artifactId);
     const key = artifactId + ':' + revisionId;
@@ -735,6 +782,9 @@ export class Store {
     throw new BlueprintError('UNKNOWN_ANNOTATION', 'Unknown annotation');
   }
   async packages(projectId: string): Promise<Feedback[]> {
+    return this.memoRead(['packages', projectId], () => this.readPackages(projectId));
+  }
+  private async readPackages(projectId: string): Promise<Feedback[]> {
     const p = this.project(projectId);
     const dir = join(await this.base(p), 'feedback');
     let dirs: string[];
@@ -1089,11 +1139,22 @@ export class Store {
       annotations,
       dirty,
       latestSavedStateId: saved?.id ?? null,
-      approved:
-        !dirty &&
-        approval?.stateHash === digest(state) &&
-        (approval?.savedStateId === undefined || approval.savedStateId === (saved?.id ?? null)),
+      approved: isApprovedState(state, approval, saved, dirty),
       draft: false,
+    };
+  }
+  /** Sidebar status uses the same approval/dirty rules without compiling or rendering a plan. */
+  async artifactStatus(artifact: Artifact) {
+    const revisionId = artifact.latestRevision;
+    if (!revisionId) return { displayStatus: 'Draft', privateChanges: false };
+    const dirty = await this.states.dirty(artifact.id);
+    const state = await this.state(artifact.id, revisionId);
+    const approval = await this.approval(artifact.id, revisionId);
+    const saved = await this.states.read(artifact.id);
+    const approved = isApprovedState(state, approval, saved, dirty);
+    return {
+      displayStatus: approved ? 'Approved' : 'In review',
+      privateChanges: dirty || Boolean(await this.editor(artifact.id, revisionId)),
     };
   }
 }

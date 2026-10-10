@@ -104,6 +104,9 @@ export class ArtifactStates {
     return beneath(this.store.data, 'artifact-drafts', artifactId + '.json');
   }
   async draft(artifactId: string): Promise<ArtifactDraft> {
+    return this.store.memoRead(['artifactDraft', artifactId], () => this.readDraft(artifactId));
+  }
+  private async readDraft(artifactId: string): Promise<ArtifactDraft> {
     await this.store.recoverChanges();
     try {
       return await json<ArtifactDraft>(this.path(artifactId));
@@ -171,6 +174,9 @@ export class ArtifactStates {
     await atomicJson(this.path(artifactId), draft);
   }
   async list(artifactId: string): Promise<SavedState[]> {
+    return this.store.memoRead(['savedStates', artifactId], () => this.readList(artifactId));
+  }
+  private async readList(artifactId: string): Promise<SavedState[]> {
     const artifact = await this.store.artifact(artifactId);
     const root = await this.store.artifactRoot(artifact);
     let names: string[];

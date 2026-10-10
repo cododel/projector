@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import mermaid from 'mermaid';
 import type { DocumentNode, WidgetDefinition } from '../document/types';
@@ -7,6 +7,7 @@ import { markerGeometry, commentPosition } from '../shared/annotation-marker';
 import { CommentComposer, type CommentComposerHandle } from './CommentComposer';
 import type { WorkspaceSnapshot } from '../shared/workspace';
 import { captureTextSelection, anchorRange } from './anchors';
+import { RefreshQueue } from './refresh-queue';
 import {
   canonicalString as canonical,
   type AnnotationStateContext as AnnotationState,
@@ -136,8 +137,21 @@ function documentBridge(): Bridge {
       typeof event.data !== 'object'
     )
       return;
-    const data = event.data as { type?: string; id?: string; result?: unknown; error?: string };
+    const data = event.data as {
+      type?: string;
+      id?: string;
+      result?: unknown;
+      error?: string;
+      artifactId?: string;
+      revisionId?: string | null;
+    };
     if (data.type === 'blueprint-refresh') {
+      const identity = new URLSearchParams(window.location.search);
+      if (
+        data.artifactId !== identity.get('artifactId') ||
+        (data.revisionId ?? null) !== (identity.get('revisionId') || null)
+      )
+        return;
       for (const listener of listeners) listener();
       return;
     }
@@ -281,16 +295,17 @@ function App(): React.JSX.Element {
   const transitioning = useRef(false);
   const homeWrites = useRef(Promise.resolve());
   const failedHomeWrite = useRef<(() => Promise<unknown>) | null>(null);
-  const reloadGeneration = useRef(0);
-  const reload = useCallback(async () => {
-    const generation = ++reloadGeneration.current;
+  const readView = useCallback(async (isCurrent: () => boolean) => {
     const next = await invoke<Snapshot>('snapshot');
+    if (!isCurrent()) return;
     const loaded = next.selected
       ? await invoke<DocumentResult>('getDocument', next.selected)
       : null;
+    if (!isCurrent()) return;
     const nextBrowser = await invoke<BrowserSnapshot>('browserSnapshot');
+    if (!isCurrent()) return;
     const nextWorkspace = await invoke<WorkspaceSnapshot>('workspaceSnapshot');
-    if (generation !== reloadGeneration.current) return;
+    if (!isCurrent()) return;
     // Commit one coherent view; an older preview response must never navigate a published frame back.
     setSnapshot(next);
     setDocument(loaded);
@@ -310,13 +325,23 @@ function App(): React.JSX.Element {
         void invoke('editing', { active: true });
       }
     }
+    // Only a coherent read refreshes the current surface. Identity prevents a late
+    // notification from making the departing iframe read its old document again.
+    if (next.selected && surfaceReady.current)
+      frame.current?.contentWindow?.postMessage(
+        { type: 'blueprint-refresh', ...next.selected },
+        'blueprint://document',
+      );
   }, []);
+  const refreshQueue = useMemo(
+    () => new RefreshQueue(readView, (error) => setError(message(error))),
+    [readView],
+  );
+  const reload = useCallback(() => refreshQueue.request(), [refreshQueue]);
   useEffect(() => {
-    void reload().catch((e) => setError(message(e)));
-    return bridge.onRefresh(() => {
-      void reload().catch((e) => setError(message(e)));
-    });
-  }, [reload]);
+    refreshQueue.invalidate();
+    return bridge.onRefresh(() => refreshQueue.invalidate());
+  }, [refreshQueue]);
   const selected = snapshot.selected;
   const artifact = snapshot.artifacts.find((item) => item.id === selected?.artifactId);
   useEffect(() => {
@@ -380,12 +405,15 @@ function App(): React.JSX.Element {
     workspace.layout?.rightSidebarVisible,
   ]);
   async function action(callback: () => Promise<unknown>): Promise<void> {
+    const resume = refreshQueue.pause();
     setBusy(true);
     setError('');
     try {
       await callback();
+      resume();
       await reload();
     } catch (e) {
+      resume();
       setError(message(e));
       try {
         await reload();
@@ -393,6 +421,7 @@ function App(): React.JSX.Element {
         /* Preserve the original failure if runtime is disconnected. */
       }
     } finally {
+      resume();
       setBusy(false);
     }
   }
@@ -460,18 +489,21 @@ function App(): React.JSX.Element {
   async function transition(callback: () => Promise<unknown>, retry = false): Promise<void> {
     if (transitioning.current) return;
     transitioning.current = true;
+    const resume = refreshQueue.pause();
     setBusy(true);
     setError('');
     try {
       await finishEditors(retry);
       setBusy(true);
       await callback();
+      resume();
       await reload();
       setRetryTransition(null);
     } catch (error) {
       setError(message(error));
       setRetryTransition(() => () => transition(callback, true));
     } finally {
+      resume();
       transitioning.current = false;
       setBusy(false);
     }
@@ -639,16 +671,6 @@ function App(): React.JSX.Element {
     window.addEventListener('message', relay);
     return () => window.removeEventListener('message', relay);
   }, [selected?.artifactId, selected?.revisionId, reload, jump]);
-  useEffect(
-    () =>
-      bridge.onRefresh(() =>
-        frame.current?.contentWindow?.postMessage(
-          { type: 'blueprint-refresh' },
-          'blueprint://document',
-        ),
-      ),
-    [],
-  );
   function sendJump(): void {
     if (jump)
       frame.current?.contentWindow?.postMessage(
@@ -706,7 +728,10 @@ function App(): React.JSX.Element {
       setEditing(null);
       await invoke('editing', { active: false });
     }
-    await reload();
+    // finishEditors may call this while transition has suspended reads. Its
+    // caller will await the final refresh after the private write has completed.
+    if (transitioning.current) refreshQueue.invalidate();
+    else await reload();
   }
   async function jumpTo(annotation: Annotation): Promise<void> {
     if (annotation.kind === 'browser-area') {
@@ -1671,59 +1696,66 @@ function DocumentSurface(): React.JSX.Element {
   const saves = useRef(Promise.resolve());
   const failedTasks = useRef(new Map<string, () => Promise<unknown>>());
   const generation = useRef(0);
-  const saving = useRef(false);
   const restored = useRef(false);
-  const readGeneration = useRef(0);
   const article = useRef<HTMLElement>(null);
   const pendingJump = useRef<Annotation | null>(null);
   const parsed = data?.revision ?? data?.preview;
-  const queue = useCallback((task: () => Promise<unknown>, key = 'editor'): Promise<void> => {
-    saving.current = true;
-    const token = ++generation.current;
-    saves.current = saves.current
-      .catch(() => undefined)
-      .then(async () => {
-        try {
-          await task();
-          failedTasks.current.delete(key);
-          if (token === generation.current) {
-            setSaveStatus('Saved locally');
-            saving.current = false;
-          }
-        } catch (e) {
-          setError(message(e));
-          failedTasks.current.set(key, task);
-          setSaveStatus('Save failed');
-          if (token === generation.current) saving.current = false;
-        }
+  const readView = useCallback(
+    async (isCurrent: () => boolean) => {
+      const writeToken = generation.current;
+      const next = await invoke<DocumentResult>('getDocument', { artifactId, revisionId });
+      if (!isCurrent() || writeToken !== generation.current || failedTasks.current.size) return;
+      setData(next);
+      setDetails({
+        ...detailDefaults((next.revision ?? next.preview)?.blocks ?? []),
+        ...next.view?.details,
       });
-    return saves.current;
-  }, []);
-  const reload = useCallback(async () => {
-    const readToken = ++readGeneration.current;
-    const writeToken = generation.current;
-    const next = await invoke<DocumentResult>('getDocument', { artifactId, revisionId });
-    if (readToken !== readGeneration.current || writeToken !== generation.current) return;
-    setData(next);
-    setDetails({
-      ...detailDefaults((next.revision ?? next.preview)?.blocks ?? []),
-      ...next.view?.details,
-    });
-    if (!restored.current) {
-      restored.current = true;
-      if (next.editor && !next.editor.annotationId) {
-        setSelection(next.editor.selection);
-        setComment(next.editor.comment);
-        void invoke('editing', { active: true });
+      if (!restored.current) {
+        restored.current = true;
+        if (next.editor && !next.editor.annotationId) {
+          setSelection(next.editor.selection);
+          setComment(next.editor.comment);
+          void invoke('editing', { active: true });
+        }
       }
-    }
-  }, [artifactId, revisionId]);
+    },
+    [artifactId, revisionId],
+  );
+  const refreshQueue = useMemo(
+    () => new RefreshQueue(readView, (error) => setError(message(error))),
+    [readView],
+  );
+  const reload = useCallback(() => refreshQueue.request(), [refreshQueue]);
+  const queue = useCallback(
+    (task: () => Promise<unknown>, key = 'editor'): Promise<void> => {
+      const resume = refreshQueue.pause();
+      refreshQueue.invalidate();
+      const token = ++generation.current;
+      saves.current = saves.current
+        .catch(() => undefined)
+        .then(async () => {
+          try {
+            await task();
+            failedTasks.current.delete(key);
+            if (token === generation.current) {
+              setSaveStatus('Saved locally');
+            }
+          } catch (e) {
+            setError(message(e));
+            failedTasks.current.set(key, task);
+            setSaveStatus('Save failed');
+          } finally {
+            resume();
+          }
+        });
+      return saves.current;
+    },
+    [refreshQueue],
+  );
   useEffect(() => {
-    void reload().catch((e) => setError(message(e)));
-    return bridge.onRefresh(() => {
-      if (!saving.current) void reload().catch((e) => setError(message(e)));
-    });
-  }, [reload]);
+    refreshQueue.invalidate();
+    return bridge.onRefresh(() => refreshQueue.invalidate());
+  }, [refreshQueue]);
   useEffect(() => {
     void invoke('previewing', { active: Boolean(previewState) });
   }, [previewState]);
