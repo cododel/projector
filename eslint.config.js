@@ -15,7 +15,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   { files: ['**/*.ts', '**/*.tsx'], rules: { '@typescript-eslint/no-explicit-any': 'error' } },
   {
-    files: ['scripts/*.mjs'],
+    files: ['scripts/**/*.mjs'],
     languageOptions: { globals: { process: 'readonly', console: 'readonly' } },
   },
 );

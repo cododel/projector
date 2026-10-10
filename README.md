@@ -44,7 +44,7 @@ If the operator connection drops during a call, the app reports `UNKNOWN_RESULT`
 pnpm package:mac
 ```
 
-This builds an **unsigned** `dist/Blueprint-darwin-<architecture>/Blueprint.app` for the build machine's architecture. Packaging requires macOS Node.js **24.20.0**; it copies that Node executable, its license and the compiled bridge into the `.app`. `BLUEPRINT_NODE` can select an equivalent official Node distribution at build time. Use the same architecture for Node and Electron. This is a local development package; Developer ID signing, notarization, cross-architecture release builds and public distribution are not implemented yet.
+This builds an **unsigned** `dist/Blueprint-darwin-<architecture>/Blueprint.app` for the build machine's architecture. Packaging requires macOS Node.js **24.20.0**; it copies that Node executable, its license and the compiled bridge into the `.app`. `BLUEPRINT_NODE` can select an equivalent official Node distribution at build time. Use the same architecture for Node and Electron. Packaging uses the already installed, version-checked Electron distribution and does not download from GitHub; missing or mismatched dependencies fail explicitly. This is a local development package; Developer ID signing, notarization, cross-architecture release builds and public distribution are not implemented yet.
 
 Open the generated `.app` and use its **MCP connection** dialog to get the command at its current location. The packaged helper needs neither a Node entry in `PATH` nor the source project. Missing helper resources are reported explicitly; the app does not emit a configuration that falls back to an external Node installation.
 
@@ -98,6 +98,8 @@ The checks use disposable projects and app data. Electron and Unix-socket tests 
 `pnpm check`, `pnpm test:e2e` and direct `pnpm exec playwright test` run Electron in the background by default: windows stay hidden and cannot take native focus; background throttling is disabled so rendering, input and captures continue. This also applies to development, packaged-app tests and standalone fixtures. A native-event audit fails the run if a test window is shown or receives focus, or the app becomes active; its log is retained in `.tmp/e2e-window-audit-*/windows.jsonl`. Normal `pnpm dev` / `pnpm start` behavior is unchanged.
 
 For deliberate visible debugging, use `pnpm test:e2e:visible`, or `BLUEPRINT_E2E_VISIBLE=1 pnpm exec playwright test <test-file>`. These commands can interrupt desktop work. Hidden rendering is not a replacement for separate checks of native focus, system IME, menus/dialogs or normal visibility/throttling behavior. Background E2E is verified on macOS with Electron 44.7.0; it still requires a graphical session and is not a headless backend.
+
+Local `pnpm check` runs hidden E2E without activating windows; it does not prove desktop composition or native focus/input. `pnpm check:full` runs static checks, units, the hidden-mode guarantee, all applicable visible E2E (including authenticated Codex). Project pre-push validates each pushed commit in an isolated checkout. No VM or pre-commit dependency. Full runs intentionally take focus; see [Testing](docs/testing/TESTING.md).
 
 `BLUEPRINT_DATA` and `BLUEPRINT_SOCKET` allow isolated test runtimes. The normal application needs no environment variables.
 

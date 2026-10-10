@@ -15,12 +15,21 @@ test('relocated packaged app uses its own stdio helper without system Node and p
   let child: ChildProcessWithoutNullStreams | undefined;
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
-    const { stdout } = await promisify(execFile)(process.execPath, ['scripts/package-mac.mjs'], {
-      cwd: resolve('.'),
-      timeout: 90000,
-      env: { ...process.env, BLUEPRINT_NODE: process.execPath },
-    });
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ['--import', resolve('tests/fixtures/offline-network.mjs'), 'scripts/package-mac.mjs'],
+      {
+        cwd: resolve('.'),
+        timeout: 90000,
+        env: {
+          ...process.env,
+          BLUEPRINT_NODE: process.execPath,
+          BLUEPRINT_PACKAGE_OUTPUT: join(root, 'package'),
+        },
+      },
+    );
     const source = stdout.trim().split('\n').at(-1)!;
+    expect(source).toBe(join(root, 'package', `Blueprint-darwin-${process.arch}`, 'Blueprint.app'));
     const relocated = join(root, 'Moved app with spaces', 'Blueprint.app');
     await mkdir(join(root, 'Moved app with spaces'));
     // Framework symlinks must stay relative when an application bundle is relocated.

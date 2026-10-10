@@ -12,6 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,11 +35,39 @@ export async function packageMac({ output = resolve('dist'), node = process.exec
   if (info.version !== '24.20.0' || info.platform !== 'darwin' || info.arch !== process.arch)
     throw new Error('Packaging requires macOS Node.js 24.20.0 matching the build architecture.');
   const metadata = JSON.parse(await readFile('package.json', 'utf8'));
+  const require = createRequire(import.meta.url);
+  const electron = require('electron');
+  const distribution = join(dirname(require.resolve('electron/package.json')), 'dist');
+  const installed = JSON.parse(
+    execFileSync(
+      electron,
+      [
+        '-p',
+        'JSON.stringify({ version: process.versions.electron, platform: process.platform, arch: process.arch })',
+      ],
+      { encoding: 'utf8', timeout: 5000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } },
+    ),
+  );
+  if (
+    installed.version !== metadata.devDependencies.electron ||
+    installed.platform !== 'darwin' ||
+    installed.arch !== process.arch
+  )
+    throw new Error(
+      'Installed Electron must match the pinned version and macOS build architecture. Reinstall dependencies before packaging.',
+    );
   await access('out/main/index.js');
   await access('out/bridge.cjs');
   await mkdir('.tmp', { recursive: true });
   const stage = await mkdtemp(resolve('.tmp/package-mac-'));
   try {
+    // Packager accepts local distribution ZIPs. Build one from the already
+    // installed runtime, retaining framework symlinks; never download at test time.
+    const electronZip = join(stage, `electron-v${installed.version}-darwin-${installed.arch}.zip`);
+    execFileSync('/usr/bin/zip', ['-q', '-0', '-y', '-r', electronZip, '.'], {
+      cwd: distribution,
+      timeout: 60000,
+    });
     const source = join(stage, 'app');
     const helper = join(stage, 'mcp');
     await mkdir(source);
@@ -73,6 +102,7 @@ exec "$helper_dir/node" "$helper_dir/bridge.cjs" "$@"
       appBundleId: 'dev.cododel.blueprint',
       appVersion: metadata.version,
       electronVersion: metadata.devDependencies.electron,
+      electronZipDir: stage,
       platform: 'darwin',
       arch: process.arch,
       out: output,
@@ -91,5 +121,10 @@ exec "$helper_dir/node" "$helper_dir/bridge.cjs" "$@"
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  console.log(await packageMac({ node: process.env.BLUEPRINT_NODE ?? process.execPath }));
+  console.log(
+    await packageMac({
+      node: process.env.BLUEPRINT_NODE ?? process.execPath,
+      output: process.env.BLUEPRINT_PACKAGE_OUTPUT,
+    }),
+  );
 }

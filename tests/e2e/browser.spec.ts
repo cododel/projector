@@ -19,6 +19,15 @@ test.beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'bp-browser-'));
   server = createServer((request, response) => {
     response.setHeader('Content-Type', 'text/html');
+    if (request.url?.startsWith('/pixels')) {
+      const second = request.url.includes('state=2');
+      response.end(`<!doctype html><title>Pixel fixture</title><style>
+        html,body{margin:0;background:${second ? 'rgb(205,44,71)' : 'rgb(23,171,61)'};min-height:3000px}
+        #scroll-marker{position:absolute;left:80px;top:180px;width:80px;height:80px;background:rgb(113,51,149)}
+        #marker{position:fixed;left:700px;top:400px;width:40px;height:40px;background:rgb(19,67,211)}
+        </style><h1>State ${second ? 2 : 1}</h1><div id="marker"></div><div id="scroll-marker"></div>`);
+      return;
+    }
     response.end(
       '<!doctype html><title>Browser fixture</title><style>body{min-height:2000px;background:#eef}h1{background:#ffc;padding:25px}</style><h1>External page</h1><a href="/next">Next page</a><p>' +
         request.url +
@@ -315,6 +324,8 @@ async function saveSelectedElement(
       page.url().startsWith('data:text/html;base64,') &&
       Buffer.from(page.url().split(',')[1], 'base64').toString().includes('id="layer"'),
   );
+  // The reused overlay receives its live state asynchronously over IPC.
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
   await overlay.mouse.move(point.x, point.y);
   await expect(overlay.locator('#rectangle')).toBeVisible();
   await overlay.mouse.click(point.x, point.y);
@@ -920,12 +931,18 @@ test('closing a native browser respects beforeunload and unregisters only on des
   expect(cancelled).toMatchObject({ cancelled: true, activeTabId: tab.id });
   expect(cancelled.tabs.map((t) => t.id)).toContain(tab.id);
   expect(external.isClosed()).toBe(false);
-  const closed = await app.evaluate(async ({ dialog }, id) => {
-    dialog.showMessageBoxSync = () => 0;
-    return globalThis.browserTest.manager.command({ tabId: id, action: 'close' });
-  }, tab.id);
-  expect(closed).toMatchObject({ cancelled: false, activeTabId: null, tabs: [] });
-  expect(external.isClosed()).toBe(true);
+  const closed = await app.evaluate(
+    async ({ dialog, webContents }, { id, url }) => {
+      const contents = webContents.getAllWebContents().find((value) => value.getURL() === url)!;
+      dialog.showMessageBoxSync = () => 0;
+      const state = await globalThis.browserTest.manager.command({ tabId: id, action: 'close' });
+      return { ...state, destroyed: contents.isDestroyed() };
+    },
+    { id: tab.id, url },
+  );
+  expect(closed).toMatchObject({ cancelled: false, activeTabId: null, tabs: [], destroyed: true });
+  // Electron destruction and the Playwright page notification use separate channels.
+  await expect.poll(() => external.isClosed()).toBe(true);
   await app.evaluate(() => {
     globalThis.browserTest.manager.dispose();
     globalThis.browserTest.manager.dispose();
@@ -1029,4 +1046,155 @@ test('browser finishComment flushes latest text, cancels empty and blocks transi
   expect(
     await app.evaluate(() => globalThis.browserTest.annotations.map((a) => a.comment)),
   ).toEqual(['Latest text before switching', 'Keep on disk failure']);
+});
+
+// Decode the captured artifact, not a second screenshot or the live DOM. Exact fixture
+// colors at interior points catch valid-but-unrelated, wrong-tab and stale PNGs.
+async function expectViewportPixels(png: string, background: number[]) {
+  const pixels = await app.evaluate(({ nativeImage }, png) => {
+    const image = nativeImage.createFromBuffer(Buffer.from(png, 'base64'));
+    const size = image.getSize();
+    const bitmap = image.toBitmap();
+    return [
+      [100, 300],
+      [720, 420],
+      [100, 80],
+    ].map(([x, y]) => {
+      const offset =
+        (Math.floor((y * size.height) / 540) * size.width + Math.floor((x * size.width) / 840)) * 4;
+      // Native bitmap uses BGRA on the supported macOS/Linux platforms.
+      return [bitmap[offset + 2], bitmap[offset + 1], bitmap[offset], bitmap[offset + 3]];
+    });
+  }, png);
+  expect(pixels).toEqual([background, [19, 67, 211, 255], [113, 51, 149, 255]]);
+}
+
+test('captured viewport pixels identify the current page and reject wrong or stale frames', async () => {
+  const captures: string[] = [];
+  for (const state of [1, 2]) {
+    const pageUrl = `${url}pixels?state=${state}`;
+    const tab = await app.evaluate(
+      async (_, url) =>
+        globalThis.browserTest.manager.open({
+          artifactId: 'artifact-a',
+          projectId: 'project-a',
+          url,
+        }),
+      pageUrl,
+    );
+    const external = await pageAt((page) => page.url() === pageUrl);
+    await expect(external.getByRole('heading')).toHaveText(`State ${state}`);
+    await external.evaluate(() => window.scrollTo(0, 120));
+    await app.evaluate(
+      async (_, id) => globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+      tab.id,
+    );
+    const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+    await overlay.mouse.move(50, 50);
+    await overlay.mouse.down();
+    await overlay.mouse.move(160, 110);
+    await overlay.mouse.up();
+    await overlay.getByLabel('Area annotation comment').fill(`State ${state}`);
+    await overlay.getByLabel('Area annotation comment').press('Enter');
+    await expect
+      .poll(() => app.evaluate(() => globalThis.browserTest.annotations.length))
+      .toBe(state);
+    const capture = await app.evaluate(() => globalThis.browserTest.annotations.at(-1)!.capture);
+    expect(capture.source).toMatchObject({ url: pageUrl, scroll: { x: 0, y: 120 } });
+    const expected = state === 1 ? [23, 171, 61, 255] : [205, 44, 71, 255];
+    await expectViewportPixels(capture.png, expected);
+    captures.push(capture.png);
+    await app.evaluate(async () => globalThis.browserTest.manager.finishComment());
+  }
+  // Sensitivity checks exercise exactly the consumer oracle above. Valid PNG encoding
+  // and dimensions alone must never accept another page or an earlier state.
+  await expect(expectViewportPixels(captures[0], [205, 44, 71, 255])).rejects.toThrow();
+  const wrong = await app.evaluate(({ nativeImage }) => {
+    const bitmap = Buffer.alloc(840 * 540 * 4, 255);
+    return nativeImage
+      .createFromBitmap(bitmap, { width: 840, height: 540 })
+      .toPNG()
+      .toString('base64');
+  });
+  await expect(expectViewportPixels(wrong, [205, 44, 71, 255])).rejects.toThrow();
+});
+
+test('trusted overlay forwards repeated wheel to page and nested sticky table', async () => {
+  const tab = await app.evaluate(
+    async (_, url) =>
+      globalThis.browserTest.manager.open({
+        artifactId: 'artifact-a',
+        projectId: 'project-a',
+        url,
+      }),
+    url,
+  );
+  const external = await pageAt((page) => page.url() === url);
+  await expect(external.getByRole('heading')).toBeVisible();
+  await external.evaluate(() => {
+    document.body.style.margin = '0';
+    document.body.insertAdjacentHTML(
+      'afterbegin',
+      `<div id="nested" style="position:fixed;left:80px;top:100px;width:500px;height:260px;overflow:auto;z-index:10;background:white">
+      <table style="border-collapse:collapse;width:100%"><thead style="position:sticky;top:0;background:yellow"><tr><th>Sticky heading</th></tr></thead>
+      <tbody>${Array.from({ length: 70 }, (_, i) => `<tr><td style="height:40px">Row ${i}</td></tr>`).join('')}</tbody></table></div>`,
+    );
+    const state = window as unknown as { wheelEvents: boolean[] };
+    state.wheelEvents = [];
+    addEventListener('wheel', (event) => state.wheelEvents.push(event.isTrusted));
+  });
+  await app.evaluate(
+    async (_, id) => globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
+    tab.id,
+  );
+  const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+  for (const target of ['page', 'nested'] as const) {
+    await overlay.mouse.move(target === 'page' ? 740 : 250, target === 'page' ? 450 : 200);
+    const scroll = () =>
+      external.evaluate(
+        (target) =>
+          target === 'page' ? window.scrollY : document.getElementById('nested')!.scrollTop,
+        target,
+      );
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const before = await scroll();
+      await overlay.mouse.wheel(0, 350);
+      await expect.poll(scroll).toBeGreaterThan(before + 100);
+      const down = await scroll();
+      if (target === 'nested') {
+        const heading = await external.locator('th').boundingBox();
+        expect(heading!.y).toBeCloseTo(100, 0);
+      }
+      await overlay.mouse.wheel(0, -350);
+      await expect.poll(scroll).toBeLessThan(down - 100);
+      if (target === 'nested') {
+        const heading = await external.locator('th').boundingBox();
+        expect(heading!.y).toBeCloseTo(100, 0);
+      }
+    }
+  }
+  const events = await external.evaluate(
+    () => (window as unknown as { wheelEvents: boolean[] }).wheelEvents,
+  );
+  expect(events).toHaveLength(8);
+  expect(events.every(Boolean)).toBe(true);
+  // Deliberately drop wheel at the real BrowserManager -> webContents boundary.
+  // The same scroll oracle must reject a transport that reports success but delivers no input.
+  await app.evaluate(({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find((value) => value.getURL() === url)!;
+    const original = contents.sendInputEvent.bind(contents);
+    contents.sendInputEvent = (event) => {
+      if (event.type !== 'mouseWheel') original(event);
+    };
+  }, url);
+  const before = await external.evaluate(() => document.getElementById('nested')!.scrollTop);
+  await overlay.mouse.wheel(0, 350);
+  await expect(
+    expect
+      .poll(() => external.evaluate(() => document.getElementById('nested')!.scrollTop), {
+        timeout: 400,
+      })
+      .toBeGreaterThan(before + 100),
+  ).rejects.toThrow();
 });
