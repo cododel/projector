@@ -9,6 +9,7 @@ import type { GuideResponse } from '../guide';
 import { CommentComposer, type CommentComposerHandle } from './CommentComposer';
 import type { WorkspaceSnapshot } from '../shared/workspace';
 import { captureTextSelection, anchorRange } from './anchors';
+import { annotationClip } from './annotation-visibility';
 import { RefreshQueue } from './refresh-queue';
 import {
   canonicalString as canonical,
@@ -1432,7 +1433,7 @@ function App(): React.JSX.Element {
                     className="annotation-jump"
                     onClick={() => void transition(() => jumpTo(annotation))}
                   >
-                    <span className="annotation-number">{annotation.number ?? i + 1}</span>
+                    <AnnotationBadge number={annotation.number ?? i + 1} />
                     <blockquote>{annotation.quote || 'Selected area'}</blockquote>
                   </button>
                   <div className="annotation-actions">
@@ -1699,6 +1700,27 @@ function App(): React.JSX.Element {
   );
 }
 
+function AnnotationBadge({ number }: { number: number }): React.JSX.Element {
+  const { cx, cy, path } = markerGeometry({ x: 3.75, y: 24.25 }, { width: 28, height: 28 });
+  return (
+    <svg className="annotation-number" viewBox="0 0 28 28" aria-hidden="true">
+      <path d={path} fill="#4263da" stroke="white" strokeWidth="1.5" strokeLinejoin="round" />
+      <text
+        x={cx}
+        y={cy}
+        dominantBaseline="central"
+        textAnchor="middle"
+        fontSize="10"
+        fontWeight="600"
+        fontFamily="sans-serif"
+        fill="white"
+      >
+        {number}
+      </text>
+    </svg>
+  );
+}
+
 function Diagram({ source }: { source: string }): React.JSX.Element {
   const container = useRef<HTMLDivElement>(null);
   const [error, setError] = useState('');
@@ -1830,6 +1852,7 @@ function DocumentSurface(): React.JSX.Element {
       id: string;
       number: number;
       pointer?: { x: number; y: number };
+      markerVisible: boolean;
       rects: { x: number; y: number; width: number; height: number }[];
     }[]
   >([]);
@@ -2070,25 +2093,55 @@ function DocumentSurface(): React.JSX.Element {
                   },
                 ]
               : [];
+          const rawRects = range
+            ? Array.from(range.getClientRects()).map((r) => ({
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+              }))
+            : area.map((r) => ({ ...r, x: r.x - window.scrollX, y: r.y - window.scrollY }));
+          const last = rawRects.at(-1);
+          const pointer =
+            area.length && capture?.pointer
+              ? {
+                  x: capture.pointer.x + (capture.scroll?.x ?? 0) - window.scrollX,
+                  y: capture.pointer.y + (capture.scroll?.y ?? 0) - window.scrollY,
+                }
+              : last
+                ? { x: last.x + last.width, y: last.y + last.height / 4 }
+                : undefined;
+          const markerClip = annotationClip(range?.endContainer ?? root);
+          const highlightClip = annotationClip(range?.commonAncestorContainer ?? root);
           return {
             id: a.id,
             number: a.number ?? i + 1,
-            ...(area.length && capture?.pointer
-              ? {
-                  pointer: {
-                    x: capture.pointer.x + (capture.scroll?.x ?? 0),
-                    y: capture.pointer.y + (capture.scroll?.y ?? 0),
-                  },
-                }
-              : {}),
-            rects: range
-              ? Array.from(range.getClientRects()).map((r) => ({
-                  x: r.x + window.scrollX,
-                  y: r.y + window.scrollY,
-                  width: r.width,
-                  height: r.height,
-                }))
-              : area,
+            pointer: pointer && { x: pointer.x + window.scrollX, y: pointer.y + window.scrollY },
+            markerVisible: Boolean(
+              pointer &&
+              markerClip &&
+              pointer.x >= markerClip.left &&
+              pointer.x <= markerClip.right &&
+              pointer.y >= markerClip.top &&
+              pointer.y <= markerClip.bottom,
+            ),
+            rects: rawRects.flatMap((r) => {
+              if (!highlightClip) return [];
+              const left = Math.max(r.x, highlightClip.left),
+                top = Math.max(r.y, highlightClip.top);
+              const right = Math.min(r.x + r.width, highlightClip.right),
+                bottom = Math.min(r.y + r.height, highlightClip.bottom);
+              return right > left && bottom > top
+                ? [
+                    {
+                      x: left + window.scrollX,
+                      y: top + window.scrollY,
+                      width: right - left,
+                      height: bottom - top,
+                    },
+                  ]
+                : [];
+            }),
           };
         }),
     );
@@ -2098,12 +2151,12 @@ function DocumentSurface(): React.JSX.Element {
     const observer = new ResizeObserver(redraw);
     if (article.current) observer.observe(article.current);
     window.addEventListener('resize', redraw);
-    window.addEventListener('scroll', redraw);
+    window.addEventListener('scroll', redraw, true);
     article.current?.addEventListener('toggle', redraw, true);
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', redraw);
-      window.removeEventListener('scroll', redraw);
+      window.removeEventListener('scroll', redraw, true);
       article.current?.removeEventListener('toggle', redraw, true);
     };
   }, [redraw, parsed]);
@@ -2563,104 +2616,71 @@ function DocumentSurface(): React.JSX.Element {
         )}
       </article>
       <div className="annotation-layer" aria-hidden="true">
-        {highlights.flatMap((a, annotationIndex) =>
-          a.rects.map((r, i) => (
-            <React.Fragment key={`${a.id}-${i}`}>
+        {highlights.map((a, annotationIndex) => (
+          <React.Fragment key={a.id}>
+            {a.rects.map((r, i) => (
               <span
+                key={i}
                 className={`text-highlight ${focused === a.id ? 'focused' : ''}`}
                 style={{ left: r.x, top: r.y, width: r.width, height: r.height }}
               />
-              {i === a.rects.length - 1 &&
-                a.pointer &&
-                (() => {
-                  const { cx, cy, path } = markerGeometry(
-                    { x: a.pointer.x - window.scrollX, y: a.pointer.y - window.scrollY },
-                    { width: innerWidth, height: innerHeight },
-                  );
-                  return (
-                    <svg
-                      className="area-annotation-number inline-annotation-number"
-                      data-pointer-x={a.pointer.x}
-                      data-pointer-y={a.pointer.y}
-                      style={{ left: window.scrollX, top: window.scrollY }}
-                      width={innerWidth}
-                      height={innerHeight}
-                      aria-label={`Annotation ${a.number}`}
+            ))}
+            {a.markerVisible &&
+              a.pointer &&
+              (() => {
+                const pointer = {
+                  x: a.pointer.x - window.scrollX,
+                  y: a.pointer.y - window.scrollY,
+                };
+                const overlap = highlights
+                  .slice(0, annotationIndex)
+                  .filter(
+                    (previous) =>
+                      previous.markerVisible &&
+                      previous.pointer &&
+                      Math.abs(previous.pointer.x - a.pointer!.x) < 8 &&
+                      Math.abs(previous.pointer.y - a.pointer!.y) < 8,
+                  ).length;
+                const base = markerGeometry(pointer, { width: innerWidth, height: innerHeight });
+                const center = overlap ? { x: base.cx + overlap * 24, y: base.cy } : undefined;
+                const { cx, cy, path } = markerGeometry(
+                  pointer,
+                  { width: innerWidth, height: innerHeight },
+                  center,
+                );
+                return (
+                  <svg
+                    className="area-annotation-number inline-annotation-number"
+                    data-pointer-x={a.pointer.x}
+                    data-pointer-y={a.pointer.y}
+                    style={{ left: window.scrollX, top: window.scrollY }}
+                    width={innerWidth}
+                    height={innerHeight}
+                    aria-label={`Annotation ${a.number}`}
+                  >
+                    <path
+                      d={path}
+                      fill="#4263da"
+                      stroke="white"
+                      strokeWidth="1.5"
+                      strokeLinejoin="round"
+                    />
+                    <text
+                      x={cx}
+                      y={cy}
+                      dominantBaseline="central"
+                      textAnchor="middle"
+                      fontSize="10"
+                      fontWeight="600"
+                      fill="white"
                     >
-                      <path
-                        d={path}
-                        fill="#4263da"
-                        stroke="white"
-                        strokeWidth="1.5"
-                        strokeLinejoin="round"
-                      />
-                      <text
-                        x={cx}
-                        y={cy + 4}
-                        textAnchor="middle"
-                        fontSize="12"
-                        fontWeight="600"
-                        fill="white"
-                      >
-                        {a.number}
-                      </text>
-                    </svg>
-                  );
-                })()}
-              {i === a.rects.length - 1 &&
-                !a.pointer &&
-                (() => {
-                  const overlap = highlights.slice(0, annotationIndex).filter((previous) => {
-                    const last = previous.rects.at(-1);
-                    return (
-                      last &&
-                      Math.abs(last.x + last.width - r.x - r.width) < 8 &&
-                      Math.abs(last.y - r.y) < 8
-                    );
-                  }).length;
-                  const pointer = {
-                    x: r.x + r.width - window.scrollX,
-                    y: r.y + r.height / 4 - window.scrollY,
-                  };
-                  const center = overlap
-                    ? { x: pointer.x + 10 + overlap * 24, y: pointer.y - 14 }
-                    : undefined;
-                  const { cx, cy, path } = markerGeometry(
-                    pointer,
-                    { width: innerWidth, height: innerHeight },
-                    center,
-                  );
-                  return (
-                    <svg
-                      className="area-annotation-number inline-annotation-number"
-                      style={{ left: window.scrollX, top: window.scrollY }}
-                      width={innerWidth}
-                      height={innerHeight}
-                      aria-label={`Annotation ${a.number}`}
-                    >
-                      <path
-                        d={path}
-                        fill="#4263da"
-                        stroke="white"
-                        strokeWidth="1.5"
-                        strokeLinejoin="round"
-                      />
-                      <text
-                        x={cx}
-                        y={cy + 4}
-                        textAnchor="middle"
-                        fontSize="12"
-                        fontWeight="600"
-                        fill="white"
-                      >
-                        {a.number}
-                      </text>
-                    </svg>
-                  );
-                })()}
-            </React.Fragment>
-          )),
-        )}
+                      {a.number}
+                    </text>
+                  </svg>
+                );
+              })()}
+          </React.Fragment>
+        ))}
       </div>
       {candidate && !selection && (
         <button

@@ -416,6 +416,17 @@ test('live hover selects a table cell and markers follow DOM geometry, sticky sc
   const scrolled = await nativeMarkerBounds();
   expect(scrolled[1].y).toBeLessThanOrEqual(initial[1].y);
   expect(scrolled[1].y).toBeGreaterThan(initial[1].y - 15);
+  const stickyTip = (await nativeMarkerTips())[1];
+  await external.evaluate(() => window.scrollTo(0, 500));
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  expect((await nativeMarkerTips())[0].x).toBeCloseTo(stickyTip.x);
+  expect((await nativeMarkerTips())[0].y).toBeCloseTo(stickyTip.y);
+  await external.evaluate(() => window.scrollTo(0, 50));
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(2);
+  // Native views can be recreated in a different order: compare the content tip by position.
+  await expect
+    .poll(async () => (await nativeMarkerTips()).find((tip) => tip.y > stickyTip.y + 20)?.y)
+    .toBeCloseTo(initialTips[0].y - 50);
   await app.evaluate(
     ({ webContents }, url) =>
       webContents
@@ -425,7 +436,7 @@ test('live hover selects a table cell and markers follow DOM geometry, sticky sc
     url,
   );
   await expect
-    .poll(async () => (await nativeMarkerTips())[0]?.x)
+    .poll(async () => (await nativeMarkerTips()).find((tip) => tip.y > stickyTip.y + 20)?.x)
     .toBeCloseTo(20 + (cell.x + 30) * 1.25);
   // Changing the semantic state removes live markers rather than pretending old coordinates remain valid.
   await external.locator('#target-cell').evaluate((el) => {
@@ -863,7 +874,7 @@ test('zoom changing after viewport capture rejects the selection without creatin
   expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(0);
 });
 
-test('table markers follow nested scrolling and hide when the cell is fully clipped by overflow', async () => {
+test('table markers hide when their pointer is clipped, even while the cell remains visible, and return with content', async () => {
   const tab = await app.evaluate(
     async (_electron, url) =>
       globalThis.browserTest.manager.open({
@@ -876,7 +887,7 @@ test('table markers follow nested scrolling and hide when the cell is fully clip
   const external = await pageAt((page) => page.url() === url);
   await external.evaluate(() => {
     document.body.innerHTML =
-      '<h1>Outside the table</h1><div id="table-viewport" style="margin-top:30px;width:450px;height:140px;overflow:auto"><table style="border-collapse:collapse;width:420px"><tr><td style="height:60px">First row</td></tr><tr><td id="nested-cell" style="height:60px;background:#dfd">Chosen nested cell</td></tr><tr><td style="height:60px">Third row</td></tr><tr><td style="height:60px">Fourth row</td></tr><tr><td style="height:60px">Fifth row</td></tr></table></div>';
+      '<h1>Outside the table</h1><div id="table-viewport" style="margin-top:30px;width:450px;height:140px;overflow:auto"><table style="border-collapse:collapse;width:820px"><tr><td style="height:60px">First row</td></tr><tr><td id="nested-cell" style="height:60px;background:#dfd">Chosen nested cell</td></tr><tr><td style="height:60px">Third row</td></tr><tr><td style="height:60px">Fourth row</td></tr><tr><td style="height:60px">Fifth row</td></tr></table></div>';
   });
   const cell = await external.locator('#nested-cell').boundingBox();
   if (!cell) throw new Error('Cell unavailable');
@@ -893,10 +904,41 @@ test('table markers follow nested scrolling and hide when the cell is fully clip
   );
   await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
   const original = (await nativeMarkerBounds())[0];
+  const originalTip = (await nativeMarkerTips())[0];
+  const viewport = await external.locator('#table-viewport').boundingBox();
+  if (!viewport) throw new Error('Table viewport unavailable');
   await external.locator('#table-viewport').evaluate((el) => {
     el.scrollTop = 20;
   });
   await expect.poll(async () => (await nativeMarkerBounds())[0]?.y).toBeLessThan(original.y - 15);
+  await external.locator('#table-viewport').evaluate(
+    (el, scroll) => {
+      el.scrollTop = scroll;
+    },
+    cell.y + 20 - viewport.y + 8,
+  );
+  const partial = await external.locator('#nested-cell').boundingBox();
+  if (!partial) throw new Error('Partially clipped cell unavailable');
+  expect(partial.y).toBeLessThan(viewport.y);
+  expect(partial.y + partial.height).toBeGreaterThan(viewport.y);
+  // The element still paints inside the viewport, but its original pointer does not.
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+  await external.locator('#table-viewport').evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  await external.locator('#table-viewport').evaluate((el) => {
+    el.scrollLeft = 80;
+  });
+  const horizontal = await external.locator('#nested-cell').boundingBox();
+  if (!horizontal) throw new Error('Horizontally clipped cell unavailable');
+  expect(horizontal.x).toBeLessThan(viewport.x);
+  expect(horizontal.x + horizontal.width).toBeGreaterThan(viewport.x);
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+  await external.locator('#table-viewport').evaluate((el) => {
+    el.scrollLeft = 0;
+  });
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
   await external.locator('#table-viewport').evaluate((el) => {
     el.scrollTop = 140;
   });
@@ -907,6 +949,12 @@ test('table markers follow nested scrolling and hide when the cell is fully clip
     el.scrollTop = 0;
   });
   await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(1);
+  await external.evaluate((offset) => window.scrollTo(0, offset), cell.y + cell.height + 20);
+  expect((await external.locator('#nested-cell').boundingBox())!.y + cell.height).toBeLessThan(0);
+  await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
+  await external.evaluate(() => window.scrollTo(0, 0));
+  await expect.poll(async () => (await nativeMarkerTips())[0]?.y).toBeCloseTo(originalTip.y);
+  expect((await nativeMarkerTips())[0]?.x).toBeCloseTo(originalTip.x);
 });
 
 test('closing a native browser respects beforeunload and unregisters only on destruction', async () => {

@@ -165,6 +165,19 @@ test('document area capture stays private until Save and opens its numbered froz
     const svg = Buffer.from(imageParts, 'base64').toString();
     expect(svg).toContain('M250 210 ');
     expect(svg).not.toContain('Review captured table');
+    await overlay.getByRole('button', { name: 'Close captured viewport' }).click();
+    await frame.locator('body').evaluate((body) => {
+      const spacer = document.createElement('div');
+      spacer.id = 'area-scroll-fixture';
+      spacer.style.height = '2200px';
+      body.append(spacer);
+      window.scrollTo(0, 800);
+    });
+    await expect(frame.locator('.area-annotation-number')).toHaveCount(0);
+    await frame.locator('body').evaluate(() => window.scrollTo(0, 0));
+    await expect(marker).toHaveAttribute('data-pointer-x', '250');
+    await expect(marker).toHaveAttribute('data-pointer-y', '210');
+    await frame.locator('#area-scroll-fixture').evaluate((element) => element.remove());
     // A click selects the hovered semantic paragraph; dragging above retained arbitrary geometry.
     await page.getByRole('button', { name: 'Annotate document', exact: true }).click();
     const paragraph = await frame

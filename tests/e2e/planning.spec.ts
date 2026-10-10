@@ -416,10 +416,77 @@ test('overlapping markers, disclosed old-version navigation and private annotati
     ).toBeVisible();
   }
   await expect(frame.locator('.inline-annotation-number')).toHaveText(['1', '2']);
+  await expect(page.locator('svg.annotation-number')).toHaveCount(2);
+  await expect(page.locator('svg.annotation-number text').first()).toHaveAttribute(
+    'font-size',
+    '10',
+  );
+  const badgeOutline = await page
+    .locator('svg.annotation-number path')
+    .first()
+    .evaluate((path) => {
+      const box = (path as SVGGraphicsElement).getBBox();
+      return { width: box.width, height: box.height };
+    });
+  expect(badgeOutline.width).toBeCloseTo(22, 1);
+  expect(badgeOutline.height).toBeCloseTo(22, 1);
+  await expect(page.locator('svg.annotation-number path').first()).toHaveAttribute(
+    'stroke',
+    'white',
+  );
+  await page.screenshot({ path: '.tmp/tasks/annotation-markers-20261011/compact-badges.png' });
+  await page
+    .locator('svg.annotation-number')
+    .first()
+    .screenshot({ path: '.tmp/tasks/annotation-markers-20261011/round-badge.png' });
   const boxes = await frame
     .locator('.inline-annotation-number path')
     .evaluateAll((elements) => elements.map((e) => e.getBoundingClientRect().x));
   expect(boxes[0]).not.toBe(boxes[1]);
+  // Neighboring annotations keep compact badges, rather than stretching a tail to the quote.
+  for (const path of await frame.locator('.inline-annotation-number path').all()) {
+    expect(await path.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(
+      30,
+    );
+  }
+  await frame.locator('body').evaluate((body) => {
+    const spacer = document.createElement('div');
+    spacer.id = 'scroll-fixture';
+    spacer.style.height = '2200px';
+    body.append(spacer);
+    window.scrollTo(0, 800);
+  });
+  await expect(frame.locator('.inline-annotation-number')).toHaveCount(0);
+  await frame.locator('body').evaluate(() => window.scrollTo(0, 0));
+  await expect(frame.locator('.inline-annotation-number')).toHaveText(['1', '2']);
+  await frame
+    .locator('p')
+    .filter({ hasText: 'Repeated decision text.' })
+    .evaluate((paragraph) => {
+      const clip = document.createElement('div');
+      clip.id = 'nested-annotation-scroll';
+      clip.style.cssText = 'width:120px;height:50px;overflow:auto';
+      paragraph.before(clip);
+      clip.append(paragraph);
+      paragraph.style.cssText = 'width:400px;white-space:nowrap;margin:0';
+    });
+  // The quote is partly visible, but its annotation point is clipped.
+  await expect(frame.locator('.inline-annotation-number')).toHaveCount(0);
+  await frame.locator('#nested-annotation-scroll').evaluate((element) => {
+    element.scrollLeft = 80;
+  });
+  await expect(frame.locator('.inline-annotation-number')).toHaveText(['1', '2']);
+  await frame.locator('#nested-annotation-scroll').evaluate((element) => {
+    element.scrollLeft = 240;
+  });
+  await expect(frame.locator('.inline-annotation-number')).toHaveCount(0);
+  await frame.locator('#nested-annotation-scroll').evaluate((element) => {
+    const paragraph = element.querySelector('p')!;
+    paragraph.removeAttribute('style');
+    element.replaceWith(paragraph);
+    document.getElementById('scroll-fixture')?.remove();
+  });
+  await expect(frame.locator('.inline-annotation-number')).toHaveText(['1', '2']);
   const height = await page.locator('.plan-row').evaluate((e) => e.getBoundingClientRect().height);
   expect(height).toBeLessThanOrEqual(36);
   await page.getByRole('button', { name: 'Save', exact: true }).click();

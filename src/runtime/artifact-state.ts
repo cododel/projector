@@ -303,7 +303,7 @@ export class ArtifactStates {
         const height = capture.source.viewport.height;
         const pointer = capture.source.pointer ?? { x: rect.x, y: rect.y };
         const { cx, cy, path: markerPath } = markerGeometry(pointer, { width, height });
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><image width="${width}" height="${height}" href="data:image/png;base64,${raw.toString('base64')}"/><rect x="${rect.x}" y="${rect.y}" width="${rect.width}" height="${rect.height}" fill="none" stroke="#1688ff" stroke-width="3"/><path d="${markerPath}" fill="#4263da" stroke="white" stroke-width="1.5" stroke-linejoin="round"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="600" font-family="sans-serif" fill="white">${number}</text></svg>`;
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><image width="${width}" height="${height}" href="data:image/png;base64,${raw.toString('base64')}"/><rect x="${rect.x}" y="${rect.y}" width="${rect.width}" height="${rect.height}" fill="none" stroke="#1688ff" stroke-width="3"/><path d="${markerPath}" fill="#4263da" stroke="white" stroke-width="1.5" stroke-linejoin="round"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="10" font-weight="600" font-family="sans-serif" fill="white">${number}</text></svg>`;
         const attachmentId = capture.id;
         const file = 'attachments/' + attachmentId + '.svg';
         await atomicText(join(stage, file), svg);

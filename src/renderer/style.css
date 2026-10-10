@@ -1372,3 +1372,16 @@ summary:focus-visible {
   outline: 2px solid #4263da;
   outline-offset: 2px;
 }
+
+/* Sidebar badges share the compact SVG silhouette used on the document and captures. */
+svg.annotation-number {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 26px;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+}
+svg.annotation-number::after {
+  display: none;
+}
