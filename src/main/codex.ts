@@ -4,7 +4,6 @@ import { createServer, type Server } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { createInterface } from 'node:readline';
 import { WebSocket, WebSocketServer } from 'ws';
 import { z } from 'zod';
 import type {
@@ -165,35 +164,57 @@ function allowedToken(value: string | undefined, token: string) {
 class DiscoveryClient {
   private sequence = 0;
   private pending = new Map<string | number, Pending>();
-  private lines;
+  private input = '';
+  private inputBytes = 0;
   private failure: Error | null = null;
-  constructor(readonly child: ChildProcessWithoutNullStreams) {
-    this.lines = createInterface({ input: child.stdout });
-    this.lines.on('line', (line) => {
-      if (Buffer.byteLength(line) > MAX_MESSAGE_BYTES) {
+  private receive = (chunk: string) => {
+    if (this.failure) return;
+    this.input += chunk;
+    this.inputBytes += Buffer.byteLength(chunk);
+    let end: number;
+    // JSONL is delimited by LF. Node readline also splits U+2028/U+2029,
+    // which are legal characters inside a JSON string such as a thread preview.
+    while ((end = this.input.indexOf('\n')) !== -1) {
+      const line = this.input.slice(0, end);
+      const bytes = Buffer.byteLength(line);
+      this.input = this.input.slice(end + 1);
+      this.inputBytes -= bytes + 1;
+      if (bytes > MAX_MESSAGE_BYTES) {
         this.fail(new Error('CODEX_PROTOCOL_MESSAGE_TOO_LARGE'));
         return;
       }
-      try {
-        const value = envelopeSchema.parse(JSON.parse(line));
-        if (value.id === undefined) return;
-        const pending = this.pending.get(value.id);
-        if (!pending) return;
-        this.pending.delete(value.id);
-        clearTimeout(pending.timer);
-        if (value.error !== undefined)
-          pending.reject(new Error('CODEX_RPC_FAILED: ' + JSON.stringify(value.error)));
-        else pending.resolve(value.result);
-      } catch {
-        this.fail(new Error('CODEX_PROTOCOL_INVALID_MESSAGE'));
-      }
-    });
+      this.receiveLine(line);
+      if (this.failure) return;
+    }
+    if (this.inputBytes > MAX_MESSAGE_BYTES)
+      this.fail(new Error('CODEX_PROTOCOL_MESSAGE_TOO_LARGE'));
+  };
+  constructor(readonly child: ChildProcessWithoutNullStreams) {
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', this.receive);
     child.on('error', (error) => this.fail(new Error('CODEX_START_FAILED: ' + error.message)));
     child.on('exit', () => this.fail(new Error('CODEX_BACKEND_STOPPED')));
     child.stderr.resume();
   }
+  private receiveLine(line: string) {
+    try {
+      const value = envelopeSchema.parse(JSON.parse(line));
+      if (value.id === undefined) return;
+      const pending = this.pending.get(value.id);
+      if (!pending) return;
+      this.pending.delete(value.id);
+      clearTimeout(pending.timer);
+      if (value.error !== undefined)
+        pending.reject(new Error('CODEX_RPC_FAILED: ' + JSON.stringify(value.error)));
+      else pending.resolve(value.result);
+    } catch {
+      this.fail(new Error('CODEX_PROTOCOL_INVALID_MESSAGE'));
+    }
+  }
   private fail(error: Error) {
     this.failure = error;
+    this.input = '';
+    this.inputBytes = 0;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);
@@ -222,7 +243,8 @@ class DiscoveryClient {
     this.child.stdin.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
   }
   async stop() {
-    this.lines.close();
+    this.child.stdout.off('data', this.receive);
+    this.child.stdout.resume();
     this.fail(new Error('CODEX_BACKEND_STOPPED'));
     await terminate(this.child);
   }

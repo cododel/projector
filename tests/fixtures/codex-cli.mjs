@@ -4,6 +4,7 @@ import console from 'node:console';
 import { URL } from 'node:url';
 import { setTimeout } from 'node:timers';
 import { spawn } from 'node:child_process';
+import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
@@ -17,8 +18,8 @@ const thread = (threadId = id, path = cwd) => ({
   id: threadId,
   sessionId: 'root-exact-fixture',
   cwd: path,
-  name: 'Exact fixture session',
-  preview: 'Preview',
+  name: process.env.CODEX_FIXTURE_NAME ?? 'Exact fixture session',
+  preview: process.env.CODEX_FIXTURE_PREVIEW ?? 'Preview',
   updatedAt: 1750000000,
   status: { type: 'notLoaded' },
   ephemeral: false,
@@ -182,7 +183,15 @@ if (args.includes('--remote')) {
   if (flag('--listen') === 'stdio://') {
     const lines = createInterface({ input: process.stdin });
     lines.on('line', (line) =>
-      dispatch(JSON.parse(line), (value) => process.stdout.write(JSON.stringify(value) + '\n')),
+      dispatch(JSON.parse(line), (value) => {
+        const output = Buffer.from(JSON.stringify(value) + '\n');
+        const separator = output.indexOf(Buffer.from('\u2028'));
+        if (process.env.CODEX_FIXTURE_FRAGMENT_STDIO === '1' && separator !== -1) {
+          // Split inside the UTF-8 code point, rather than on a character boundary.
+          process.stdout.write(output.subarray(0, separator + 1));
+          setTimeout(() => process.stdout.write(output.subarray(separator + 1)), 5);
+        } else process.stdout.write(output);
+      }),
     );
   } else {
     const listener = new URL(flag('--listen'));

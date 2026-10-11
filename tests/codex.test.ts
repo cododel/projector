@@ -51,6 +51,26 @@ async function auditRequests(path: string) {
         JSON.parse(line) as { kind: string; method?: string; params?: unknown; args?: string[] },
     );
 }
+it.each(['0', '1'])(
+  'discovers and reads Unicode JSONL previews with fragmented stdout=%s',
+  async (fragmented) => {
+    const preview = 'Before\u2028after line separator\u2029after paragraph separator 日本語';
+    const { manager, project, audit } = await setup({
+      CODEX_FIXTURE_NAME: '',
+      CODEX_FIXTURE_PREVIEW: preview,
+      CODEX_FIXTURE_FRAGMENT_STDIO: fragmented,
+    });
+    const sessions = await manager.discover([{ id: 'project', path: project }]);
+    expect(sessions.find((session) => session.id === 'thread-exact-fixture')?.title).toBe(preview);
+    expect((await manager.read('thread-exact-fixture')).title).toBe(preview);
+    expect(manager.snapshot().error).toBeNull();
+    expect(
+      (await auditRequests(audit)).some(
+        (request) => request.method === 'thread/start' || request.method === 'thread/resume',
+      ),
+    ).toBe(false);
+  },
+);
 async function until(predicate: () => boolean) {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (predicate()) return;
