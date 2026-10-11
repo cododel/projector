@@ -124,8 +124,9 @@ async function showCapturedAnnotation(artifactId: string, annotationId: string) 
   browser.setBounds(bounds);
   const { annotations } = (await rpc('getDocument', {
     artifactId,
-    revisionId: ((await rpc('artifactProperties', { artifactId })) as { latestRevision: string })
-      .latestRevision,
+    revisionId: (
+      (await rpc('artifactProperties', { artifactId })) as { latestRevision: string | null }
+    ).latestRevision,
   })) as { annotations: { id: string; comment: string }[] };
   await browser.showCapture({
     artifactId,
@@ -206,14 +207,9 @@ function createWindow(background = false) {
       if (!value) browserDraftArtifact = null;
     },
     onAnnotation: async (value) => {
-      const artifact = (await rpc('artifactProperties', { artifactId: value.artifactId })) as {
-        latestRevision: string | null;
-      };
-      if (!artifact.latestRevision)
-        throw new Error('Publish the document before annotating browser areas');
       const result = await rpc('addAreaAnnotation', {
         artifactId: value.artifactId,
-        revisionId: value.revisionId ?? artifact.latestRevision,
+        revisionId: value.revisionId ?? null,
         kind: 'browser-area',
         comment: value.comment,
         capture: value.capture,
@@ -457,10 +453,90 @@ void app
         (Boolean(developmentUrl) && event.senderFrame?.url.startsWith(developmentUrl!));
       if (!trusted || event.senderFrame !== event.sender.mainFrame)
         throw new Error('Untrusted IPC sender');
+      if (name === 'projectMenu') {
+        const { projectId } = z
+          .object({ projectId: z.string().min(1) })
+          .strict()
+          .parse(args);
+        const { projects } = (await rpc('snapshot')) as {
+          projects: { id: string; available?: boolean }[];
+        };
+        const project = projects.find((item) => item.id === projectId);
+        if (!project) throw new Error('PROJECT_NOT_FOUND');
+        if (!window || window.isDestroyed()) throw new Error('Project window unavailable');
+        const target = window;
+        return new Promise<{ action: 'new' | 'locate' | 'remove' | null }>((resolve) => {
+          const menu = Menu.buildFromTemplate([
+            {
+              label: 'New plan',
+              enabled: project.available !== false,
+              click: () => resolve({ action: 'new' }),
+            },
+            ...(project.available === false
+              ? [{ label: 'Locate folder', click: () => resolve({ action: 'locate' }) }]
+              : []),
+            { type: 'separator' as const },
+            { label: 'Remove from list', click: () => resolve({ action: 'remove' }) },
+          ]);
+          menu.popup({ window: target, callback: () => resolve({ action: null }) });
+        });
+      }
+      if (name === 'planMenu') {
+        const { artifactId } = z
+          .object({ artifactId: z.string().min(1) })
+          .strict()
+          .parse(args);
+        await rpc('artifactProperties', { artifactId });
+        if (!window || window.isDestroyed()) throw new Error('Plan window unavailable');
+        const target = window;
+        return new Promise<{ action: 'rename' | null }>((resolve) => {
+          const menu = Menu.buildFromTemplate([
+            { label: 'Rename plan', click: () => resolve({ action: 'rename' }) },
+          ]);
+          menu.popup({ window: target, callback: () => resolve({ action: null }) });
+        });
+      }
+      if (name === 'createEmptyPlan') {
+        const input = z
+          .object({ projectId: z.string().min(1), operationId: z.string().min(1) })
+          .strict()
+          .parse(args);
+        await browser?.finishComment();
+        const result = (await rpc('createEmptyPlan', input)) as {
+          artifactId: string;
+          sourcePath: string;
+          sourceFile: string;
+        };
+        await rpc('selectProject', { projectId: input.projectId });
+        await rpc('openArtifact', { artifactId: result.artifactId, revisionId: null });
+        workspace.document(result.artifactId, null);
+        browser?.select(null);
+        await workspace.save();
+        workspaceRefresh();
+        return result;
+      }
+      if (name === 'renamePlan') {
+        const input = z
+          .object({
+            artifactId: z.string().min(1),
+            title: z.string().trim().min(1).max(300),
+            operationId: z.string().min(1),
+          })
+          .strict()
+          .parse(args);
+        const result = await rpc('renamePlan', input);
+        workspaceRefresh();
+        return result;
+      }
       if (name === 'workspaceSnapshot') return workspace.snapshot();
       if (name === 'workspaceLayout') {
         const layout = z
-          .object({ leftSidebarVisible: z.boolean(), rightSidebarVisible: z.boolean() })
+          .object({
+            leftSidebarVisible: z.boolean(),
+            rightSidebarVisible: z.boolean(),
+            leftSidebarWidth: z.number().int().min(200).max(500).optional(),
+            rightSidebarWidth: z.number().int().min(250).max(500).optional(),
+          })
           .strict()
           .parse(args);
         const previous = workspace.snapshot();
@@ -517,8 +593,7 @@ void app
             workspace.address(input.artifactId, entry.id, z.string().parse(input.url));
           if (input.action === 'select') await selectWorkspaceTab(input.artifactId, entry.id);
           if (input.action === 'open') {
-            if (!artifact?.latestRevision)
-              throw new Error('Publish the plan before opening browser content.');
+            if (!artifact) throw new Error('WORKSPACE_ARTIFACT_REQUIRED');
             if (entry.kind !== 'home' || !browser) throw new Error('WORKSPACE_HOME_REQUIRED');
             const native = await browser.open({
               artifactId: input.artifactId,
@@ -581,8 +656,6 @@ void app
             projectId: string;
             latestRevision: string | null;
           };
-          if (!artifact.latestRevision)
-            throw new Error('Publish the document before opening browser content');
           const native = await browser.open({
             artifactId: artifact.id,
             projectId: artifact.projectId,
@@ -615,6 +688,10 @@ void app
         if (name === 'browserSelect') {
           browser.select(z.string().nullable().parse(input.tabId));
           return browser.snapshot();
+        }
+        if (name === 'browserResizeMode') {
+          browser.setResizeMode(z.boolean().parse(input.active));
+          return { updated: true };
         }
         if (name === 'browserBounds') {
           const rect = z

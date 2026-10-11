@@ -66,6 +66,18 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Blueprint guide', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Blueprint guide', exact: true }).click();
+  await page.locator('.guide-content').click();
+  await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toBeVisible();
+  await page.locator('.modal-backdrop').click({ position: { x: 8, y: 60 } });
+  await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Blueprint guide', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'MCP connection', exact: true }).click();
+  await page.getByRole('dialog', { name: 'MCP connection' }).getByRole('heading').click();
+  await expect(page.getByRole('dialog', { name: 'MCP connection' })).toBeVisible();
+  await page.locator('.modal-backdrop').click({ position: { x: 8, y: 60 } });
+  await expect(page.getByRole('dialog', { name: 'MCP connection' })).toHaveCount(0);
+
   await app.evaluate(({ dialog }, path) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] });
   }, project);
@@ -109,7 +121,14 @@ test('offline guide, folder relocation and copy conflict preserve the original p
     },
     join(root, 'moved'),
   );
-  await page.getByRole('button', { name: 'Locate folder' }).click();
+  await app.evaluate(({ Menu }) => {
+    Menu.prototype.popup = function (options) {
+      const locate = this.items.find((item) => item.label === 'Locate folder');
+      locate?.click();
+      options?.callback?.();
+    };
+  });
+  await page.getByRole('button', { name: 'Project actions for project', exact: true }).click();
   await page.getByRole('button', { name: 'Original plan', exact: true }).click();
   await expect(page.frameLocator('iframe').getByRole('textbox')).toHaveValue('PRIVATE retained');
   await cp(join(root, 'moved'), join(root, 'copy'), { recursive: true });

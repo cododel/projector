@@ -14,7 +14,12 @@ const tab = z.discriminatedUnion('kind', [
   z.object({ id: z.string(), kind: z.literal('browser'), url: z.string(), title: z.string() }),
 ]);
 const layoutSchema = z
-  .object({ leftSidebarVisible: z.boolean(), rightSidebarVisible: z.boolean() })
+  .object({
+    leftSidebarVisible: z.boolean(),
+    rightSidebarVisible: z.boolean(),
+    leftSidebarWidth: z.number().int().min(200).max(500).optional(),
+    rightSidebarWidth: z.number().int().min(250).max(500).optional(),
+  })
   .strict();
 const defaultLayout: WorkspaceLayout = { leftSidebarVisible: true, rightSidebarVisible: true };
 const schema = z.object({

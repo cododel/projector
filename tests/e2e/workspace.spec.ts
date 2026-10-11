@@ -84,19 +84,7 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   await expect(page.getByRole('combobox', { name: 'Document version' })).toHaveValue(
     String(a.revision.revisionId),
   );
-  await app.evaluate(({ shell }) => {
-    shell.openExternal = async (url) => {
-      Object.assign(globalThis, { workspaceOpenedSession: url });
-    };
-  });
-  await page.getByRole('button', { name: 'Open Codex session for Third plan' }).click();
-  await expect
-    .poll(() =>
-      app.evaluate(
-        () => (globalThis as unknown as { workspaceOpenedSession: string }).workspaceOpenedSession,
-      ),
-    )
-    .toBe('codex://threads/session-three');
+  await expect(page.getByRole('button', { name: /Open Codex session for/ })).toHaveCount(0);
   await expect(frame.getByRole('heading', { name: 'First plan' })).toBeVisible();
   await frame.getByLabel('Decision', { exact: true }).fill('Private answer');
   await frame
@@ -170,6 +158,14 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
       });
       if (await toggle.count()) await toggle.click();
     }
+    await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+    const top = page.locator('.titlebar-center');
+    const topBounds = (await top.boundingBox())!;
+    const contentBounds = (await page.locator('.workspace').boundingBox())!;
+    expect(topBounds.x).toBeCloseTo(contentBounds.x, 0);
+    expect(topBounds.width).toBeCloseTo(contentBounds.width, 0);
+    await expect(page.locator('.titlebar-left')).toHaveCount(left ? 1 : 0);
+    await expect(page.locator('.titlebar-right')).toHaveCount(right ? 1 : 0);
     const bounds = await toolbar.boundingBox();
     for (const name of [
       'Document version',
@@ -196,6 +192,69 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   }
   await page.getByRole('button', { name: 'Show feedback sidebar' }).click();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1360, 900));
+  await page.getByRole('button', { name: 'MCP connection', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'MCP connection' })).toBeVisible();
+  await page.locator('.modal-backdrop').click({ position: { x: 350, y: 70 } });
+  await expect(page.getByRole('dialog', { name: 'MCP connection' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'MCP connection', exact: true })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  const resize = page.getByRole('separator', { name: 'Resize feedback sidebar' });
+  const resizeBounds = (await resize.boundingBox())!;
+  await page.mouse.move(resizeBounds.x + 3, resizeBounds.y + 150);
+  await page.mouse.down();
+  await expect(page.locator('.sidebar-resize-shield')).toBeVisible();
+  await page.mouse.move(resizeBounds.x - 87, resizeBounds.y + 150, { steps: 5 });
+  await page.mouse.up();
+  await expect(resize).toHaveAttribute('aria-valuenow', '400');
+  await expect(page.locator('.sidebar-resize-shield')).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await resize.dblclick();
+  await expect(resize).toHaveAttribute('aria-valuenow', '310');
+  await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+  const dragBounds = (await resize.boundingBox())!;
+  const dragX = dragBounds.x + 3;
+  const dragY = dragBounds.y + 150;
+  await page.mouse.move(dragX, dragY);
+  await page.mouse.down();
+  await page.mouse.move(dragX + 134, dragY, { steps: 4 }); // 176: still at minimum
+  await expect(page.locator('.feedback-panel')).toBeVisible();
+  await page.mouse.move(dragX + 136, dragY); // 174: collapse while still holding
+  const rightEdgeOffsets = await page.locator('.app').evaluate(async (el) => {
+    const offsets: number[] = [];
+    while (el.classList.contains('sidebar-animating')) {
+      const handle = el
+        .querySelector('[aria-label="Resize feedback sidebar"]')!
+        .getBoundingClientRect();
+      const panel = el.querySelector('.feedback-viewport')!.getBoundingClientRect();
+      offsets.push(Math.abs(handle.x + handle.width / 2 - panel.left));
+      await new Promise(requestAnimationFrame);
+    }
+    return offsets;
+  });
+  expect(rightEdgeOffsets.length).toBeGreaterThan(0);
+  expect(Math.max(...rightEdgeOffsets)).toBeLessThan(1);
+  await expect(page.getByRole('button', { name: 'Show feedback sidebar' })).toBeVisible();
+  await expect(page.locator('.feedback-panel')).toBeHidden();
+  await expect(page.locator('.sidebar-resize-shield')).toBeVisible();
+  await page.mouse.move(dragX + 50, dragY, { steps: 4 }); // 260: restore in same drag
+  await expect(page.locator('.feedback-panel')).toBeVisible();
+  await page.mouse.up();
+  await expect(resize).toHaveAttribute('aria-valuenow', '260');
+  const collapseBounds = (await resize.boundingBox())!;
+  await page.mouse.move(collapseBounds.x + 3, dragY);
+  await page.mouse.down();
+  await page.mouse.move(collapseBounds.x + 90, dragY, { steps: 4 });
+  await page.mouse.up();
+  await expect(page.locator('.sidebar-resize-shield')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Show feedback sidebar' })).toBeVisible();
+  await page.getByRole('button', { name: 'Show feedback sidebar' }).click();
+  await expect(resize).toHaveAttribute('aria-valuenow', '260');
 
   await app.evaluate(async ({ webContents, dialog }, url) => {
     const contents = webContents.getAllWebContents().find((c) => c.getURL() === url + '/')!;
@@ -249,6 +308,10 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   app = await launch();
   page = await app.firstWindow();
   frame = page.frameLocator('iframe');
+  await expect(page.getByRole('separator', { name: 'Resize feedback sidebar' })).toHaveAttribute(
+    'aria-valuenow',
+    '260',
+  );
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   await expect(page.getByRole('tab')).toHaveCount(3);
   await expect

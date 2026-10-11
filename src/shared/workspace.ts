@@ -8,6 +8,8 @@ export interface PlanWorkspace {
   lastDocumentRevisionId?: string | null;
 }
 export interface WorkspaceLayout {
+  leftSidebarWidth?: number;
+  rightSidebarWidth?: number;
   leftSidebarVisible: boolean;
   rightSidebarVisible: boolean;
 }

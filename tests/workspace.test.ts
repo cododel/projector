@@ -95,3 +95,20 @@ it('persists sidebar visibility separately from plan workspaces', async () => {
   });
   expect(restored.snapshot().plans).toEqual({});
 });
+
+it('persists sidebar sizes and rejects out-of-range layout writes', async () => {
+  const { path, workspace: w } = await setup();
+  w.setLayout({
+    leftSidebarVisible: true,
+    rightSidebarVisible: false,
+    leftSidebarWidth: 200,
+    rightSidebarWidth: 250,
+  });
+  await w.save();
+  const restored = new Workspace(path);
+  await restored.load();
+  expect(restored.snapshot().layout).toEqual(w.snapshot().layout);
+  expect(() => w.setLayout({ ...w.snapshot().layout, leftSidebarWidth: 199 })).toThrow();
+  expect(() => w.setLayout({ ...w.snapshot().layout, leftSidebarWidth: 501 })).toThrow();
+  expect(() => w.setLayout({ ...w.snapshot().layout, rightSidebarWidth: 249 })).toThrow();
+});

@@ -21,6 +21,19 @@ test('document area capture stays private until Save and opens its numbered froz
     const page = await app.firstWindow();
     const titlebar = page.getByRole('toolbar', { name: 'Window toolbar' });
     await expect(titlebar).toBeVisible();
+    const leftTop = titlebar.locator('.titlebar-left');
+    const rightTop = titlebar.locator('.titlebar-right');
+    const centerTop = titlebar.locator('.titlebar-center');
+    await expect(leftTop).toBeVisible();
+    const leftBounds = (await leftTop.boundingBox())!;
+    const sidebarBounds = (await page.locator('.sidebar').boundingBox())!;
+    expect(leftBounds.x + leftBounds.width).toBeCloseTo(sidebarBounds.x + sidebarBounds.width, 0);
+    expect((await centerTop.boundingBox())!.x).toBeCloseTo(leftBounds.x + leftBounds.width, 0);
+    expect((await rightTop.boundingBox())!.x).toBeCloseTo(
+      (await page.locator('.feedback-panel').boundingBox())!.x,
+      0,
+    );
+
     await expect(titlebar.getByRole('button', { name: 'Hide projects sidebar' })).toBeVisible();
     await expect(titlebar.getByRole('button', { name: 'Hide feedback sidebar' })).toBeVisible();
     expect(
@@ -73,9 +86,106 @@ test('document area capture stays private until Save and opens its numbered froz
     await frame.locator('body').evaluate(() => window.scrollTo(0, 100));
     expect((await page.locator('.plan-header').boundingBox())!.y).toBe(fixedHeader!.y);
     await frame.locator('body').evaluate(() => window.scrollTo(0, 0));
+    const rightResize = page.getByRole('separator', { name: 'Resize feedback sidebar' });
+    await expect(rightResize).toBeVisible();
+    await rightResize.press('End');
+    await expect(rightResize).toHaveAttribute('aria-valuenow', '500');
+    expect((await rightTop.boundingBox())!.x).toBeCloseTo(
+      (await page.locator('.feedback-panel').boundingBox())!.x,
+      0,
+    );
+    expect((await rightTop.boundingBox())!.width).toBe(500);
+
+    await rightResize.press('Home');
+    await expect(rightResize).toHaveAttribute('aria-valuenow', '250');
+    await rightResize.press('ArrowLeft');
+    await expect(rightResize).toHaveAttribute('aria-valuenow', '260');
+    await rightResize.dblclick();
+    await expect(rightResize).toHaveAttribute('aria-valuenow', '310');
+    const leftResize = page.getByRole('separator', { name: 'Resize projects sidebar' });
+    await expect(leftResize).toHaveAttribute('aria-valuemin', '200');
+    await leftResize.press('Home');
+    await expect(leftResize).toHaveAttribute('aria-valuenow', '200');
+    await leftResize.dblclick();
+    await expect(leftResize).toHaveAttribute('aria-valuenow', '250');
+    await leftResize.focus();
+    await expect(leftResize).toHaveCSS('outline-style', 'none');
+    const leftDragBounds = (await leftResize.boundingBox())!;
+    const x = leftDragBounds.x + 3;
+    const y = leftDragBounds.y + 150;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - 111, y, { steps: 4 });
+    expect(
+      await page.locator('.app').evaluate((el) => getComputedStyle(el).transitionDuration),
+    ).toBe('0.25s');
+    const edgeOffsets = await page.locator('.app').evaluate(async (el) => {
+      const offsets: number[] = [];
+      while (el.classList.contains('sidebar-animating')) {
+        const handle = el
+          .querySelector('[aria-label="Resize projects sidebar"]')!
+          .getBoundingClientRect();
+        const panel = el.querySelector('.sidebar-viewport')!.getBoundingClientRect();
+        offsets.push(Math.abs(handle.x + handle.width / 2 - panel.right));
+        await new Promise(requestAnimationFrame);
+      }
+      return offsets;
+    });
+    expect(edgeOffsets.length).toBeGreaterThan(0);
+    expect(Math.max(...edgeOffsets)).toBeLessThan(1);
+    await expect(page.locator('.sidebar')).toBeHidden();
+    await page.mouse.move(x - 109, y);
+    await expect(page.locator('.sidebar')).toBeVisible();
+    await page.mouse.move(x - 111, y);
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+    await expect(page.locator('.sidebar')).toBeVisible();
+    await expect(page.locator('.sidebar-resize-shield')).toHaveCount(0);
+    await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - 111, y);
+    await page.mouse.up();
+    await expect(page.getByRole('button', { name: 'Show projects sidebar' })).toBeVisible();
+    await page.getByRole('button', { name: 'Show projects sidebar' }).click();
+    await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+    await expect(leftResize).toHaveAttribute('aria-valuenow', '250');
     const originalWidth = (await page.locator('iframe').boundingBox())!.width;
+    const brandWidth = (await page.locator('.brand').boundingBox())!.width;
     await page.getByRole('button', { name: 'Hide projects sidebar' }).click();
+    expect(
+      await page.locator('.app').evaluate((el) => getComputedStyle(el).transitionDuration),
+    ).toBe('0.25s');
+
+    const widths = await page.locator('.sidebar-viewport').evaluate(async (el) => {
+      const samples: number[] = [];
+      const textWidths: number[] = [];
+      const start = performance.now();
+      while (performance.now() - start < 400) {
+        samples.push(el.getBoundingClientRect().width);
+        if (el.closest('.app')?.classList.contains('sidebar-animating'))
+          textWidths.push(el.querySelector('.brand')!.getBoundingClientRect().width);
+        await new Promise(requestAnimationFrame);
+      }
+      return { samples, textWidths };
+    });
+    expect(widths.samples.some((width) => width > 0 && width < 250)).toBe(true);
+    expect(widths.samples.at(-1)).toBe(0);
+    expect(widths.textWidths.length).toBeGreaterThan(0);
+    expect(widths.textWidths.every((width) => width === brandWidth)).toBe(true);
+
+    const feedbackWidth = (await page.locator('.feedback-panel').boundingBox())!.width;
     await page.getByRole('button', { name: 'Hide feedback sidebar' }).click();
+    const feedbackWidths = await page.locator('.feedback-panel').evaluate(async (el) => {
+      const samples: number[] = [];
+      while (el.closest('.app')?.classList.contains('sidebar-animating')) {
+        samples.push(el.getBoundingClientRect().width);
+        await new Promise(requestAnimationFrame);
+      }
+      return samples;
+    });
+    expect(feedbackWidths.length).toBeGreaterThan(0);
+    expect(feedbackWidths.every((width) => width === feedbackWidth)).toBe(true);
     await expect(titlebar.getByRole('button', { name: 'Show projects sidebar' })).toBeVisible();
     await expect(titlebar.getByRole('button', { name: 'Show feedback sidebar' })).toBeVisible();
     await page.screenshot({ path: resolve('.tmp/tasks/titlebar-20261010/hidden.png') });

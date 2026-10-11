@@ -43,7 +43,7 @@ export interface Artifact {
   projectId: string;
   title: string;
   kind: 'blueprint';
-  originSession: SessionRef;
+  originSession: SessionRef | null;
   latestRevision: string | null;
   revisions: { id: string }[];
 }
@@ -57,7 +57,7 @@ export interface Revision extends ParsedDocument {
 export interface Annotation {
   id: string;
   artifactId: string;
-  revisionId: string;
+  revisionId: string | null;
   quote: string;
   prefix: string;
   suffix: string;
@@ -378,7 +378,7 @@ export class Store {
     projectId: string;
     kind: 'blueprint';
     title: string;
-    originSession: SessionRef;
+    originSession: SessionRef | null;
     operationId: string;
   }) {
     const p = this.project(args.projectId);
@@ -430,6 +430,76 @@ export class Store {
     this.record(key, hash, result);
     return result;
   }
+  private metadataQueue: Promise<unknown> = Promise.resolve();
+  private updateArtifactMetadata(
+    artifactId: string,
+    key: string,
+    hash: string,
+    update: (artifact: Artifact) => Partial<Artifact>,
+  ) {
+    const operation = this.metadataQueue.then(async () => {
+      const old = this.operation<{ artifactId: string }>(key, hash);
+      if (old) return old;
+      const artifact = await this.artifact(artifactId);
+      const path = await inside(
+        this.project(artifact.projectId).path,
+        join(await this.artifactRoot(artifact), 'artifact.json'),
+      );
+      const metadata = await json<
+        Artifact & {
+          metadataOperations?: { key: string; hash: string; result: { artifactId: string } }[];
+        }
+      >(path);
+      const recovered = metadata.metadataOperations?.find((entry) => entry.key === key);
+      if (recovered) {
+        if (recovered.hash !== hash)
+          throw new BlueprintError('OPERATION_CONFLICT', 'Operation content changed');
+        this.record(key, hash, recovered.result);
+        return recovered.result;
+      }
+      const result = { artifactId };
+      // Persist the receipt with the metadata, so a lost acknowledgement can be retried safely.
+      await atomicJson(path, {
+        ...metadata,
+        ...update(metadata),
+        metadataOperations: [...(metadata.metadataOperations ?? []), { key, hash, result }],
+      });
+      this.record(key, hash, result);
+      return result;
+    });
+    this.metadataQueue = operation.catch(() => {});
+    return operation;
+  }
+  async attachSession(args: {
+    artifactId: string;
+    originSession: SessionRef;
+    operationId: string;
+  }) {
+    return this.updateArtifactMetadata(
+      args.artifactId,
+      'attach:' + args.operationId,
+      digest(args),
+      (artifact) => {
+        if (
+          artifact.originSession &&
+          !isDeepStrictEqual(artifact.originSession, args.originSession)
+        )
+          throw new BlueprintError(
+            'SESSION_CONFLICT',
+            'Artifact already belongs to another session',
+          );
+        return { originSession: args.originSession };
+      },
+    );
+  }
+  async renamePlan(args: { artifactId: string; title: string; operationId: string }) {
+    return this.updateArtifactMetadata(
+      args.artifactId,
+      'rename:' + args.operationId,
+      digest(args),
+      () => ({ title: args.title }),
+    );
+  }
   async publish(args: {
     artifactId: string;
     expectedLatestRevision: string | null;
@@ -437,6 +507,11 @@ export class Store {
   }) {
     await this.recoverChanges();
     const a = await this.artifact(args.artifactId);
+    if (!a.originSession)
+      throw new BlueprintError(
+        'ORIGIN_SESSION_REQUIRED',
+        'Attach an explicit agent session before publishing',
+      );
     const root = await this.artifactRoot(a);
     await inside(this.project(a.projectId).path, join(root, 'source'));
     const sourcePath = await inside(root, join(root, 'source', 'plan.mdx'));
@@ -739,6 +814,8 @@ export class Store {
     return { discarded: true };
   }
   async annotate(args: Omit<Annotation, 'id'>) {
+    if (args.revisionId === null)
+      throw new BlueprintError('UNKNOWN_REVISION', 'Text annotations require a published revision');
     const a = await this.artifact(args.artifactId);
     const revision = await this.revision(a.id, args.revisionId);
     const nodes = revision.blocks.flatMap(function flatten(n): typeof revision.blocks {
@@ -817,16 +894,24 @@ export class Store {
   }
   async addAreaAnnotation(args: {
     artifactId: string;
-    revisionId: string;
+    revisionId: string | null;
     comment: string;
     kind: 'document-area' | 'browser-area';
     capture: Capture;
     stateContext?: AnnotationStateContext;
   }) {
     const artifact = await this.artifact(args.artifactId);
-    await this.revision(artifact.id, args.revisionId);
+    if (
+      args.capture.source.kind !== args.kind ||
+      (args.revisionId === null && (args.kind !== 'browser-area' || args.stateContext))
+    )
+      throw new BlueprintError(
+        'INVALID_REFERENCE',
+        'Only browser annotations can precede a document',
+      );
+    if (args.revisionId !== null) await this.revision(artifact.id, args.revisionId);
     const draft = await this.states.draft(artifact.id);
-    if (args.stateContext)
+    if (args.stateContext && args.revisionId !== null)
       await this.validateAnnotationState(artifact.id, args.revisionId, args.stateContext);
     const existing = draft.annotations.find((a) => a.capture?.id === args.capture.id);
     if (existing) {
@@ -1031,6 +1116,11 @@ export class Store {
   async approve(artifactId: string, revisionId: string) {
     const a = await this.artifact(artifactId);
     const p = this.project(a.projectId);
+    if (await this.editor(artifactId, null))
+      throw new BlueprintError(
+        'UNSUBMITTED_FEEDBACK',
+        'Finish or cancel the pending browser annotation edit before approval',
+      );
     for (const rev of a.revisions)
       if (await this.editor(artifactId, rev.id))
         throw new BlueprintError(
@@ -1122,7 +1212,7 @@ export class Store {
     this.record(key, hash, result);
     return result;
   }
-  async editor(artifactId: string, revisionId: string) {
+  async editor(artifactId: string, revisionId: string | null) {
     const path = beneath(this.data, 'editors', artifactId, revisionId + '.json');
     try {
       return await json<{
@@ -1144,11 +1234,28 @@ export class Store {
       throw error;
     }
   }
-  async saveEditor(artifactId: string, revisionId: string, editor: unknown) {
-    await this.revision(artifactId, revisionId);
+  async saveEditor(artifactId: string, revisionId: string | null, editor: unknown) {
+    if (revisionId !== null) await this.revision(artifactId, revisionId);
+    else {
+      await this.artifact(artifactId);
+      if (editor) {
+        const annotationId = (editor as { annotationId?: string }).annotationId;
+        const annotation = (await this.states.draft(artifactId)).annotations.find(
+          (item) => item.id === annotationId,
+        );
+        if (!annotation || annotation.kind !== 'browser-area' || annotation.revisionId !== null)
+          throw new BlueprintError(
+            'INVALID_REFERENCE',
+            'Workspace editor requires an existing browser annotation',
+          );
+      }
+    }
     const context = (editor as { selection?: { stateContext?: AnnotationStateContext } } | null)
       ?.selection?.stateContext;
-    if (context) await this.validateAnnotationState(artifactId, revisionId, context);
+    if (context && revisionId === null)
+      throw new BlueprintError('INVALID_REFERENCE', 'Workspace editor has no document state');
+    if (context && revisionId !== null)
+      await this.validateAnnotationState(artifactId, revisionId, context);
     await atomicJson(beneath(this.data, 'editors', artifactId, revisionId + '.json'), editor);
   }
   async normalizeView(
@@ -1256,11 +1363,14 @@ export class Store {
         state: { values: {} },
         view: { details: {} },
         annotationState: null,
-        annotations: [],
+        annotations: (await this.states.draft(id)).annotations.map((item, index) => ({
+          ...item,
+          number: index + 1,
+        })),
         approved: false,
-        editor: null,
+        editor: await this.editor(id, null),
         latestSavedStateId: null,
-        dirty: false,
+        dirty: await this.states.dirty(id),
       };
       if (!source.trim()) return { ...base, preview: null };
       try {
@@ -1289,7 +1399,7 @@ export class Store {
           : null,
         await this.revision(id, rev),
       ),
-      editor: await this.editor(id, rev),
+      editor: (await this.editor(id, rev)) ?? (await this.editor(id, null)),
       state,
       view: await this.viewState(id, rev),
       annotationState: await this.captureAnnotationState(id, rev),
@@ -1303,7 +1413,8 @@ export class Store {
   /** Sidebar status uses the same approval/dirty rules without compiling or rendering a plan. */
   async artifactStatus(artifact: Artifact) {
     const revisionId = artifact.latestRevision;
-    if (!revisionId) return { displayStatus: 'Draft', privateChanges: false };
+    if (!revisionId)
+      return { displayStatus: 'Draft', privateChanges: await this.states.dirty(artifact.id) };
     const dirty = await this.states.dirty(artifact.id);
     const state = await this.state(artifact.id, revisionId);
     const approval = await this.approval(artifact.id, revisionId);

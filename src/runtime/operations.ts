@@ -132,6 +132,9 @@ const schemas = {
       operationId: id,
     })
     .strict(),
+  attach_artifact_session: z
+    .object({ artifactId: id, originSession: session, operationId: id })
+    .strict(),
   publish_artifact: z
     .object({ artifactId: id, expectedLatestRevision: id.nullable(), operationId: id })
     .strict(),
@@ -181,6 +184,8 @@ const descriptions: Record<keyof typeof schemas, string> = {
   get_blueprint_context:
     'Read explicitly selected project and capabilities. Artifact originSession must be supplied by the agent; never infer a session.',
   create_artifact: 'Create a Blueprint source directory in a registered project.',
+  attach_artifact_session:
+    'Explicitly attach a known agent session to an operator-created workspace. Idempotent; a different session cannot replace an existing binding.',
   publish_artifact: 'Validate and publish immutable plan.mdx with optimistic version checking.',
   read_artifact:
     'Read immutable document manifest/source or explicit saved state. part=state defaults latest Save, savedStateId selects an exact snapshot. Private autosaves are never returned; large results are paginated.',
@@ -278,6 +283,7 @@ export class Operations {
             prototypes: false,
             browser: true,
             savedStates: true,
+            supportedSavedStateVersions: [1, 2],
             chat: false,
             automaticDelivery: false,
             limits: runtimeLimits(),
@@ -286,6 +292,13 @@ export class Operations {
       }
       case 'create_artifact': {
         const result = await this.store.create(schemas.create_artifact.parse(parsed));
+        this.refresh();
+        return result;
+      }
+      case 'attach_artifact_session': {
+        const result = await this.store.attachSession(
+          schemas.attach_artifact_session.parse(parsed),
+        );
         this.refresh();
         return result;
       }
@@ -318,11 +331,27 @@ export class Operations {
         if (a.savedStateId)
           throw new BlueprintError('INVALID_INPUT', 'savedStateId applies only to part=state');
         const revisionId = a.revisionId ?? artifact.latestRevision;
-        if (!revisionId)
-          throw new BlueprintError(
-            'UNKNOWN_REVISION',
-            'Artifact has no published document revision',
-          );
+        if (!revisionId) {
+          if (a.part === 'source')
+            throw new BlueprintError(
+              'UNKNOWN_REVISION',
+              'Artifact has no published document revision',
+            );
+          return {
+            artifactId: artifact.id,
+            revisionId: null,
+            originSession: artifact.originSession,
+            sourcePath: join(await this.store.artifactRoot(artifact), 'source'),
+            sourceFile: 'plan.mdx',
+            formatVersion: 1,
+            widgets: [],
+            parts: ['manifest', 'state'],
+            latestSavedStateId: null,
+            approval: null,
+            approvalHistory: [],
+            privateStateIncluded: false,
+          };
+        }
         const revision = await this.store.revision(a.artifactId, revisionId);
         if (a.part === 'source')
           return { revisionId: revision.id, ...page(revision.source, a.cursor) };
@@ -357,11 +386,7 @@ export class Operations {
             'Only HTTP/HTTPS URLs without embedded credentials are allowed',
           );
         const artifact = await this.store.artifact(a.artifactId);
-        if (!artifact.latestRevision)
-          throw new BlueprintError(
-            'UNKNOWN_REVISION',
-            'Publish the document before opening browser content',
-          );
+
         if (this.editing) {
           this.pendingContent = {
             artifactId: artifact.id,
@@ -558,6 +583,27 @@ export class Operations {
           required('artifactId'),
           args.revisionId == null ? null : required('revisionId'),
         );
+      case 'createEmptyPlan': {
+        const input = z.object({ projectId: id, operationId: id }).strict().parse(args);
+        const result = await this.store.create({
+          ...input,
+          kind: 'blueprint',
+          title: 'Untitled plan',
+          originSession: null,
+        });
+        await this.show(result.artifactId, null);
+        this.refresh();
+        return result;
+      }
+      case 'renamePlan': {
+        const input = z
+          .object({ artifactId: id, operationId: id, title: z.string().trim().min(1).max(300) })
+          .strict()
+          .parse(args);
+        const result = await this.store.renamePlan(input);
+        this.refresh();
+        return result;
+      }
       case 'artifactProperties':
         return this.store.artifact(required('artifactId'));
       case 'browserEditor': {
@@ -579,7 +625,7 @@ export class Operations {
           .object({
             artifactId: id,
             tabId: id,
-            revisionId: id.optional(),
+            revisionId: id.nullable().optional(),
             comment: z.string().max(20000),
             capture: z
               .object({
@@ -613,7 +659,11 @@ export class Operations {
           .strict()
           .nullable()
           .parse(args.editor);
-        await this.store.saveEditor(required('artifactId'), required('revisionId'), editor);
+        await this.store.saveEditor(
+          required('artifactId'),
+          args.revisionId === null ? null : required('revisionId'),
+          editor,
+        );
         return { saved: true };
       }
       case 'setValue':
@@ -675,7 +725,7 @@ export class Operations {
         const a = z
           .object({
             artifactId: id,
-            revisionId: id,
+            revisionId: id.nullable(),
             kind: z.enum(['document-area', 'browser-area']),
             comment: z.string().min(1).max(100000),
             capture,
@@ -691,18 +741,23 @@ export class Operations {
         const a = z
           .object({
             artifactId: id,
-            revisionId: id,
+            revisionId: id.nullable(),
             operationId: id,
             expectedLatestSavedStateId: id.nullable(),
           })
           .strict()
           .parse(args);
+        if (a.revisionId === null)
+          throw new BlueprintError(
+            'NO_PUBLISHED_REVISION',
+            'Publish the first document before Save',
+          );
         if (this.editing)
           throw new BlueprintError(
             'UNFINISHED_ANNOTATION',
             'Save or cancel the unfinished annotation first',
           );
-        const result = await this.store.states.save(a);
+        const result = await this.store.states.save({ ...a, revisionId: a.revisionId });
         this.refresh();
         return result;
       }

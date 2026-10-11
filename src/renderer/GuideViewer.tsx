@@ -35,6 +35,9 @@ export function GuideViewer({
   return (
     <div
       className="modal-backdrop"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) close();
+      }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.stopPropagation();

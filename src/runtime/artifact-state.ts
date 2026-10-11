@@ -63,7 +63,7 @@ export interface SavedAnnotation extends Annotation {
   annotation: string;
   source: {
     artifactId: string;
-    revisionId: string;
+    revisionId: string | null;
     kind: string;
     anchor?: TextAnchor;
     blockId: string;
@@ -75,7 +75,7 @@ export interface SavedAnnotation extends Annotation {
   };
 }
 export interface SavedState {
-  formatVersion: 1;
+  formatVersion: 1 | 2;
   id: string;
   artifactId: string;
   revisionId: string;
@@ -191,7 +191,11 @@ export class ArtifactStates {
       const item = await json<SavedState>(
         await inside(root, join(root, 'states', name, 'state.json')),
       );
-      if (item.formatVersion !== 1 || item.artifactId !== artifactId || item.id !== name)
+      if (
+        ![1, 2].includes(item.formatVersion) ||
+        item.artifactId !== artifactId ||
+        item.id !== name
+      )
         throw new BlueprintError('CORRUPT_DATA', 'Saved state identity is inconsistent');
       items.push(item);
     }
@@ -212,6 +216,8 @@ export class ArtifactStates {
   }) {
     await this.store.recoverChanges();
     const artifact = await this.store.artifact(args.artifactId);
+    if (!artifact.originSession)
+      throw new BlueprintError('ORIGIN_SESSION_REQUIRED', 'Attach an agent session before Save');
     const project = this.store.project(artifact.projectId);
     const key = 'save:' + args.artifactId + ':' + args.operationId;
     // Intent identifies a retry. Mutable workspace is deliberately excluded from this hash.
@@ -231,6 +237,11 @@ export class ArtifactStates {
       }
     }
     await this.store.revision(artifact.id, args.revisionId);
+    if (await this.store.editor(artifact.id, null))
+      throw new BlueprintError(
+        'UNFINISHED_ANNOTATION',
+        'Finish the unfinished browser annotation edit before Save',
+      );
     for (const rev of artifact.revisions)
       if (await this.store.editor(artifact.id, rev.id))
         throw new BlueprintError(
@@ -274,7 +285,12 @@ export class ArtifactStates {
     const annotations: SavedAnnotation[] = [];
     const attachments: SavedState['attachments'] = [];
     for (const [index, item] of draft.annotations.entries()) {
-      await this.store.revision(artifact.id, item.revisionId);
+      if (item.revisionId !== null) await this.store.revision(artifact.id, item.revisionId);
+      else if (item.kind !== 'browser-area' || !item.capture || item.stateContext)
+        throw new BlueprintError(
+          'INVALID_REFERENCE',
+          'Invalid annotation without a document revision',
+        );
       const number = index + 1;
       const annotation: SavedAnnotation = {
         ...item,
@@ -321,7 +337,7 @@ export class ArtifactStates {
       annotations.push(annotation);
     }
     const snapshot: SavedState = {
-      formatVersion: 1,
+      formatVersion: annotations.some((item) => item.revisionId === null) ? 2 : 1,
       id,
       artifactId: artifact.id,
       revisionId: args.revisionId,

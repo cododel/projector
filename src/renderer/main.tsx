@@ -4,6 +4,8 @@ import mermaid from 'mermaid';
 import type { DocumentNode, WidgetDefinition } from '../document/types';
 import './style.css';
 import { markerGeometry, commentPosition } from '../shared/annotation-marker';
+import { SidebarResizer } from './SidebarResizer';
+import { fitSidebars, SIDEBAR_DEFAULT } from '../shared/sidebar-layout';
 import { GuideViewer } from './GuideViewer';
 import type { GuideResponse } from '../guide';
 import { CommentComposer, type CommentComposerHandle } from './CommentComposer';
@@ -39,7 +41,7 @@ interface SelectionData {
 interface Annotation extends SelectionData {
   id: string;
   artifactId: string;
-  revisionId: string;
+  revisionId: string | null;
   comment: string;
   number?: number;
 }
@@ -52,7 +54,7 @@ interface Artifact {
   id: string;
   projectId: string;
   title: string;
-  originSession: { harness: string; sessionId: string };
+  originSession: { harness: string; sessionId: string } | null;
   latestRevision: string | null;
   displayStatus?: string;
   privateChanges?: boolean;
@@ -224,7 +226,7 @@ function annotationSelection(a: Annotation): SelectionData {
 function Icon({
   name,
 }: {
-  name: 'edit' | 'delete' | 'folder' | 'codex' | 'sidebar-left' | 'sidebar-right';
+  name: 'edit' | 'delete' | 'folder' | 'sidebar-left' | 'sidebar-right';
 }): React.JSX.Element {
   return (
     <svg
@@ -245,11 +247,6 @@ function Icon({
         <path d="m16 3 5 5-13 13H3v-5L16 3ZM13 6l5 5" />
       ) : name === 'folder' ? (
         <path d="M3 7V5h6l2 2h10v13H3V7Z" />
-      ) : name === 'codex' ? (
-        <>
-          <path d="m12 2 8 5v10l-8 5-8-5V7l8-5Z" />
-          <path d="m10 8-4 4 4 4m4-8 4 4-4 4" />
-        </>
       ) : (
         <>
           <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" />
@@ -266,10 +263,19 @@ function App(): React.JSX.Element {
   useEffect(() => bridge.onOperationStatus?.((value) => setWaiting(value.waiting)), []);
   const [busy, setBusy] = useState(false);
   const [setup, setSetup] = useState<import('../shared/protocol').McpSetup | null>(null);
-  const guideBrowser = useRef<string | null>(null);
-  const guideFocus = useRef<HTMLElement | null>(null);
+  const informationBrowser = useRef<string | null>(null);
+  const informationFocus = useRef<HTMLElement | null>(null);
   const revokeIntent = useRef<Record<string, unknown> | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [renaming, setRenaming] = useState<{
+    artifactId: string;
+    title: string;
+    operationId: string;
+  } | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState('');
+  const creatingPlan = useRef(false);
+  const renameSubmitting = useRef(false);
   const [runtimeNotice, setRuntimeNotice] = useState(false);
   const guideLoad = useCallback(
     (input: { topic?: string; reference?: string }) => invoke<GuideResponse>('guide', input),
@@ -296,10 +302,62 @@ function App(): React.JSX.Element {
     annotating: false,
   });
   const [url, setUrl] = useState('');
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  const [sidebarPreview, setSidebarPreview] = useState<{
+    side: 'left' | 'right';
+    width: number;
+  } | null>(null);
+  const sidebarWrite = useRef(false);
+  const [sidebarAnimating, setSidebarAnimating] = useState(false);
+  const [sidebarAnimationWidths, setSidebarAnimationWidths] = useState({ left: 250, right: 310 });
+  const leftSidebarContent = useRef<HTMLElement>(null);
+  const rightSidebarContent = useRef<HTMLElement>(null);
+  const sidebarAnimationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (sidebarAnimationTimer.current) clearTimeout(sidebarAnimationTimer.current);
+    },
+    [],
+  );
+  function animateSidebars(layout: WorkspaceSnapshot['layout']) {
+    const target = fitSidebars(
+      layout.leftSidebarVisible ? (layout.leftSidebarWidth ?? SIDEBAR_DEFAULT.left) : 0,
+      layout.rightSidebarVisible ? (layout.rightSidebarWidth ?? SIDEBAR_DEFAULT.right) : 0,
+      window.innerWidth,
+    );
+    setSidebarAnimationWidths({
+      left: leftSidebarVisible
+        ? (leftSidebarContent.current?.getBoundingClientRect().width ?? target.left)
+        : target.left,
+      right: rightSidebarVisible
+        ? (rightSidebarContent.current?.getBoundingClientRect().width ?? target.right)
+        : target.right,
+    });
+    if (sidebarAnimationTimer.current) clearTimeout(sidebarAnimationTimer.current);
+    setSidebarAnimating(true);
+    sidebarAnimationTimer.current = setTimeout(() => {
+      sidebarAnimationTimer.current = null;
+      setSidebarAnimating(false);
+    }, 250);
+  }
+  useEffect(() => {
+    const update = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>({
     plans: {},
     layout: { leftSidebarVisible: true, rightSidebarVisible: true },
   });
+  const leftSidebarVisible =
+    sidebarPreview?.side === 'left'
+      ? sidebarPreview.width !== 0
+      : workspace.layout.leftSidebarVisible;
+  const rightSidebarVisible =
+    sidebarPreview?.side === 'right'
+      ? sidebarPreview.width !== 0
+      : workspace.layout.rightSidebarVisible;
   const [documentToolbar, setDocumentToolbar] = useState({
     saveStatus: 'Saved locally',
     areaMode: false,
@@ -591,13 +649,57 @@ function App(): React.JSX.Element {
       [side === 'left' ? 'leftSidebarVisible' : 'rightSidebarVisible']:
         !previous[side === 'left' ? 'leftSidebarVisible' : 'rightSidebarVisible'],
     };
+    animateSidebars(layout);
     setWorkspace((current) => ({ ...current, layout }));
     try {
       await invoke('workspaceLayout', layout);
     } catch (error) {
+      animateSidebars(previous);
       setWorkspace((current) => ({ ...current, layout: previous }));
       setError(message(error));
     }
+  }
+  function finishSidebarResize(restore = true) {
+    if (
+      restore &&
+      sidebarPreview?.width === 0 &&
+      workspace.layout[
+        sidebarPreview.side === 'left' ? 'leftSidebarVisible' : 'rightSidebarVisible'
+      ]
+    )
+      animateSidebars(workspace.layout);
+    setSidebarPreview(null);
+    if (activeBrowser)
+      void invoke('browserResizeMode', { active: false }).catch((e) => setError(message(e)));
+  }
+  async function saveSidebarWidth(side: 'left' | 'right', width: number) {
+    if (sidebarWrite.current) return;
+    sidebarWrite.current = true;
+    const layout = {
+      ...workspace.layout,
+      ...(width === 0
+        ? { [side === 'left' ? 'leftSidebarVisible' : 'rightSidebarVisible']: false }
+        : { [side === 'left' ? 'leftSidebarWidth' : 'rightSidebarWidth']: width }),
+    };
+    let committed = false;
+    try {
+      await invoke('workspaceLayout', layout);
+      setWorkspace((current) => ({ ...current, layout }));
+      committed = true;
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      sidebarWrite.current = false;
+      finishSidebarResize(!committed);
+    }
+  }
+  function closeInformation() {
+    setGuideOpen(false);
+    setSetup(null);
+    const tabId = informationBrowser.current;
+    informationBrowser.current = null;
+    if (tabId) void action(() => invoke('browserSelect', { tabId }));
+    informationFocus.current?.focus();
   }
   async function copy(text: string): Promise<void> {
     try {
@@ -825,251 +927,402 @@ function App(): React.JSX.Element {
         annotationId: annotation.id,
       });
   }
+  async function createEmptyPlan(project: Project): Promise<void> {
+    if (creatingPlan.current || project.available === false) return;
+    creatingPlan.current = true;
+    const operationId = crypto.randomUUID();
+    try {
+      await transition(async () => {
+        await invoke('createEmptyPlan', {
+          projectId: project.id,
+          operationId,
+        });
+        setCollapsed((previous) => {
+          const next = new Set(previous);
+          next.delete(project.id);
+          return next;
+        });
+      });
+    } finally {
+      creatingPlan.current = false;
+    }
+  }
+  async function openProjectMenu(project: Project): Promise<void> {
+    try {
+      const { action: selectedAction } = await invoke<{
+        action: 'new' | 'locate' | 'remove' | null;
+      }>('projectMenu', { projectId: project.id });
+      if (selectedAction === 'new') await createEmptyPlan(project);
+      else if (selectedAction === 'locate' || selectedAction === 'remove')
+        await transition(() =>
+          invoke(selectedAction === 'locate' ? 'locateProject' : 'removeProject', {
+            projectId: project.id,
+          }),
+        );
+    } catch (error) {
+      setError(message(error));
+    }
+  }
+  async function openPlanMenu(plan: Artifact): Promise<void> {
+    try {
+      const { action: selectedAction } = await invoke<{ action: 'rename' | null }>('planMenu', {
+        artifactId: plan.id,
+      });
+      if (selectedAction === 'rename')
+        await transition(async () => {
+          informationBrowser.current = activeBrowser?.id ?? null;
+          informationFocus.current = window.document.activeElement as HTMLElement;
+          await invoke('browserSelect', { tabId: null });
+          setRenameError('');
+          setRenaming({ artifactId: plan.id, title: plan.title, operationId: crypto.randomUUID() });
+        });
+    } catch (error) {
+      setError(message(error));
+    }
+  }
+  function closeRename(): void {
+    if (renameSubmitting.current) return;
+    setRenaming(null);
+    closeInformation();
+  }
+  async function saveRename(): Promise<void> {
+    if (!renaming?.title.trim() || renameSubmitting.current) return;
+    renameSubmitting.current = true;
+    setRenameBusy(true);
+    setRenameError('');
+    try {
+      await invoke('renamePlan', { ...renaming, title: renaming.title.trim() });
+      renameSubmitting.current = false;
+      closeRename();
+      await reload();
+    } catch (error) {
+      setRenameError(message(error));
+    } finally {
+      renameSubmitting.current = false;
+      setRenameBusy(false);
+    }
+  }
+  function agentMessage(plan: Artifact): string {
+    return `Prepare the existing Blueprint plan. Project ID: ${plan.projectId}. Artifact ID: ${plan.id}. Read read_artifact with artifactId and part="manifest" for the sourcePath and sourceFile. Explicitly attach your known originSession with attach_artifact_session (artifactId, originSession, operationId); ask me if you do not know your session ID, never infer it. Write the MDX source into the returned sourceFile and publish the first revision of this same artifact. Keep its existing private workspace and annotations. Do not create a replacement artifact.`;
+  }
+  function sidebarToggle(side: 'left' | 'right') {
+    const visible = side === 'left' ? leftSidebarVisible : rightSidebarVisible;
+    const label = `${visible ? 'Hide' : 'Show'} ${side === 'left' ? 'projects' : 'feedback'} sidebar`;
+    return (
+      <button
+        className="sidebar-toggle"
+        aria-label={label}
+        title={label}
+        aria-pressed={visible}
+        onClick={() => void toggleSidebar(side)}
+      >
+        <Icon name={side === 'left' ? 'sidebar-left' : 'sidebar-right'} />
+      </button>
+    );
+  }
+  const requestedLeft =
+    sidebarPreview?.side === 'left'
+      ? sidebarPreview.width || (workspace.layout.leftSidebarWidth ?? SIDEBAR_DEFAULT.left)
+      : (workspace.layout.leftSidebarWidth ?? SIDEBAR_DEFAULT.left);
+  const requestedRight =
+    sidebarPreview?.side === 'right'
+      ? sidebarPreview.width || (workspace.layout.rightSidebarWidth ?? SIDEBAR_DEFAULT.right)
+      : (workspace.layout.rightSidebarWidth ?? SIDEBAR_DEFAULT.right);
+  const fitted = fitSidebars(
+    leftSidebarVisible ? requestedLeft : 0,
+    rightSidebarVisible ? requestedRight : 0,
+    windowWidth,
+  );
   return (
     <div
-      className={`app ${workspace.layout?.leftSidebarVisible === false ? 'left-sidebar-hidden' : ''} ${workspace.layout?.rightSidebarVisible === false ? 'right-sidebar-hidden' : ''}`}
+      style={
+        {
+          '--left-sidebar-width': `${fitted.left}px`,
+          '--right-sidebar-width': `${fitted.right}px`,
+          '--left-sidebar-content-width': `${sidebarAnimationWidths.left}px`,
+          '--right-sidebar-content-width': `${sidebarAnimationWidths.right}px`,
+        } as React.CSSProperties
+      }
+      className={`app ${sidebarAnimating ? 'sidebar-animating' : ''} ${!leftSidebarVisible ? 'left-sidebar-hidden' : ''} ${!rightSidebarVisible ? 'right-sidebar-hidden' : ''}`}
     >
       <header className="window-titlebar" role="toolbar" aria-label="Window toolbar">
-        <button
-          className="sidebar-toggle"
-          aria-label={
-            workspace.layout?.leftSidebarVisible === false
-              ? 'Show projects sidebar'
-              : 'Hide projects sidebar'
-          }
-          title={
-            workspace.layout?.leftSidebarVisible === false
-              ? 'Show projects sidebar'
-              : 'Hide projects sidebar'
-          }
-          aria-pressed={workspace.layout?.leftSidebarVisible !== false}
-          onClick={() => void toggleSidebar('left')}
-        >
-          <Icon name="sidebar-left" />
-        </button>
-        <span className="titlebar-divider" aria-hidden="true" />
-        {selected && (
-          <nav className="content-tabs" role="tablist" aria-label="Plan tabs" ref={titlebarTabs}>
-            {planTabs?.tabs.map((tab) => (
-              <div
-                className={`content-tab ${activeTab?.id === tab.id ? 'active' : ''}`}
-                key={tab.id}
-              >
-                <button
-                  role="tab"
-                  aria-selected={activeTab?.id === tab.id}
-                  disabled={busy}
-                  onAuxClick={(e) => {
-                    if (e.button === 1) {
-                      e.preventDefault();
-                      void tabCommand('close', tab.id);
-                    }
-                  }}
-                  onMouseDown={(e) => {
-                    if (e.button === 1) e.preventDefault();
-                  }}
-                  onClick={() => void tabCommand('select', tab.id)}
-                  title={
-                    tab.kind === 'browser'
-                      ? tab.title
-                      : tab.kind === 'home'
-                        ? 'New tab'
-                        : artifact?.title
-                  }
-                >
-                  <span aria-hidden="true">{tab.kind === 'document' ? '▤' : '◎'}</span>
-                  <span>
-                    {tab.kind === 'document'
-                      ? 'Plan'
-                      : tab.kind === 'home'
-                        ? 'New tab'
-                        : tab.title || 'Browser'}
-                  </span>
-                </button>
-                <button
-                  className="tab-close"
-                  disabled={busy}
-                  aria-label={`Close ${tab.kind === 'document' ? 'plan' : tab.kind === 'home' ? 'new tab' : tab.title || 'browser'} tab`}
-                  onClick={() => void tabCommand('close', tab.id)}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </nav>
-        )}
-        <button
-          className="new-tab"
-          title="New tab"
-          aria-label="New tab"
-          disabled={busy || !selected}
-          onClick={() => void tabCommand('new')}
-        >
-          +
-        </button>
-        <span className="titlebar-drag-space" />
-        <span className="titlebar-divider" aria-hidden="true" />
-        <button
-          className="sidebar-toggle"
-          aria-label={
-            workspace.layout?.rightSidebarVisible === false
-              ? 'Show feedback sidebar'
-              : 'Hide feedback sidebar'
-          }
-          title={
-            workspace.layout?.rightSidebarVisible === false
-              ? 'Show feedback sidebar'
-              : 'Hide feedback sidebar'
-          }
-          aria-pressed={workspace.layout?.rightSidebarVisible !== false}
-          onClick={() => void toggleSidebar('right')}
-        >
-          <Icon name="sidebar-right" />
-        </button>
-      </header>
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">B</span>
-          <div>
-            Blueprint<small>ALPHA 1 · LOCAL WORKSPACE</small>
+        {leftSidebarVisible && (
+          <div className="titlebar-section titlebar-left">
+            <span className="titlebar-drag-space" />
+            {sidebarToggle('left')}
           </div>
-        </div>
-        <div className="project-tree">
-          <div className="tree-heading">Projects</div>
-          {snapshot.projects.map((item) => (
-            <section key={item.id}>
-              <button
-                className={`project-row ${item.id === projectId ? 'current' : ''}`}
-                title={
-                  item.available === false ? 'Project folder unavailable · ' + item.path : item.path
-                }
-                aria-expanded={!collapsed.has(item.id)}
-                onClick={() =>
-                  setCollapsed((previous) => {
-                    const next = new Set(previous);
-                    if (next.has(item.id)) next.delete(item.id);
-                    else next.add(item.id);
-                    return next;
-                  })
-                }
-              >
-                <span aria-hidden="true">{collapsed.has(item.id) ? '▸' : '▾'}</span>
-                <Icon name="folder" />
-                <span>{item.path.split('/').filter(Boolean).at(-1)}</span>
-              </button>
-              {!collapsed.has(item.id) && (
-                <div className="project-actions">
-                  {item.available === false && (
-                    <>
-                      <small>Folder unavailable</small>
-                      <button
-                        onClick={() =>
-                          void transition(() => invoke('locateProject', { projectId: item.id }))
-                        }
-                      >
-                        Locate folder
-                      </button>
-                    </>
-                  )}
+        )}
+        <div className="titlebar-section titlebar-center">
+          {!leftSidebarVisible && sidebarToggle('left')}
+          {selected && (
+            <nav className="content-tabs" role="tablist" aria-label="Plan tabs" ref={titlebarTabs}>
+              {planTabs?.tabs.map((tab) => (
+                <div
+                  className={`content-tab ${activeTab?.id === tab.id ? 'active' : ''}`}
+                  key={tab.id}
+                >
                   <button
-                    aria-label={`Remove ${item.path.split('/').at(-1)} from list`}
-                    onClick={() =>
-                      void transition(() => invoke('removeProject', { projectId: item.id }))
+                    role="tab"
+                    aria-selected={activeTab?.id === tab.id}
+                    disabled={busy}
+                    onAuxClick={(e) => {
+                      if (e.button === 1) {
+                        e.preventDefault();
+                        void tabCommand('close', tab.id);
+                      }
+                    }}
+                    onMouseDown={(e) => {
+                      if (e.button === 1) e.preventDefault();
+                    }}
+                    onClick={() => void tabCommand('select', tab.id)}
+                    title={
+                      tab.kind === 'browser'
+                        ? tab.title
+                        : tab.kind === 'home'
+                          ? 'New tab'
+                          : artifact?.title
                     }
                   >
-                    Remove from list
+                    <span aria-hidden="true">{tab.kind === 'document' ? '▤' : '◎'}</span>
+                    <span>
+                      {tab.kind === 'document'
+                        ? 'Plan'
+                        : tab.kind === 'home'
+                          ? 'New tab'
+                          : tab.title || 'Browser'}
+                    </span>
+                  </button>
+                  <button
+                    className="tab-close"
+                    disabled={busy}
+                    aria-label={`Close ${tab.kind === 'document' ? 'plan' : tab.kind === 'home' ? 'new tab' : tab.title || 'browser'} tab`}
+                    onClick={() => void tabCommand('close', tab.id)}
+                  >
+                    ×
                   </button>
                 </div>
-              )}
-              {!collapsed.has(item.id) &&
-                snapshot.artifacts
-                  .filter((a) => a.projectId === item.id)
-                  .map((plan) => (
-                    <div
-                      key={plan.id}
-                      className={`plan-row ${selected?.artifactId === plan.id ? 'active' : ''}`}
+              ))}
+            </nav>
+          )}
+          <button
+            className="new-tab"
+            title="New tab"
+            aria-label="New tab"
+            disabled={busy || !selected}
+            onClick={() => void tabCommand('new')}
+          >
+            +
+          </button>
+          <span className="titlebar-drag-space" />
+
+          {!rightSidebarVisible && sidebarToggle('right')}
+        </div>
+        {rightSidebarVisible && (
+          <div className="titlebar-section titlebar-right">
+            {sidebarToggle('right')}
+            <span className="titlebar-drag-space" />
+          </div>
+        )}
+      </header>
+      {(['left', 'right'] as const).map(
+        (side) =>
+          ((side === 'left' ? leftSidebarVisible : rightSidebarVisible) ||
+            sidebarPreview?.side === side) && (
+            <SidebarResizer
+              key={side}
+              side={side}
+              width={side === 'left' ? requestedLeft : requestedRight}
+              position={fitted[side]}
+              onStart={() => {
+                setSidebarPreview({
+                  side,
+                  width: side === 'left' ? requestedLeft : requestedRight,
+                });
+                if (activeBrowser)
+                  void invoke('browserResizeMode', { active: true }).catch((e) =>
+                    setError(message(e)),
+                  );
+              }}
+              onPreview={(width) => {
+                if ((width === 0) !== (sidebarPreview?.width === 0)) {
+                  animateSidebars({
+                    ...workspace.layout,
+                    leftSidebarVisible,
+                    rightSidebarVisible,
+                    [side === 'left' ? 'leftSidebarVisible' : 'rightSidebarVisible']: width !== 0,
+                    ...(width === 0
+                      ? {}
+                      : {
+                          [side === 'left' ? 'leftSidebarWidth' : 'rightSidebarWidth']: width,
+                        }),
+                  });
+                }
+                setSidebarPreview({ side, width });
+              }}
+              onCommit={(width) => saveSidebarWidth(side, width)}
+              onCancel={finishSidebarResize}
+            />
+          ),
+      )}
+      {sidebarPreview && <div className="sidebar-resize-shield" />}
+      <div className="sidebar-viewport">
+        <aside className="sidebar" ref={leftSidebarContent}>
+          <div className="brand">
+            <span className="brand-mark">B</span>
+            <div>
+              Blueprint<small>ALPHA 1 · LOCAL WORKSPACE</small>
+            </div>
+          </div>
+          <div className="project-tree">
+            <div className="tree-heading">Projects</div>
+            {snapshot.projects.map((item) => (
+              <section key={item.id}>
+                <div
+                  className="project-row"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    void openProjectMenu(item);
+                  }}
+                >
+                  <button
+                    className={`project-folder ${item.id === projectId ? 'current' : ''}`}
+                    title={
+                      item.available === false
+                        ? 'Project folder unavailable · ' + item.path
+                        : item.path
+                    }
+                    aria-expanded={!collapsed.has(item.id)}
+                    onClick={() =>
+                      setCollapsed((previous) => {
+                        const next = new Set(previous);
+                        if (next.has(item.id)) next.delete(item.id);
+                        else next.add(item.id);
+                        return next;
+                      })
+                    }
+                  >
+                    <span aria-hidden="true">{collapsed.has(item.id) ? '▸' : '▾'}</span>
+                    <Icon name="folder" />
+                    <span>{item.path.split('/').filter(Boolean).at(-1)}</span>
+                  </button>
+                  <div className="project-row-actions">
+                    <button
+                      aria-label={`Project actions for ${item.path.split('/').at(-1)}`}
+                      title="Project actions"
+                      disabled={busy}
+                      onClick={() => void openProjectMenu(item)}
                     >
-                      <span
-                        className={`plan-status ${plan.displayStatus === 'Approved' ? 'approved' : ''}`}
-                        title={plan.displayStatus ?? (plan.latestRevision ? 'In review' : 'Draft')}
-                        aria-label={plan.displayStatus ?? 'Draft'}
+                      …
+                    </button>
+                    <button
+                      aria-label={`New plan in ${item.path.split('/').at(-1)}`}
+                      title="New plan"
+                      disabled={busy || item.available === false}
+                      onClick={() => void createEmptyPlan(item)}
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                {item.available === false && !collapsed.has(item.id) && (
+                  <small className="project-unavailable">Folder unavailable</small>
+                )}
+                {!collapsed.has(item.id) &&
+                  snapshot.artifacts
+                    .filter((a) => a.projectId === item.id)
+                    .map((plan) => (
+                      <div
+                        key={plan.id}
+                        className={`plan-row ${selected?.artifactId === plan.id ? 'active' : ''}`}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          void openPlanMenu(plan);
+                        }}
                       >
-                        {plan.displayStatus === 'Approved' ? '✓' : plan.latestRevision ? '◷' : '◇'}
-                      </span>
-                      <button
-                        className="plan-title"
-                        title={plan.title}
-                        disabled={busy}
-                        onClick={() =>
-                          void transition(() =>
-                            invoke('openArtifact', {
-                              artifactId: plan.id,
-                              revisionId:
-                                workspace.plans[plan.id]?.lastDocumentRevisionId ??
-                                workspace.plans[plan.id]?.tabs.find(
-                                  (tab) => tab.kind === 'document',
-                                )?.revisionId ??
-                                plan.latestRevision,
-                            }),
-                          )
-                        }
-                      >
-                        {plan.title}
-                      </button>
-                      {plan.privateChanges && (
                         <span
-                          className="private-dot"
-                          title="Private changes"
-                          aria-label="Private changes"
-                        />
-                      )}
-                      {plan.originSession.harness === 'codex' && (
+                          className={`plan-status ${plan.displayStatus === 'Approved' ? 'approved' : ''}`}
+                          title={
+                            plan.displayStatus ?? (plan.latestRevision ? 'In review' : 'Draft')
+                          }
+                          aria-label={plan.displayStatus ?? 'Draft'}
+                        >
+                          {plan.displayStatus === 'Approved'
+                            ? '✓'
+                            : plan.latestRevision
+                              ? '◷'
+                              : '◇'}
+                        </span>
                         <button
-                          className="session-link"
-                          title="Open linked Codex session · availability unverified"
-                          aria-label={`Open Codex session for ${plan.title}`}
+                          className="plan-title"
+                          title={plan.title}
+                          disabled={busy}
                           onClick={() =>
-                            void action(() => invoke('openSession', { artifactId: plan.id }))
+                            void transition(() =>
+                              invoke('openArtifact', {
+                                artifactId: plan.id,
+                                revisionId:
+                                  workspace.plans[plan.id]?.lastDocumentRevisionId ??
+                                  workspace.plans[plan.id]?.tabs.find(
+                                    (tab) => tab.kind === 'document',
+                                  )?.revisionId ??
+                                  plan.latestRevision,
+                              }),
+                            )
                           }
                         >
-                          <Icon name="codex" />
+                          {plan.title}
                         </button>
-                      )}
-                    </div>
-                  ))}
-            </section>
-          ))}
-          <button
-            className="subtle full"
-            disabled={busy}
-            onClick={() => void transition(() => invoke('chooseProject'))}
-          >
-            + Open project folder
-          </button>
-        </div>
-        <div className="sidebar-bottom">
-          <button
-            className="subtle full"
-            onClick={() =>
-              void transition(async () => {
-                guideBrowser.current = activeBrowser?.id ?? null;
-                guideFocus.current = window.document.activeElement as HTMLElement;
-                await invoke('browserSelect', { tabId: null });
-                setGuideOpen(true);
-              })
-            }
-          >
-            Blueprint guide
-          </button>
-          <span className="runtime-dot" /> Local runtime active
-          <button
-            className="subtle full"
-            onClick={() => void action(async () => setSetup(await invoke('setup')))}
-          >
-            MCP connection
-          </button>
-        </div>
-      </aside>
+                        {plan.privateChanges && (
+                          <span
+                            className="private-dot"
+                            title="Private changes"
+                            aria-label="Private changes"
+                          />
+                        )}
+                      </div>
+                    ))}
+              </section>
+            ))}
+            <button
+              className="subtle full"
+              disabled={busy}
+              onClick={() => void transition(() => invoke('chooseProject'))}
+            >
+              + Open project folder
+            </button>
+          </div>
+          <div className="sidebar-bottom">
+            <button
+              className="subtle full"
+              onClick={() =>
+                void transition(async () => {
+                  informationBrowser.current = activeBrowser?.id ?? null;
+                  informationFocus.current = window.document.activeElement as HTMLElement;
+                  await invoke('browserSelect', { tabId: null });
+                  setGuideOpen(true);
+                })
+              }
+            >
+              Blueprint guide
+            </button>
+            <span className="runtime-dot" /> Local runtime active
+            <button
+              className="subtle full"
+              onClick={() =>
+                void transition(async () => {
+                  const connection = await invoke<import('../shared/protocol').McpSetup>('setup');
+                  informationBrowser.current = activeBrowser?.id ?? null;
+                  informationFocus.current = window.document.activeElement as HTMLElement;
+                  await invoke('browserSelect', { tabId: null });
+                  setSetup(connection);
+                })
+              }
+            >
+              MCP connection
+            </button>
+          </div>
+        </aside>
+      </div>
       <main className="workspace">
         {selected && (
           <header className={`plan-header ${activeBrowser ? 'browser-plan-header' : ''}`}>
@@ -1320,13 +1573,26 @@ function App(): React.JSX.Element {
                     value={url}
                     onChange={(e) => updateHomeAddress(e.target.value)}
                   />
-                  <button className="primary" disabled={busy || !artifact?.latestRevision}>
+                  <button className="primary" disabled={busy}>
                     Open
                   </button>
                 </form>
-                {!artifact?.latestRevision && (
-                  <p className="muted">Publish the plan before opening browser content.</p>
-                )}
+              </div>
+            ) : activeTab?.kind === 'document' &&
+              !document?.revision &&
+              !document?.source &&
+              !document?.preview &&
+              artifact ? (
+              <div className="new-tab-home empty-plan-home">
+                <h2>Waiting for your agent</h2>
+                <p className="muted">
+                  This plan is ready as a private workspace. Ask your agent to write and publish its
+                  first document.
+                </p>
+                <button className="primary" onClick={() => void copy(agentMessage(artifact))}>
+                  {copiedText === agentMessage(artifact) ? 'Copied' : 'Copy message for agent'}
+                </button>
+                <button onClick={() => void tabCommand('new')}>New tab</button>
               </div>
             ) : activeTab?.kind === 'document' ? (
               <iframe
@@ -1378,302 +1644,373 @@ function App(): React.JSX.Element {
           </>
         )}
       </main>
-      <aside className="feedback-panel">
-        <h2>Feedback</h2>
-        <p className="muted">Working changes stay private until Save.</p>
-        {artifact && (
-          <details className="artifact-properties">
-            <summary>Artifact properties</summary>
-            <p className="muted">
-              Some sign-in providers block embedded browsers. Open the page externally;
-              authentication is not imported back.
-            </p>
-            <button
-              className="secondary full"
-              onClick={() =>
-                void transition(() =>
-                  invoke('browserClearProfile', { projectId: artifact.projectId }),
-                )
-              }
-            >
-              Clear project browser profile
-            </button>
-            <small>Origin: {artifact.originSession.harness} · availability unverified</small>
-            <button
-              className="secondary full"
-              onClick={() => void copy(`codex://threads/${artifact.originSession.sessionId}`)}
-            >
-              Copy session link
-            </button>
-          </details>
-        )}
-        {document?.migrationSummary && artifact && (artifact.revisions?.length ?? 0) > 1 && (
-          <details className="migration-summary">
-            <summary>Answers in this version</summary>
-            {(['retained', 'added', 'requiresResponse', 'removed'] as const).map((key) => (
-              <p key={key}>
-                <strong>
-                  {
-                    {
-                      retained: 'Retained',
-                      added: 'New',
-                      requiresResponse: 'Requires response',
-                      removed: 'Removed',
-                    }[key]
-                  }
-                </strong>
-                : {document.migrationSummary![key].join(', ') || 'None'}
+      <div className="feedback-viewport">
+        <aside className="feedback-panel" ref={rightSidebarContent}>
+          <h2>Feedback</h2>
+          <p className="muted">Working changes stay private until Save.</p>
+          {artifact && (
+            <details className="artifact-properties">
+              <summary>Artifact properties</summary>
+              <p className="muted">
+                Some sign-in providers block embedded browsers. Open the page externally;
+                authentication is not imported back.
               </p>
-            ))}
-            <small>
-              Authored defaults are not confirmed answers. Previous versions retain their state.
-            </small>
-          </details>
-        )}
-        {(browser.downloads?.length ?? 0) > 0 && (
-          <details className="package-history">
-            <summary>Downloads</summary>
-            {browser.downloads?.map((download) => (
-              <p key={download.id} role="status">
-                {download.filename} · {download.status}
-              </p>
-            ))}
-          </details>
-        )}
-        <div className="section-label spaced">
-          ANNOTATIONS <span>{annotations.length}</span>
-        </div>
-        <div className="annotations">
-          {annotations.length === 0 ? (
-            <div className="empty-note">
-              Select a passage, then choose Annotate. Answers are autosaved privately.
-            </div>
-          ) : (
-            annotations.map((annotation, i) => (
-              <article className="annotation" key={annotation.id}>
-                <div className="annotation-heading">
-                  <button
-                    className="annotation-jump"
-                    onClick={() => void transition(() => jumpTo(annotation))}
-                  >
-                    <AnnotationBadge number={annotation.number ?? i + 1} />
-                    <blockquote>{annotation.quote || 'Selected area'}</blockquote>
-                  </button>
-                  <div className="annotation-actions">
-                    <button
-                      disabled={busy || documentEditing || Boolean(editing) || browser.annotating}
-                      title="Edit annotation"
-                      aria-label={`Edit annotation ${i + 1}`}
-                      onClick={() => {
-                        restoredEditing.current = annotation.id;
-                        void action(async () => {
-                          await invoke('openArtifact', {
-                            artifactId: annotation.artifactId,
-                            revisionId: annotation.revisionId,
-                          });
-                          await invoke('saveEditor', {
-                            artifactId: annotation.artifactId,
-                            revisionId: annotation.revisionId,
-                            editor: {
-                              selection: annotationSelection(annotation),
-                              comment: annotation.comment,
-                              annotationId: annotation.id,
-                            },
-                          });
-                          editWriteError.current = null;
-                          await invoke('editing', { active: true });
-                          setEditing(annotation);
-                          setComment(annotation.comment);
-                        });
-                      }}
-                    >
-                      <Icon name="edit" />
-                    </button>
-                    <button
-                      disabled={busy || documentEditing || Boolean(editing) || browser.annotating}
-                      title="Delete annotation"
-                      aria-label={`Delete annotation ${i + 1}`}
-                      onClick={() =>
-                        void action(() =>
-                          invoke('deleteAnnotation', { annotationId: annotation.id }),
-                        )
-                      }
-                    >
-                      <Icon name="delete" />
-                    </button>
-                  </div>
-                </div>
-                {editing?.id === annotation.id ? (
-                  <CommentComposer
-                    ref={editComposer}
-                    editing
-                    label="Edit annotation"
-                    saveLabel="Save comment"
-                    value={comment}
-                    disabled={busy && !transitioning.current}
-                    onChange={(value) => persistEdit(annotation, value)}
-                    onSave={() => finishEdit(annotation, 'save')}
-                    onCancel={() => finishEdit(annotation, 'cancel')}
-                    onDelete={() => finishEdit(annotation, 'delete')}
-                    onError={(error) => setError(message(error))}
-                  />
-                ) : (
-                  <p onClick={() => void transition(() => jumpTo(annotation))}>
-                    {annotation.comment}
-                  </p>
-                )}
-              </article>
-            ))
-          )}
-        </div>
-        <div className="submit-area">
-          <button
-            className="primary full"
-            disabled={
-              busy ||
-              savingCount > 0 ||
-              Array.from(failedAutosaves).some((key) =>
-                key.startsWith(`${selected?.artifactId}:`),
-              ) ||
-              documentEditing ||
-              documentPreview ||
-              browser.annotating ||
-              Boolean(editing) ||
-              !selected?.revisionId
-            }
-            onClick={() =>
-              void action(async () => {
-                const key = JSON.stringify(selected);
-                const intent = saveIntents.current.get(key) ?? {
-                  ...selected,
-                  operationId: crypto.randomUUID(),
-                  expectedLatestSavedStateId: document?.latestSavedStateId ?? null,
-                };
-                saveIntents.current.set(key, intent);
-                try {
-                  const result = await invoke<{ id: string; notification: string }>(
-                    'saveState',
-                    intent,
-                  );
-                  saveIntents.current.delete(key);
-                  setNotification(result.notification);
-                } catch (e) {
-                  if (/STATE_CONFLICT|INVALID_STATE|UNFINISHED_ANNOTATION/.test(message(e)))
-                    saveIntents.current.delete(key);
-                  throw e;
+              <button
+                className="secondary full"
+                onClick={() =>
+                  void transition(() =>
+                    invoke('browserClearProfile', { projectId: artifact.projectId }),
+                  )
                 }
-              })
-            }
-          >
-            {busy
-              ? 'Working…'
-              : savingCount > 0
-                ? 'Autosaving…'
-                : saveIntents.current.has(JSON.stringify(selected))
-                  ? 'Retry Save'
-                  : 'Save'}
-          </button>
-          <small>
-            {document?.dirty ? 'Unsaved working changes' : 'Saved state is unchanged'} · Save keeps
-            annotations and creates an immutable snapshot.
-          </small>
-          {notification && (
-            <div className="notification">
-              <button className="secondary full" onClick={() => void copy(notification)}>
-                {copiedText === notification ? 'Copied' : 'Copy update message'}
+              >
+                Clear project browser profile
               </button>
-              <small>Saved · notify your agent manually</small>
-            </div>
+              {artifact.originSession ? (
+                <>
+                  <small>Origin: {artifact.originSession.harness} · availability unverified</small>
+                  <button
+                    className="secondary full"
+                    onClick={() => {
+                      if (artifact.originSession)
+                        void copy(`codex://threads/${artifact.originSession.sessionId}`);
+                    }}
+                  >
+                    Copy session link
+                  </button>
+                </>
+              ) : (
+                <small>No agent session attached</small>
+              )}
+            </details>
           )}
-          {selected?.revisionId && (
+          {document?.migrationSummary && artifact && (artifact.revisions?.length ?? 0) > 1 && (
+            <details className="migration-summary">
+              <summary>Answers in this version</summary>
+              {(['retained', 'added', 'requiresResponse', 'removed'] as const).map((key) => (
+                <p key={key}>
+                  <strong>
+                    {
+                      {
+                        retained: 'Retained',
+                        added: 'New',
+                        requiresResponse: 'Requires response',
+                        removed: 'Removed',
+                      }[key]
+                    }
+                  </strong>
+                  : {document.migrationSummary![key].join(', ') || 'None'}
+                </p>
+              ))}
+              <small>
+                Authored defaults are not confirmed answers. Previous versions retain their state.
+              </small>
+            </details>
+          )}
+          {(browser.downloads?.length ?? 0) > 0 && (
+            <details className="package-history">
+              <summary>Downloads</summary>
+              {browser.downloads?.map((download) => (
+                <p key={download.id} role="status">
+                  {download.filename} · {download.status}
+                </p>
+              ))}
+            </details>
+          )}
+          <div className="section-label spaced">
+            ANNOTATIONS <span>{annotations.length}</span>
+          </div>
+          <div className="annotations">
+            {annotations.length === 0 ? (
+              <div className="empty-note">
+                Select a passage, then choose Annotate. Answers are autosaved privately.
+              </div>
+            ) : (
+              annotations.map((annotation, i) => (
+                <article className="annotation" key={annotation.id}>
+                  <div className="annotation-heading">
+                    <button
+                      className="annotation-jump"
+                      onClick={() => void transition(() => jumpTo(annotation))}
+                    >
+                      <AnnotationBadge number={annotation.number ?? i + 1} />
+                      <blockquote>{annotation.quote || 'Selected area'}</blockquote>
+                    </button>
+                    <div className="annotation-actions">
+                      <button
+                        disabled={busy || documentEditing || Boolean(editing) || browser.annotating}
+                        title="Edit annotation"
+                        aria-label={`Edit annotation ${i + 1}`}
+                        onClick={() => {
+                          restoredEditing.current = annotation.id;
+                          void action(async () => {
+                            if (annotation.kind !== 'browser-area')
+                              await invoke('openArtifact', {
+                                artifactId: annotation.artifactId,
+                                revisionId: annotation.revisionId,
+                              });
+                            await invoke('saveEditor', {
+                              artifactId: annotation.artifactId,
+                              revisionId: annotation.revisionId,
+                              editor: {
+                                selection: annotationSelection(annotation),
+                                comment: annotation.comment,
+                                annotationId: annotation.id,
+                              },
+                            });
+                            editWriteError.current = null;
+                            await invoke('editing', { active: true });
+                            setEditing(annotation);
+                            setComment(annotation.comment);
+                          });
+                        }}
+                      >
+                        <Icon name="edit" />
+                      </button>
+                      <button
+                        disabled={busy || documentEditing || Boolean(editing) || browser.annotating}
+                        title="Delete annotation"
+                        aria-label={`Delete annotation ${i + 1}`}
+                        onClick={() =>
+                          void action(() =>
+                            invoke('deleteAnnotation', { annotationId: annotation.id }),
+                          )
+                        }
+                      >
+                        <Icon name="delete" />
+                      </button>
+                    </div>
+                  </div>
+                  {editing?.id === annotation.id ? (
+                    <CommentComposer
+                      ref={editComposer}
+                      editing
+                      label="Edit annotation"
+                      saveLabel="Save comment"
+                      value={comment}
+                      disabled={busy && !transitioning.current}
+                      onChange={(value) => persistEdit(annotation, value)}
+                      onSave={() => finishEdit(annotation, 'save')}
+                      onCancel={() => finishEdit(annotation, 'cancel')}
+                      onDelete={() => finishEdit(annotation, 'delete')}
+                      onError={(error) => setError(message(error))}
+                    />
+                  ) : (
+                    <p onClick={() => void transition(() => jumpTo(annotation))}>
+                      {annotation.comment}
+                    </p>
+                  )}
+                </article>
+              ))
+            )}
+          </div>
+          <div className="submit-area">
             <button
-              className="subtle full"
+              className="primary full"
               disabled={
                 busy ||
                 savingCount > 0 ||
-                documentEditing ||
-                documentPreview ||
-                browser.annotating ||
                 Array.from(failedAutosaves).some((key) =>
                   key.startsWith(`${selected?.artifactId}:`),
                 ) ||
+                documentEditing ||
+                documentPreview ||
+                browser.annotating ||
                 Boolean(editing) ||
-                (!document?.approved && document?.dirty)
+                !selected?.revisionId
               }
               onClick={() =>
                 void action(async () => {
-                  if (document?.approved) {
-                    if (
-                      revokeIntent.current?.artifactId !== selected.artifactId ||
-                      revokeIntent.current?.revisionId !== selected.revisionId
-                    ) {
-                      revokeIntent.current = { ...selected, operationId: crypto.randomUUID() };
-                    }
-                    await invoke('revokeApproval', revokeIntent.current);
-                    revokeIntent.current = null;
-                  } else await invoke('approve', selected ?? {});
+                  const key = JSON.stringify(selected);
+                  const intent = saveIntents.current.get(key) ?? {
+                    ...selected,
+                    operationId: crypto.randomUUID(),
+                    expectedLatestSavedStateId: document?.latestSavedStateId ?? null,
+                  };
+                  saveIntents.current.set(key, intent);
+                  try {
+                    const result = await invoke<{ id: string; notification: string }>(
+                      'saveState',
+                      intent,
+                    );
+                    saveIntents.current.delete(key);
+                    setNotification(result.notification);
+                  } catch (e) {
+                    if (/STATE_CONFLICT|INVALID_STATE|UNFINISHED_ANNOTATION/.test(message(e)))
+                      saveIntents.current.delete(key);
+                    throw e;
+                  }
                 })
               }
             >
-              {document?.approved ? 'Revoke approval' : 'Approve this version'}
+              {busy
+                ? 'Working…'
+                : savingCount > 0
+                  ? 'Autosaving…'
+                  : saveIntents.current.has(JSON.stringify(selected))
+                    ? 'Retry Save'
+                    : 'Save'}
             </button>
+            <small>
+              {!artifact?.latestRevision ? (
+                'Save and approval become available after the agent publishes the first document. Your workspace is autosaved privately.'
+              ) : (
+                <>
+                  {document?.dirty ? 'Unsaved working changes' : 'Saved state is unchanged'} · Save
+                  keeps annotations and creates an immutable snapshot.
+                </>
+              )}
+            </small>
+            {notification && (
+              <div className="notification">
+                <button className="secondary full" onClick={() => void copy(notification)}>
+                  {copiedText === notification ? 'Copied' : 'Copy update message'}
+                </button>
+                <small>Saved · notify your agent manually</small>
+              </div>
+            )}
+            {selected?.revisionId && (
+              <button
+                className="subtle full"
+                disabled={
+                  busy ||
+                  savingCount > 0 ||
+                  documentEditing ||
+                  documentPreview ||
+                  browser.annotating ||
+                  Array.from(failedAutosaves).some((key) =>
+                    key.startsWith(`${selected?.artifactId}:`),
+                  ) ||
+                  Boolean(editing) ||
+                  (!document?.approved && document?.dirty)
+                }
+                onClick={() =>
+                  void action(async () => {
+                    if (document?.approved) {
+                      if (
+                        revokeIntent.current?.artifactId !== selected.artifactId ||
+                        revokeIntent.current?.revisionId !== selected.revisionId
+                      ) {
+                        revokeIntent.current = { ...selected, operationId: crypto.randomUUID() };
+                      }
+                      await invoke('revokeApproval', revokeIntent.current);
+                      revokeIntent.current = null;
+                    } else await invoke('approve', selected ?? {});
+                  })
+                }
+              >
+                {document?.approved ? 'Revoke approval' : 'Approve this version'}
+              </button>
+            )}
+            <small>Approval records agreement. It does not authorize implementation.</small>
+          </div>
+          {(snapshot.savedStates ?? []).filter((state) => state.artifactId === artifact?.id)
+            .length > 0 && (
+            <details className="package-history">
+              <summary>Saved states</summary>
+              {snapshot.savedStates
+                ?.filter((state) => state.artifactId === artifact?.id)
+                .map((state) => (
+                  <div key={state.id}>
+                    <small>{new Date(state.createdAt).toLocaleString()}</small>
+                    {state.notification && (
+                      <button onClick={() => void copy(state.notification ?? '')}>
+                        Copy update message
+                      </button>
+                    )}
+                  </div>
+                ))}
+            </details>
           )}
-          <small>Approval records agreement. It does not authorize implementation.</small>
-        </div>
-        {(snapshot.savedStates ?? []).filter((state) => state.artifactId === artifact?.id).length >
-          0 && (
-          <details className="package-history">
-            <summary>Saved states</summary>
-            {snapshot.savedStates
-              ?.filter((state) => state.artifactId === artifact?.id)
-              .map((state) => (
-                <div key={state.id}>
-                  <small>{new Date(state.createdAt).toLocaleString()}</small>
-                  {state.notification && (
-                    <button onClick={() => void copy(state.notification ?? '')}>
-                      Copy update message
-                    </button>
-                  )}
-                </div>
-              ))}
-          </details>
-        )}
-        {snapshot.packages.filter((p) => !p.projectId || p.projectId === projectId).length > 0 && (
-          <details className="package-history">
-            <summary>Legacy submitted packages</summary>
-            {snapshot.packages
-              .filter((p) => !p.projectId || p.projectId === projectId)
-              .map((p) => (
-                <div key={p.id}>
-                  <small>{new Date(p.createdAt).toLocaleString()}</small>
-                  {p.notification && (
-                    <button onClick={() => void copy(p.notification ?? '')}>
-                      Copy legacy notification
-                    </button>
-                  )}
-                </div>
-              ))}
-          </details>
-        )}
-      </aside>
-      {guideOpen && (
-        <GuideViewer
-          load={guideLoad}
-          close={() => {
-            setGuideOpen(false);
-            const tabId = guideBrowser.current;
-            guideBrowser.current = null;
-            if (tabId) void action(() => invoke('browserSelect', { tabId }));
-            guideFocus.current?.focus();
+          {snapshot.packages.filter((p) => !p.projectId || p.projectId === projectId).length >
+            0 && (
+            <details className="package-history">
+              <summary>Legacy submitted packages</summary>
+              {snapshot.packages
+                .filter((p) => !p.projectId || p.projectId === projectId)
+                .map((p) => (
+                  <div key={p.id}>
+                    <small>{new Date(p.createdAt).toLocaleString()}</small>
+                    {p.notification && (
+                      <button onClick={() => void copy(p.notification ?? '')}>
+                        Copy legacy notification
+                      </button>
+                    )}
+                  </div>
+                ))}
+            </details>
+          )}
+        </aside>
+      </div>
+      {renaming && (
+        <div
+          className="modal-backdrop"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              closeRename();
+            }
           }}
-        />
+        >
+          <section
+            className="modal rename-plan-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Rename plan"
+          >
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveRename();
+              }}
+            >
+              <h2>Rename plan</h2>
+              {renameError && (
+                <p role="alert" className="error-banner">
+                  {renameError}
+                </p>
+              )}
+              <label htmlFor="plan-name">Plan name</label>
+              <input
+                id="plan-name"
+                disabled={renameBusy}
+                autoFocus
+                value={renaming.title}
+                onChange={(event) => setRenaming({ ...renaming, title: event.target.value })}
+              />
+              <div className="rename-plan-actions">
+                <button type="button" disabled={renameBusy} onClick={closeRename}>
+                  Cancel
+                </button>
+                <button
+                  className="primary"
+                  type="submit"
+                  disabled={renameBusy || !renaming.title.trim()}
+                >
+                  Save
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
       )}
+      {guideOpen && <GuideViewer load={guideLoad} close={closeInformation} />}
       {setup && (
-        <div className="modal-backdrop">
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closeInformation();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              closeInformation();
+            }
+          }}
+        >
           <section className="modal" role="dialog" aria-modal="true" aria-label="MCP connection">
             <div className="modal-heading">
               <h2>Connect Blueprint through MCP</h2>
-              <button className="subtle" onClick={() => setSetup(null)}>
+              <button className="subtle" onClick={closeInformation}>
                 Close
               </button>
             </div>

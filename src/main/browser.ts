@@ -65,10 +65,11 @@ type BrowserHooks = {
   getAnnotations?: (artifactId: string) => Promise<BrowserMarkerAnnotation[]>;
   onMarkerSelect?: (value: { artifactId: string; annotationId: string }) => Promise<unknown>;
   onAnnotation: (
-    value: CaptureDraft & { artifactId: string; tabId: string; revisionId?: string },
+    value: CaptureDraft & { artifactId: string; tabId: string; revisionId?: string | null },
   ) => Promise<{ id: string; number: number }>;
   onDraft?: (
-    value: (CaptureDraft & { artifactId: string; tabId: string; revisionId?: string }) | null,
+    value:
+      (CaptureDraft & { artifactId: string; tabId: string; revisionId?: string | null }) | null,
   ) => Promise<unknown>;
 };
 export type BrowserMarkerAnnotation = {
@@ -149,7 +150,7 @@ export class BrowserManager {
     | (CaptureDraft & {
         artifactId: string;
         tabId: string;
-        revisionId?: string;
+        revisionId?: string | null;
         readonly?: boolean;
         number?: number;
       })
@@ -157,7 +158,7 @@ export class BrowserManager {
   private captureGeneration = 0;
   private closed = false;
   private operationChain: Promise<unknown> = Promise.resolve();
-  private tool: { tabId: string; revisionId?: string } | null = null;
+  private tool: { tabId: string; revisionId?: string | null } | null = null;
   private markerViews = new Map<
     string,
     { view: WebContentsView; contents: WebContents; artifactId: string; annotationId: string }
@@ -649,6 +650,13 @@ export class BrowserManager {
     this.hooks.onChange();
   }
 
+  setResizeMode(active: boolean) {
+    // Native views sit above renderer DOM; temporarily hide them without changing
+    // tab selection, capture ownership, or an unfinished annotation editor.
+    for (const tab of this.tabs.values()) tab.view.setVisible(!active);
+    this.overlay?.setVisible(!active);
+  }
+
   setBounds(bounds: AreaRect) {
     const [width, height] = this.window.getContentSize();
     this.bounds = safeBrowserBounds(bounds, { width, height });
@@ -896,12 +904,10 @@ export class BrowserManager {
     tab.state.error = null;
     const generation = ++this.captureGeneration;
     const revisionId = await this.hooks.getRevision?.(tab.state.artifactId);
-    if (this.hooks.getRevision && !revisionId)
-      throw new Error('DOCUMENT_REVISION_REQUIRED: Publish the document first.');
     if (this.activeTabId !== tabId || generation !== this.captureGeneration)
       throw new Error('CAPTURE_CHANGED: Browser selection changed before activation.');
     this.capture = null;
-    this.tool = { tabId, revisionId: revisionId ?? undefined };
+    this.tool = { tabId, revisionId: revisionId ?? null };
     this.clearMarkers();
     const overlay = await this.ensureOverlay();
     if (!this.tool || this.activeTabId !== tabId || generation !== this.captureGeneration)
@@ -1258,7 +1264,7 @@ export class BrowserManager {
   }
 
   async restoreDraft(
-    value: CaptureDraft & { artifactId: string; tabId: string; revisionId?: string },
+    value: CaptureDraft & { artifactId: string; tabId: string; revisionId?: string | null },
   ) {
     if (this.capture && !this.capture.readonly) throw new Error('UNFINISHED_COMMENT');
     if (this.tool) this.hideOverlay();

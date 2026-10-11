@@ -92,7 +92,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   bridge = new Mcp(socket);
   await bridge.initialize();
   const guide = await bridge.tool('get_blueprint_guide', {});
-  expect(guide.guideVersion).toBe('0.1.0-alpha.1+guide.2');
+  expect(guide.guideVersion).toBe('0.1.0-alpha.1+guide.3');
   const context = await bridge.tool('get_blueprint_context', {});
   const projectId = (context.project as { id: string }).id;
   const a = await bridge.tool('create_artifact', {
@@ -105,7 +105,8 @@ test('production Electron + real MCP publication, review, Save, revision and res
   // Unpublished entities remain interactive without publishing or accepting answers.
   await page.getByRole('button', { name: 'Permission policy', exact: true }).click();
   const preview = page.frameLocator('iframe');
-  await expect(preview.getByText('Waiting for the agent to write the MDX source.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Waiting for your agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy message for agent' })).toBeVisible();
   await writeFile(join(String(a.sourcePath), 'plan.mdx'), 'import unsafe from "unsafe";');
   await page.getByRole('button', { name: 'Permission policy', exact: true }).click();
   await expect(preview.getByRole('alert')).toBeVisible();
@@ -236,7 +237,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   await expect(page.getByText('In review', { exact: true })).toBeVisible();
   // Close last window: macOS runtime survives and bridge still answers.
   await page.close();
-  expect((await bridge.tool('get_blueprint_guide', {})).guideVersion).toBe('0.1.0-alpha.1+guide.2');
+  expect((await bridge.tool('get_blueprint_guide', {})).guideVersion).toBe('0.1.0-alpha.1+guide.3');
   bridge.close();
   await app.close();
   app = await launch();
