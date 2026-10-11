@@ -24,7 +24,12 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   const launch = () => electron.launch({ args: [resolve('.')], env: { ...process.env,
     BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: descriptor, CODEX_HOME: home,
     CODEX_FIXTURE_PROJECT: project, CODEX_FIXTURE_OTHER_PROJECT: other, CODEX_FIXTURE_AUDIT: audit,
-    CODEX_FIXTURE_ID: exact, CODEX_FIXTURE_MCP_STARTUP_STATUS: 'ready' } });
+    CODEX_FIXTURE_ID: exact, CODEX_FIXTURE_MCP_STARTUP_STATUS: 'ready',
+    CODEX_FIXTURE_SESSION_METADATA: JSON.stringify({
+      [exact]: { name: 'Guardian review', source: 'cli' },
+      'hidden-review-child': { name: 'Hidden child review', source: { subAgent: 'review' } },
+      'hidden-archived-child': { name: 'Hidden archived child', parentThreadId: exact, source: 'cli', archived: true },
+    }) } });
   app = await launch();
   let launchErrors = '';
   app.process().stderr?.on('data', chunk => { launchErrors += String(chunk); });
@@ -46,6 +51,14 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
     expect.objectContaining({ id: 'archived-exact-fixture', archived: true, projectId }),
   ]));
   expect(value.terminals).toEqual([]);
+  await expect(page.getByRole('button', { name: 'Guardian review', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Hidden child review', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Hidden archived child', exact: true })).toHaveCount(0);
+  const workspaces = structuredClone(value.workspaces);
+  expect(await invoke(page, 'harnessRead', { sessionId: 'hidden-review-child' })).toMatchObject({ isSubAgent: true });
+  value = await snapshot(page);
+  expect(value.harnesses.sessions.some(session => session.id === 'hidden-review-child')).toBe(false);
+  expect(value.workspaces).toEqual(workspaces);
   const requests = async () => (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { kind: string; method?: string; params?: Record<string, unknown>; args?: string[] });
   expect((await requests()).some(event => event.method === 'thread/start' || event.method === 'thread/resume')).toBe(false);
   await page.getByRole('button', { name: 'New Codex session in project', exact: true }).click();

@@ -87,7 +87,7 @@ A dedicated terminal service owns `node-pty`; xterm.js renders its output. One P
 
 Open **Settings** with **⌘,** for General, Terminal, Harnesses and Keyboard shortcuts. Configure plan placement and restoration, shell/arguments, font/size, saved output limit, Codex executable/profile, and searched/remapped/disabled/reset shortcuts with conflict detection. Defaults include **⌘W**, **Control+Tab**, **Control+Shift+Tab**, **⌘J** and **⌘,**; split/pane-navigation shortcuts initially have no assignment. Ordinary terminal input and IME composition are not shortcut commands.
 
-**Harnesses** displays observed Blueprint MCP startup status for owned Codex launches. `ready` confirms the backend's startup event, not ongoing connection health or receipt of a saved state. External client status remains unknown. Use **Refresh local sessions** in the project tree to discover the selected Codex profile without starting or resuming sessions.
+**Harnesses** displays observed Blueprint MCP startup status for owned Codex launches. `ready` confirms the backend's startup event, not ongoing connection health or receipt of a saved state. External client status remains unknown. Use **Refresh local sessions** in the project tree to discover the selected Codex profile without starting or resuming sessions. The shared catalog and handoff picker show standalone sessions; protocol-marked subagents are hidden, while user forks and unknown sources remain visible. Hiding an entry retains its workspace, history and owned process.
 
 The current qualification targets macOS. Portable transport and PTY libraries do not establish Linux/Windows support. Automatic orchestration, worktree management, chat and automatic message delivery remain outside this stage.
 

@@ -11,6 +11,8 @@ export interface HarnessSession {
   /** Seconds since epoch, as returned by the Codex protocol. */
   updatedAt: number;
   archived?: boolean;
+  /** Protocol classification; hidden from the shared session catalog, not deleted. */
+  isSubAgent?: boolean;
   status: HarnessSessionStatus;
   processState: 'unknown' | 'running' | 'stopped';
   terminalId?: string;

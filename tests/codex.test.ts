@@ -256,6 +256,74 @@ it('discovers all pages and providers by protocol without starting sessions; can
     requests.some((value) => value.method?.includes('resume') || value.method?.includes('turn')),
   ).toBe(false);
 });
+it('hides subagents by protocol metadata while keeping named roots, unknown sources and manual forks', async () => {
+  const catalog = {
+    'thread-exact-fixture': { name: 'Guardian review', source: 'cli' },
+    'other-worktree': { source: 'cli', forkedFromId: 'manual-parent' },
+    'archived-exact-fixture': { source: 'unknown' },
+    'review-child': { source: { subAgent: 'review' } },
+    'compact-child': { source: { subAgent: 'compact' }, archived: true },
+    'spawn-child': {
+      source: { subAgent: { thread_spawn: { parent_thread_id: 'root', depth: 1 } } },
+    },
+    'other-child': { source: { subAgent: { other: 'guardian' } } },
+    'memory-child': { source: { subAgent: 'memory_consolidation' } },
+    'parent-child': { source: 'cli', parentThreadId: 'root' },
+  };
+  const { manager, project, other, audit } = await setup({
+    CODEX_FIXTURE_SESSION_METADATA: JSON.stringify(catalog),
+  });
+  const projects = [
+    { id: 'one', path: project },
+    { id: 'two', path: other },
+  ];
+  const sessions = await manager.discover(projects);
+  expect(sessions.map((session) => session.id)).toEqual([
+    'thread-exact-fixture',
+    'other-worktree',
+    'archived-exact-fixture',
+  ]);
+  expect(sessions[0].title).toBe('Guardian review');
+  expect(sessions[1].projectId).toBe('two');
+  for (const request of (await auditRequests(audit)).filter(
+    (request) => request.method === 'thread/list',
+  ))
+    expect(request.params).toMatchObject({
+      sourceKinds: ['cli', 'vscode', 'exec', 'appServer', 'unknown'],
+      useStateDbOnly: true,
+      modelProviders: [],
+    });
+  for (const id of Object.keys(catalog).filter((id) => id.endsWith('-child')))
+    expect(await manager.read(id)).toMatchObject({ id, isSubAgent: true });
+  expect(manager.snapshot().sessions.map((session) => session.id)).toEqual(
+    sessions.map((session) => session.id),
+  );
+  expect(
+    (await auditRequests(audit)).some(
+      (request) => request.method === 'thread/start' || request.method === 'thread/resume',
+    ),
+  ).toBe(false);
+});
+it('keeps an explicitly resumed subagent process owned but hidden after discovery and direct reads', async () => {
+  const { manager, project, identities } = await setup({
+    CODEX_FIXTURE_SESSION_METADATA: JSON.stringify({
+      'owned-child': { parentThreadId: 'root', source: { subAgent: 'review' } },
+    }),
+  });
+  const launch = await manager.launchResume('project', project, 'owned-child');
+  manager.bindTerminal(launch.launchId, 'child-terminal');
+  const gateway = await controlGateway(launch);
+  await gateway.call('thread/resume', { threadId: 'owned-child', cwd: project });
+  await until(() => identities.length === 1);
+  expect(identities).toEqual([{ terminalId: 'child-terminal', sessionId: 'owned-child' }]);
+  await manager.discover([{ id: 'project', path: project }]);
+  expect(await manager.read('owned-child')).toMatchObject({
+    isSubAgent: true,
+    processState: 'running',
+    terminalId: 'child-terminal',
+  });
+  expect(manager.snapshot().sessions.some((session) => session.id === 'owned-child')).toBe(false);
+});
 it('binds new TUI by the matching root-thread response, rejecting title and unrelated broadcast identities', async () => {
   const { manager, project, audit, identities } = await setup();
   const launch = await manager.launchNew('project', project);
@@ -430,7 +498,9 @@ it('cancels only a failed launch and resets discovery without stopping another b
 
 it('resumes a known fork by its exact thread ID rather than its session-tree root', async () => {
   const { manager, project, identities } = await setup({
-    CODEX_FIXTURE_PARENT_THREAD: 'parent-thread',
+    CODEX_FIXTURE_SESSION_METADATA: JSON.stringify({
+      'fork-exact-id': { forkedFromId: 'parent-thread', source: 'cli' },
+    }),
   });
   const launch = await manager.launchResume('project', project, 'fork-exact-id');
   manager.bindTerminal(launch.launchId, 'fork-terminal');

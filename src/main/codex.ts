@@ -32,6 +32,16 @@ const threadSchema = z
     status: statusSchema.optional(),
     ephemeral: z.boolean().optional(),
     parentThreadId: z.string().nullable().optional(),
+    source: z
+      .union([
+        z.string(),
+        z
+          .object({ subAgent: z.union([z.string(), z.record(z.string(), z.unknown())]) })
+          .passthrough(),
+        z.object({ custom: z.string() }).passthrough(),
+      ])
+      .nullable()
+      .optional(),
     threadSource: z.string().nullable().optional(),
   })
   .passthrough();
@@ -297,7 +307,9 @@ export class CodexManager {
   }
   snapshot(): HarnessSnapshot {
     return structuredClone({
-      sessions: [...this.sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt),
+      sessions: [...this.sessions.values()]
+        .filter((session) => !session.isSubAgent)
+        .sort((a, b) => b.updatedAt - a.updatedAt),
       compatibility: this.compatibility,
       error: this.error,
       mcpStartup: [...this.mcpStartup.values()],
@@ -407,6 +419,11 @@ export class CodexManager {
       cwd,
       title: thread.name || thread.preview || 'Untitled session',
       updatedAt: thread.updatedAt,
+      isSubAgent:
+        Boolean(thread.parentThreadId) ||
+        (typeof thread.source === 'object' &&
+          thread.source !== null &&
+          Object.hasOwn(thread.source, 'subAgent')),
       ...(previous?.archived === undefined ? {} : { archived: previous.archived }),
       status: running
         ? thread.status?.type === 'notLoaded'
@@ -450,18 +467,7 @@ export class CodexManager {
                 archived,
                 useStateDbOnly: true,
                 modelProviders: [],
-                sourceKinds: [
-                  'cli',
-                  'vscode',
-                  'exec',
-                  'appServer',
-                  'subAgent',
-                  'subAgentReview',
-                  'subAgentCompact',
-                  'subAgentThreadSpawn',
-                  'subAgentOther',
-                  'unknown',
-                ],
+                sourceKinds: ['cli', 'vscode', 'exec', 'appServer', 'unknown'],
               }),
             );
           for (const thread of page.data)

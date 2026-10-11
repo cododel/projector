@@ -14,6 +14,7 @@ const args = process.argv.slice(2);
 const flag = (name) => args[args.indexOf(name) + 1];
 const cwd = process.env.CODEX_FIXTURE_PROJECT || process.cwd();
 const id = process.env.CODEX_FIXTURE_ID || 'thread-exact-fixture';
+const metadata = JSON.parse(process.env.CODEX_FIXTURE_SESSION_METADATA || '{}');
 const thread = (threadId = id, path = cwd) => ({
   id: threadId,
   sessionId: 'root-exact-fixture',
@@ -25,6 +26,7 @@ const thread = (threadId = id, path = cwd) => ({
   ephemeral: false,
   parentThreadId: process.env.CODEX_FIXTURE_PARENT_THREAD || null,
   threadSource: 'user',
+  ...metadata[threadId],
 });
 if (process.env.CODEX_FIXTURE_AUDIT)
   appendFileSync(process.env.CODEX_FIXTURE_AUDIT, JSON.stringify({ kind: 'spawn', args }) + '\n');
@@ -123,6 +125,16 @@ if (args.includes('--remote')) {
                 data: [thread(id), { ...thread('temporary-title'), ephemeral: true }],
                 nextCursor: 'page-two',
               };
+        if (!value.params?.cursor)
+          result.data.push(
+            ...Object.entries(metadata)
+              .filter(
+                ([key, entry]) =>
+                  ![id, 'other-worktree', 'archived-exact-fixture'].includes(key) &&
+                  Boolean(entry.archived) === Boolean(value.params?.archived),
+              )
+              .map(([key]) => thread(key)),
+          );
         break;
       case 'thread/read':
         result = {

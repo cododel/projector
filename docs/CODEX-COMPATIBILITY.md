@@ -1,6 +1,6 @@
 # Codex: совместимость и границы исследования Alpha 1
 
-Квалификация prerequisite адаптера: 2026-10-11. Текущая среда: Blueprint `0.1.0-alpha.1`, Electron `44.7.0`, bundled Node `24.20.0`, MCP SDK server `2.3.1`, guideVersion `0.1.0-alpha.1+guide.4`, macOS `27.0` (`26A428`), Codex CLI `0.162.1`. Исторические результаты ниже помечены отдельно.
+Квалификация prerequisite адаптера: 2026-10-11. Текущая среда: Blueprint `0.1.0-alpha.1`, Electron `44.7.0`, bundled Node `24.20.0`, MCP SDK server `2.3.1`, guideVersion `0.1.0-alpha.1+guide.5`, macOS `27.0` (`26A428`), Codex CLI `0.162.1`. Исторические результаты ниже помечены отдельно.
 
 Этот документ различает возможности внешнего API и проверенную интеграцию. Текущий цикл Alpha 1 использует явный Save состояния артефакта; оператор выбирает исполнителя, копирует уведомление и сам вставляет/отправляет его в терминале; originSession остаётся авторской связью. Старые Submit-пакеты остаются читаемыми. Автоматическая доставка отключена. Проверки используют одноразовые проекты, данные приложения и task-owned loopback endpoints; пользовательская конфигурация, skills, hooks и существующие рабочие сессии не изменялись. Историческая проверка модели в конце документа относится к прежнему циклу Submit. Текущий Save-цикл и доставка instructions имеют отдельные проверки.
 
@@ -18,7 +18,7 @@
 
 Прежние approval/sandbox/model/provider/trust/MCP настройки сохранились, launch-only MCP/provider overrides не записались. Нативный Codex сам добавил в одноразовый config UX bookkeeping `[tui].screen_reader_detection_done` и `[tui.model_availability_nux]`; весь config не объявляется побайтно неизменным. Реальная пользовательская конфигурация, auth и рабочие сессии не использовались и не редактировались. Task-owned backend/TUI/fixture процессы остановлены после эксперимента.
 
-Тесты `tests/codex.test.ts` проверяют metadata пагинацию всех providers/source kinds и archived/non-archived без repair/start/resume, exact new/fork Resume, неправильный ID, token/Origin отказ, отдельную отмену запуска и Quit во время старта. Это controlled protocol boundary; совместимость настоящего TUI подтверждается отдельными probes выше. Статус чужого CLI остаётся unknown, известные собственные процессы имеют подтверждённую liveness; idle/active/error привязаны к exact thread event. Root session ID и thread.id не подменяются друг другом.
+Тесты `tests/codex.test.ts` проверяют metadata пагинацию всех providers и самостоятельных source kinds, archived/non-archived без repair/start/resume, исключение субагентов по parentThreadId/source.subAgent (также после прямого чтения и owned Resume), exact new/fork Resume, неправильный ID, token/Origin отказ, отдельную отмену запуска и Quit во время старта. Это controlled protocol boundary; совместимость настоящего TUI подтверждается отдельными probes выше. Статус чужого CLI остаётся unknown, известные собственные процессы имеют подтверждённую liveness; idle/active/error привязаны к exact thread event. Root session ID и thread.id не подменяются друг другом.
 
 ## Текущий transport и сквозная приёмка
 
