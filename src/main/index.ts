@@ -13,16 +13,21 @@ import {
 import { join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { connect } from 'node:net';
-import { createInterface } from 'node:readline';
-import { readFile, mkdir, unlink } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
 import type { RpcResponse } from '../shared/protocol';
 import { runtimeLimits } from '../shared/runtime-limits';
 import { getGuide } from '../guide';
 import { atomicJson } from '../runtime/files';
 import { getMcpSetup } from './mcp-setup';
-import { BrowserManager } from './browser';
+import { BrowserManager, type BrowserTab } from './browser';
 import { Workspace } from './workspace';
+import { ApplicationWorkspace } from './application-workspace';
+import { TerminalManager } from './terminals';
+import { TerminalOutputDelivery } from './terminal-delivery';
+import { CodexManager } from './codex';
+import { paneLeaves } from '../shared/application-workspace';
+import { matchShortcut } from '../shared/keyboard-shortcuts';
+import type { McpSetup } from '../shared/protocol';
 import { auditE2EWindows, e2eWindowOptions, isBackgroundE2E } from './e2e-window';
 import { safeBrowserBounds, validateArea } from './browser-policy';
 import { z } from 'zod';
@@ -32,8 +37,168 @@ auditE2EWindows(app);
 app.setName('Blueprint');
 if (process.env.BLUEPRINT_DATA) app.setPath('userData', process.env.BLUEPRINT_DATA);
 const workspace = new Workspace(join(app.getPath('userData'), 'workspace.json'));
+const applicationWorkspace = new ApplicationWorkspace(join(app.getPath('userData'), 'application-workspace.json'));
+let mcpSetup: McpSetup | null = null;
+const runningTerminals = new Set<string>();
+const terminalDelivery = new TerminalOutputDelivery(delivery => window?.webContents.send('blueprint:terminal-output', delivery));
+ipcMain.on('blueprint:terminal-output-ack', (event, deliveryId: unknown) => {
+  if (window && event.sender === window.webContents && event.senderFrame === event.sender.mainFrame && typeof deliveryId === 'string')
+    terminalDelivery.acknowledge(deliveryId);
+});
+const terminals = new TerminalManager({
+  onChange: (records) => {
+    for (const record of records) {
+      if (record.status === 'running') runningTerminals.add(record.id);
+      else if (runningTerminals.delete(record.id))
+        void codex.terminalStopped(record.id).catch(() => {});
+    }
+    workspaceRefresh();
+  },
+  onOutput: (output) => {
+    if (window && !window.isDestroyed()) terminalDelivery.offer(output);
+  },
+});
+const codex = new CodexManager({
+  getExecutable: () => applicationWorkspace.snapshot().settings.codexExecutable,
+  getProfile: () => applicationWorkspace.snapshot().settings.codexProfile || undefined,
+  getMcpOverrides: () => {
+    if (!mcpSetup) throw new Error('MCP setup is unavailable');
+    return {
+      'mcp_servers.blueprint.command': mcpSetup.executable,
+      'mcp_servers.blueprint.args': mcpSetup.args,
+      'mcp_servers.blueprint.env.BLUEPRINT_RUNTIME_DESCRIPTOR': mcpSetup.descriptorPath,
+    };
+  },
+  onIdentity: (terminalId, sessionId) => {
+    void applicationMutation(async () => {
+      await terminals.bindSession(terminalId, sessionId);
+      const record = (await terminals.snapshot()).find(item => item.id === terminalId);
+      if (!record) return;
+      const selected = applicationWorkspace.snapshot().selectedWorkspace;
+      const old = selected ? applicationWorkspace.workspace(selected) : null;
+      const wasFocused = old?.tabs.flatMap(tab => paneLeaves(tab.root)).some(pane =>
+        pane.id === old.activePaneId && pane.content.kind === 'terminal' && pane.content.terminalId === terminalId);
+      const key = applicationWorkspace.select(record.projectId, sessionId);
+      applicationWorkspace.terminal(key, terminalId);
+      if (!wasFocused && selected) applicationWorkspace.restore({ ...applicationWorkspace.snapshot(), selectedWorkspace: selected });
+    }).catch(error => console.error('Session workspace could not be saved', error));
+  },
+  onChange: workspaceRefresh,
+  onError: workspaceRefresh,
+});
+let applicationWrites: Promise<unknown> = Promise.resolve();
+let shortcutCapture = false;
+const editingScopes = new Set<string>();
+function setEditingScope(scope: string, active: boolean) {
+  if (active) editingScopes.add(scope);
+  else editingScopes.delete(scope);
+  return rpc('editing', { active: editingScopes.size > 0 });
+}
+function clearRendererEditingScopes() {
+  for (const scope of editingScopes) if (scope !== 'browser') editingScopes.delete(scope);
+  return rpc('editing', { active: editingScopes.size > 0 });
+}
+function applicationMutation<T>(action: () => Promise<T> | T): Promise<T> {
+  if (quitting) return Promise.reject(new Error('Blueprint is shutting down.'));
+  const write = applicationWrites.catch(() => {}).then(async () => {
+    applicationWorkspace.assertConfirmed();
+    workspace.assertConfirmed();
+    const previous = applicationWorkspace.snapshot();
+    try {
+      const result = await action();
+      await applicationWorkspace.save();
+      workspaceRefresh();
+      return result;
+    } catch (error) {
+      if (!applicationWorkspace.hasPendingConfirmation() && !workspace.hasPendingConfirmation())
+        applicationWorkspace.restore(previous);
+      workspaceRefresh();
+      throw error;
+    }
+  });
+  applicationWrites = write;
+  return write;
+}
+async function activateApplicationPane(key: string, paneId: string) {
+  const content = applicationWorkspace.findPane(key, paneId).content;
+  applicationWorkspace.focus(key, paneId);
+  await rpc('selectProject', { projectId: applicationWorkspace.workspace(key).projectId });
+  if (content.kind === 'terminal') { browser?.select(null); return; }
+  const document = content.tab.kind === 'document' ? content : applicationWorkspace.workspace(key).tabs
+    .flatMap(tab => paneLeaves(tab.root)).map(pane => pane.content)
+    .find(pane => pane.kind === 'plan' && pane.artifactId === content.artifactId && pane.tab.kind === 'document');
+  const revisionId = document?.kind === 'plan' && document.tab.kind === 'document' ? document.tab.revisionId :
+    ((await rpc('artifactProperties', { artifactId: content.artifactId })) as { latestRevision: string | null }).latestRevision;
+  // Workspace selection already owns navigation. Emitting show-artifact here would
+  // enqueue an older operator selection after a concurrent public publication.
+  await rpc('openArtifact', { artifactId: content.artifactId, revisionId, workspace: true });
+  if (content.tab.kind === 'document') {
+    browser?.select(null);
+  } else if (content.tab.kind === 'browser' && browser) {
+    const nativeId = content.tab.nativeId;
+    const existing = nativeId && browser.snapshot().tabs.find(tab => tab.id === nativeId);
+    if (existing) browser.select(existing.id);
+    else {
+      const native = await ensureApplicationBrowser(key, paneId);
+      browser.select(native.id);
+    }
+  } else browser?.select(null);
+}
+const browserPaneOpenings = new Map<string, { owner: BrowserManager; promise: Promise<BrowserTab> }>();
+function ensureApplicationBrowser(key: string, paneId: string): Promise<BrowserTab> {
+  const owner = browser;
+  if (!owner) return Promise.reject(new Error('Browser surface unavailable'));
+  const current = applicationWorkspace.workspace(key);
+  const content = applicationWorkspace.findPane(key, paneId).content;
+  if (content.kind !== 'plan' || content.tab.kind !== 'browser')
+    return Promise.reject(new Error('BROWSER_PANE_REQUIRED'));
+  const tab = content.tab;
+  const live = owner.snapshot().tabs.find(native => native.id === tab.nativeId && native.artifactId === content.artifactId);
+  if (live) return Promise.resolve(live);
+  const identity = `${key}/${paneId}`;
+  const pending = browserPaneOpenings.get(identity);
+  if (pending?.owner === owner) return pending.promise;
+  // Lazy pane rendering and private composer recovery can arrive concurrently.
+  // Both must bind the same page, independently of equal URLs in other workspaces.
+  const promise = Promise.resolve().then(async () => {
+    const native = await owner.open({ artifactId: content.artifactId, projectId: current.projectId,
+      url: tab.url, newTab: true, background: true });
+    if (browser !== owner) throw new Error('Browser surface changed during restoration');
+    const latest = applicationWorkspace.findPane(key, paneId).content;
+    if (latest.kind !== 'plan' || latest.artifactId !== content.artifactId || latest.tab.kind !== 'browser' || latest.tab.id !== tab.id)
+      throw new Error('BROWSER_PANE_CHANGED');
+    latest.tab.nativeId = native.id;
+    return native;
+  });
+  browserPaneOpenings.set(identity, { owner, promise });
+  void promise.finally(() => {
+    if (browserPaneOpenings.get(identity)?.promise === promise) browserPaneOpenings.delete(identity);
+  }).catch(() => {});
+  return promise;
+}
+async function applicationPlan(artifactId: string, revisionId: string | null, alreadySelected = false) {
+  const artifact = await rpc('artifactProperties', { artifactId }) as { projectId: string };
+  const selected = applicationWorkspace.snapshot().selectedWorkspace;
+  const current = selected ? applicationWorkspace.workspace(selected) : null;
+  const key = current?.projectId === artifact.projectId ? selected! : applicationWorkspace.select(artifact.projectId, null);
+  const tab = workspace.document(artifactId, revisionId);
+  const pane = applicationWorkspace.openPlan(key, artifactId, tab);
+  if (alreadySelected) browser?.select(null);
+  else await activateApplicationPane(key, pane.id);
+  await workspace.save();
+  return pane;
+}
 function workspaceRefresh() {
   window?.webContents.send('blueprint:refresh');
+}
+function applicationShortcut(input: Electron.Input): boolean {
+  if (shortcutCapture || input.type !== 'keyDown') return false;
+  const action = matchShortcut({ key: input.key, metaKey: input.meta, ctrlKey: input.control,
+    altKey: input.alt, shiftKey: input.shift, isComposing: input.isComposing, repeat: input.isAutoRepeat },
+    applicationWorkspace.snapshot().settings.shortcuts, process.platform);
+  if (!action) return false;
+  window?.webContents.send('blueprint:shortcut', action);
+  return true;
 }
 async function selectWorkspaceTab(artifactId: string, tabId: string) {
   const entry = workspace.find(artifactId, tabId);
@@ -63,10 +228,9 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
   },
 ]);
-const token = randomUUID();
 let window: BrowserWindow | null = null;
 let worker: Electron.UtilityProcess | null = null;
-let connection: ReturnType<typeof connect> | null = null;
+let runtimeReady = false;
 let quitting = false;
 let browser: BrowserManager | null = null;
 let browserDraftArtifact: string | null = null;
@@ -92,7 +256,7 @@ function failRpcRequests(): void {
 }
 function rpc(name: string, args: unknown = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    if (!connection || connection.destroyed || connection.writableEnded) {
+    if (!worker || !runtimeReady) {
       reject(new Error('Blueprint runtime is unavailable'));
       return;
     }
@@ -101,25 +265,35 @@ function rpc(name: string, args: unknown = {}): Promise<unknown> {
       window?.webContents.send('blueprint:operation-status', { waiting: true, operation: name });
     }, 10000);
     requests.set(id, { resolve, reject, timer });
-    connection.write(
-      JSON.stringify({ id, method: 'operator', params: { name, args }, token }) + '\n',
-      (error) => {
-        if (!error) return;
-        failRpcRequests();
-        connection?.destroy();
-      },
-    );
+    try {
+      worker.postMessage({ type: 'operator', id, name, args });
+    } catch {
+      failRpcRequests();
+    }
   });
 }
-async function showCapturedAnnotation(artifactId: string, annotationId: string) {
+async function showCapturedAnnotation(artifactId: string, annotationId: string, requestedPaneId?: string) {
   if (!browser || !window) throw new Error('Browser surface unavailable');
   const value = (await rpc('getCapture', { artifactId, annotationId })) as {
     capture: { id: string; source: import('../runtime/artifact-state').Capture['source'] };
     png: string;
     number: number;
   };
+  const key = applicationWorkspace.snapshot().selectedWorkspace;
+  let paneId: string | undefined;
+  if (key) {
+    const entry = applicationWorkspace.workspace(key);
+    const tab = entry.tabs.find(tab => tab.id === entry.activeTabId);
+    const panes = tab ? paneLeaves(tab.root) : [];
+    const pane = requestedPaneId ? panes.find(pane => pane.id === requestedPaneId) :
+      panes.find(pane => pane.id === entry.activePaneId && pane.content.kind === 'plan' && pane.content.artifactId === artifactId);
+    if (!pane || pane.content.kind !== 'plan' || pane.content.artifactId !== artifactId)
+      throw new Error('CAPTURE_PANE_MISMATCH');
+    paneId = pane.id;
+    if (pane.content.tab.kind !== 'browser') browser.select(null);
+  }
   const bounds = await window.webContents.executeJavaScript(
-    `(()=>{const el=document.querySelector('.browser-area')||document.querySelector('iframe')||document.querySelector('.new-tab-home');if(!el)throw Error('Capture surface unavailable');const b=el.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height}})()`,
+    `(()=>{const id=${JSON.stringify(paneId ?? null)};const el=id?[...document.querySelectorAll('[data-pane-id],[data-browser-pane]')].find(el=>el.dataset.paneId===id||el.dataset.browserPane===id):document.querySelector('.browser-area')||document.querySelector('iframe')||document.querySelector('.new-tab-home');if(!el)throw Error('Capture surface unavailable');const b=el.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height}})()`,
   );
   browser.setBounds(bounds);
   const { annotations } = (await rpc('getDocument', {
@@ -156,10 +330,21 @@ function createWindow(background = false) {
     }),
   );
   browser = new BrowserManager(window, {
+    onShortcut: applicationShortcut,
+    hasUnfinishedEditor: () => [...editingScopes].some(scope => scope !== 'browser'),
+    onViewFocus: ({ viewId }) => {
+      const key = applicationWorkspace.snapshot().selectedWorkspace;
+      if (!key || applicationWorkspace.workspace(key).activePaneId === viewId) return;
+      // Native pages cannot run the shell's document-editor drain themselves.
+      // Route their focus request through the same acknowledged transition as tabs.
+      window?.webContents.send('blueprint:focus-pane', { key, paneId: viewId });
+    },
     overlayPreload: join(here, '../preload/browser-overlay.cjs'),
     onChange: () => {
-      if (browser && workspace.sync(browser.snapshot().tabs))
+      if (browser && !workspace.hasPendingConfirmation() && workspace.sync(browser.snapshot().tabs))
         void workspace.save().catch(console.error);
+      if (browser && !applicationWorkspace.hasPendingConfirmation() && applicationWorkspace.syncBrowser(browser.snapshot().tabs))
+        void applicationWorkspace.save().catch(console.error);
       workspaceRefresh();
     },
     getAnnotations: async (artifactId) => {
@@ -183,8 +368,22 @@ function createWindow(background = false) {
         }));
     },
     onTabOpened: (tab, background) => {
-      workspace.browser(tab.artifactId, tab, undefined, background);
-      void workspace.save().then(workspaceRefresh).catch(console.error);
+      const entry = workspace.browser(tab.artifactId, tab, undefined, background);
+      void applicationMutation(async () => {
+        const previous = applicationWorkspace.snapshot();
+        const selected = previous.selectedWorkspace;
+        const current = selected ? applicationWorkspace.workspace(selected) : null;
+        const key = current?.projectId === tab.projectId ? selected! : applicationWorkspace.select(tab.projectId, null);
+        applicationWorkspace.openPlan(key, tab.artifactId, entry);
+        if (background && current) {
+          const restored = applicationWorkspace.snapshot();
+          restored.selectedWorkspace = previous.selectedWorkspace;
+          const before = previous.workspaces[key];
+          if (before) { restored.workspaces[key].activeTabId = before.activeTabId; restored.workspaces[key].activePaneId = before.activePaneId; }
+          applicationWorkspace.restore(restored);
+        }
+        await workspace.save();
+      }).catch(console.error);
     },
     onMarkerSelect: ({ artifactId, annotationId }) =>
       showCapturedAnnotation(artifactId, annotationId),
@@ -202,8 +401,9 @@ function createWindow(background = false) {
       const artifactId = value?.artifactId ?? browserDraftArtifact;
       if (!artifactId) return;
       if (value) browserDraftArtifact = artifactId;
+      if (value) await setEditingScope('browser', true);
       await rpc('saveBrowserEditor', { artifactId, editor: value });
-      await rpc('editing', { active: Boolean(value) });
+      if (!value) await setEditingScope('browser', false);
       if (!value) browserDraftArtifact = null;
     },
     onAnnotation: async (value) => {
@@ -216,6 +416,9 @@ function createWindow(background = false) {
       });
       return z.object({ id: z.string(), number: z.number().int().positive() }).parse(result);
     },
+  });
+  window.webContents.on('before-input-event', (event, input) => {
+    if (applicationShortcut(input)) event.preventDefault();
   });
   const recoverShell = async (reason: string) => {
     const target = window;
@@ -231,12 +434,17 @@ function createWindow(background = false) {
     if (answer.response === 1 && !target.isDestroyed()) target.webContents.reload();
   };
   window.webContents.on('render-process-gone', (_event, details) => {
+    terminalDelivery.clear();
+    void clearRendererEditingScopes().catch(console.error);
     void recoverShell(details.reason);
   });
   window.on('unresponsive', () => {
     void recoverShell('Renderer unresponsive');
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+    if (mainFrame && !inPlace) terminalDelivery.clear();
+  });
   window.webContents.on('will-navigate', (event, url) => {
     if (
       !url.startsWith('blueprint://app/') &&
@@ -245,9 +453,12 @@ function createWindow(background = false) {
       event.preventDefault();
   });
   window.on('closed', () => {
+    terminalDelivery.clear();
+    shortcutCapture = false;
     browser?.dispose();
     browser = null;
     window = null;
+    editingScopes.clear();
     if (!quitting) void rpc('editing', { active: false }).catch(() => {});
   });
   if (background && !isBackgroundE2E()) {
@@ -268,21 +479,50 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
-  worker?.postMessage('quit');
-  const timer = setTimeout(() => {
-    worker?.kill();
-    app.quit();
-  }, 4000);
-  worker?.once('exit', () => {
-    clearTimeout(timer);
-    app.quit();
-  });
-  if (!worker) app.quit();
+  void quitAfterCleanup();
 });
+async function quitAfterCleanup() {
+  // Process ownership is independent of the artifact runtime. A live but
+  // unresponsive runtime must not hold PTY cleanup behind an unanswered RPC.
+  const ownedCleanup = Promise.allSettled([terminals.shutdown(), codex.stop()]);
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  const drained = await Promise.race([
+    applicationWrites.then(() => true, error => {
+      console.error('Workspace write failed during Quit', error);
+      return true;
+    }),
+    new Promise<false>(resolve => {
+      drainTimer = setTimeout(() => resolve(false), 10000);
+    }),
+  ]);
+  clearTimeout(drainTimer);
+  if (!drained) {
+    console.error('UNKNOWN_RESULT: Workspace write did not settle during Quit. Reconcile its persisted result after restart; it was not cancelled or replayed.');
+    failRpcRequests();
+  }
+  const cleanup = await ownedCleanup;
+  for (const result of cleanup) if (result.status === 'rejected') console.error('Process cleanup failed during Quit', result.reason);
+  // Runtime exit, including its force deadline, must never interrupt owned PTY
+  // cleanup. Terminal shutdown has its own verified process-tree fallback.
+  const runtime = worker;
+  if (runtime?.pid) await new Promise<void>(resolve => {
+    const finished = () => { clearTimeout(timer); resolve(); };
+    runtime.once('exit', finished);
+    const timer = setTimeout(() => {
+      runtime.removeListener('exit', finished);
+      runtime.kill();
+      resolve();
+    }, 10000);
+    try { runtime.postMessage('quit'); }
+    catch { runtime.removeListener('exit', finished); finished(); }
+  });
+  app.quit();
+}
 void app
   .whenReady()
   .then(async () => {
     await workspace.load();
+    await applicationWorkspace.load();
     if (!app.requestSingleInstanceLock()) {
       quitting = true;
       app.quit();
@@ -298,6 +538,7 @@ void app
           label: 'Blueprint',
           submenu: [
             { role: 'about' },
+            { label: 'Settings…', click: () => window?.webContents.send('blueprint:open-settings') },
             { label: 'Closing a window keeps Blueprint runtime running', enabled: false },
             { type: 'separator' },
             { role: 'quit', label: 'Quit Blueprint' },
@@ -352,28 +593,15 @@ void app
     });
     const data = app.getPath('userData');
     await mkdir(join(data, 'runtime'), { recursive: true, mode: 0o700 });
-    const socket = process.env.BLUEPRINT_SOCKET ?? join(data, 'runtime', 'service.sock');
-    await new Promise<void>((resolve, reject) => {
-      const probe = connect(socket);
-      probe.once('connect', () => {
-        probe.end();
-        reject(new Error('A Blueprint runtime is already listening on this socket'));
-      });
-      probe.once('error', (error) => {
-        if (['ENOENT', 'ECONNREFUSED'].includes((error as NodeJS.ErrnoException).code ?? ''))
-          resolve();
-        else reject(error);
-      });
-    });
-    await unlink(socket).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    });
+    if (process.env.BLUEPRINT_SOCKET)
+      throw new Error('BLUEPRINT_SOCKET is no longer supported. Use BLUEPRINT_RUNTIME_DESCRIPTOR.');
+    const descriptorPath =
+      process.env.BLUEPRINT_RUNTIME_DESCRIPTOR ?? join(data, 'runtime', 'endpoint.json');
     worker = utilityProcess.fork(join(here, '../runtime/service.cjs'), [], {
       env: {
         ...process.env,
         BLUEPRINT_DATA: data,
-        BLUEPRINT_SOCKET: socket,
-        BLUEPRINT_OPERATOR_TOKEN: token,
+        BLUEPRINT_RUNTIME_DESCRIPTOR: descriptorPath,
         BLUEPRINT_COMPILER: join(here, '../runtime/compiler.cjs'),
       },
       stdio: 'pipe',
@@ -382,7 +610,25 @@ void app
     await new Promise<void>((resolve, reject) => {
       worker!.once('exit', (code) => reject(new Error('Runtime exited: ' + code)));
       worker!.on('message', (message) => {
-        if (message.type === 'ready') resolve();
+        if (message.type === 'ready') {
+          runtimeReady = true;
+          resolve();
+        } else if (message.type === 'operator-response') {
+          const response = message as RpcResponse;
+          const pending = requests.get(response.id);
+          if (!pending) return;
+          clearTimeout(pending.timer);
+          requests.delete(response.id);
+          window?.webContents.send('blueprint:operation-status', { waiting: false });
+          if (response.error)
+            pending.reject(
+              Object.assign(new Error(response.error.code + ': ' + response.error.message), {
+                code: response.error.code,
+                details: response.error.details,
+              }),
+            );
+          else pending.resolve(response.result);
+        }
         else if (message.type === 'refresh') {
           window?.webContents.send('blueprint:refresh');
           void browser
@@ -390,62 +636,63 @@ void app
             .catch((error) => console.error('Browser annotation refresh failed', error));
         } else if (message.type === 'show-artifact') {
           if (!window) createWindow(true);
-          workspace.document(message.artifactId, message.revisionId);
-          void workspace.save().then(workspaceRefresh).catch(console.error);
-          browser?.select(null);
+          // The runtime has already applied this selection. Do not replay the operator mutation.
+          void applicationMutation(() => applicationPlan(message.artifactId, message.revisionId, true)).catch(console.error);
         } else if (message.type === 'show-content') {
           if (!window) createWindow(true);
-          void browser
-            ?.open({
-              artifactId: message.artifactId,
-              projectId: message.projectId,
-              url: message.url,
-            })
-            .then(async (native) => {
-              if (native) {
-                workspace.browser(message.artifactId, native);
-                await workspace.save();
-                workspaceRefresh();
-              }
-            })
+          void applicationMutation(async () => {
+            if (!browser) throw new Error('Browser window unavailable');
+            const selected = applicationWorkspace.snapshot().selectedWorkspace;
+            const current = selected ? applicationWorkspace.workspace(selected) : null;
+            const key = current?.projectId === message.projectId ? selected! : applicationWorkspace.select(message.projectId, null);
+            const natives = browser.snapshot().tabs;
+            // A session owns its native page. Reusing another workspace's URL
+            // would make closing this view destroy that session's form state.
+            const existing = applicationWorkspace.workspace(key).tabs
+              .flatMap(tab => paneLeaves(tab.root))
+              .find(pane => pane.content.kind === 'plan' && pane.content.artifactId === message.artifactId &&
+                pane.content.tab.kind === 'browser' && pane.content.tab.url === message.url);
+            const content = existing?.content.kind === 'plan' && existing.content.tab.kind === 'browser' ? existing.content : null;
+            const existingNativeId = content?.tab.kind === 'browser' ? content.tab.nativeId : undefined;
+            const live = natives.find(tab => tab.id === existingNativeId && tab.artifactId === message.artifactId);
+            const native = live ?? await browser.open({
+              artifactId: message.artifactId, projectId: message.projectId,
+              url: message.url, newTab: true,
+            });
+            if (live) browser.select(live.id);
+            const tab = workspace.browser(message.artifactId, native);
+            if (existing && content) {
+              applicationWorkspace.planTab(key, existing.id, { ...tab, id: content.tab.id });
+              applicationWorkspace.focus(key, existing.id);
+            } else applicationWorkspace.openPlan(key, message.artifactId, tab);
+            await workspace.save();
+          })
             .catch((error) => console.error(error));
         }
       });
     });
-    connection = connect(socket);
-    // Errors may arrive after a write even though destroyed was false at dispatch.
-    // Consume them for the entire socket lifetime, not only during connection setup.
-    connection.on('error', () => {
+    worker.once('exit', () => {
+      runtimeReady = false;
       failRpcRequests();
-      connection?.destroy();
     });
-    connection.on('end', () => connection?.destroy());
-    connection.on('close', failRpcRequests);
-    await new Promise<void>((resolve, reject) => {
-      connection!.once('connect', resolve);
-      connection!.once('error', reject);
+    mcpSetup = await getMcpSetup({ isPackaged: app.isPackaged, development: Boolean(developmentUrl),
+      appPath: app.getAppPath(), resourcesPath: process.resourcesPath, descriptorPath,
+      nodeOverride: process.env.BLUEPRINT_NODE });
+    await terminals.start(data, join(here, '../terminal/service.cjs'), {
+      scrollback: applicationWorkspace.snapshot().settings.terminalScrollback,
     });
-    const responses = createInterface({ input: connection });
-    responses.on('error', () => {
-      failRpcRequests();
-      connection?.destroy();
-    });
-    responses.on('line', (line) => {
-      const response = JSON.parse(line) as RpcResponse;
-      const pending = requests.get(response.id);
-      if (!pending) return;
-      clearTimeout(pending.timer);
-      requests.delete(response.id);
-      window?.webContents.send('blueprint:operation-status', { waiting: false });
-      if (response.error)
-        pending.reject(
-          Object.assign(new Error(response.error.code + ': ' + response.error.message), {
-            code: response.error.code,
-            details: response.error.details,
-          }),
-        );
-      else pending.resolve(response.result);
-    });
+    const restored = await rpc('snapshot') as { artifacts: { id: string; projectId: string }[]; projects: { id: string }[];
+      selected: { artifactId: string; revisionId: string | null } | null };
+    const restoredWorkspace = applicationWorkspace.snapshot();
+    if (restoredWorkspace.selectedWorkspace && !restored.projects.some(project =>
+      project.id === restoredWorkspace.workspaces[restoredWorkspace.selectedWorkspace!]?.projectId))
+      applicationWorkspace.restore({ ...restoredWorkspace, selectedWorkspace: null });
+    applicationWorkspace.migrateLegacy(workspace.snapshot(), restored.artifacts);
+    if (!applicationWorkspace.snapshot().selectedWorkspace && restored.selected && applicationWorkspace.snapshot().settings.restoreWorkspace) {
+      const artifact = restored.artifacts.find(item => item.id === restored.selected!.artifactId);
+      if (artifact) applicationWorkspace.select(artifact.projectId, null);
+    }
+    await applicationWorkspace.save();
     ipcMain.handle('blueprint:invoke', async (event, name: string, args: unknown) => {
       const source = new URL(event.senderFrame?.url ?? 'about:blank');
       const trusted =
@@ -453,6 +700,232 @@ void app
         (Boolean(developmentUrl) && event.senderFrame?.url.startsWith(developmentUrl!));
       if (!trusted || event.senderFrame !== event.sender.mainFrame)
         throw new Error('Untrusted IPC sender');
+      if (quitting) throw new Error('Blueprint is shutting down.');
+      if (name === 'shortcutCapture') {
+        const { active } = z.object({ active: z.boolean() }).strict().parse(args);
+        shortcutCapture = active;
+        event.sender.setIgnoreMenuShortcuts(active);
+        return { updated: true };
+      }
+      if (name === 'applicationSnapshot')
+        return { ...applicationWorkspace.snapshot(), terminals: await terminals.snapshot(), harnesses: codex.snapshot(),
+          metadataPending: applicationWorkspace.hasPendingConfirmation() || workspace.hasPendingConfirmation() };
+      if (name === 'applicationConfirmation')
+        return { pending: applicationWorkspace.hasPendingConfirmation() || workspace.hasPendingConfirmation() };
+      if (name === 'confirmWorkspaceWrite') {
+        await applicationWrites.catch(() => {});
+        await workspace.confirmPending();
+        await applicationWorkspace.confirmPending();
+        if (browser) {
+          const tabs = browser.snapshot().tabs;
+          if (workspace.sync(tabs)) await workspace.save();
+          if (applicationWorkspace.syncBrowser(tabs)) await applicationWorkspace.save();
+        }
+        await workspace.save();
+        await applicationWorkspace.save();
+        workspaceRefresh();
+        return { confirmed: true };
+      }
+      if (name === 'harnessRefresh') {
+        const snapshot = await rpc('snapshot') as { projects: { id: string; path: string }[] };
+        await codex.discover(snapshot.projects);
+        workspaceRefresh();
+        return codex.snapshot();
+      }
+      if (name === 'harnessCheck') return codex.checkCompatibility();
+      if (name === 'harnessRead') {
+        const { sessionId } = z.object({ sessionId: z.string().min(1) }).strict().parse(args);
+        return codex.read(sessionId);
+      }
+      if (name === 'paneDocument' || name === 'paneView' || name === 'paneAnnotationState') {
+        const value = z.object({ key: z.string().min(1), paneId: z.string().min(1),
+          scrollTop: z.number().finite().nonnegative().optional(),
+          view: z.object({ details: z.record(z.string(), z.boolean()) }).optional(),
+        }).strict().parse(args);
+        const content = applicationWorkspace.findPane(value.key, value.paneId).content;
+        if (content.kind !== 'plan' || content.tab.kind !== 'document') throw new Error('DOCUMENT_PANE_REQUIRED');
+        const identity = { artifactId: content.artifactId, revisionId: content.tab.revisionId };
+        if (name === 'paneView') return applicationMutation(async () => {
+          if (identity.revisionId && value.view) {
+            const context = await rpc('captureAnnotationState', { ...identity, view: value.view }) as import('../shared/annotation-context').AnnotationStateContext;
+            applicationWorkspace.view(value.key, value.paneId, { details: context.view.details,
+              ...(value.scrollTop === undefined ? {} : { scrollTop: value.scrollTop }) });
+            return context.view;
+          }
+          if (value.scrollTop !== undefined) applicationWorkspace.view(value.key, value.paneId, { scrollTop: value.scrollTop });
+          return { details: content.details ?? {} };
+        });
+        if (name === 'paneAnnotationState') {
+          if (!identity.revisionId) throw new Error('PUBLISHED_DOCUMENT_REQUIRED');
+          return rpc('captureAnnotationState', { ...identity, view: value.view ?? { details: content.details ?? {} } });
+        }
+        const document = await rpc('getDocument', identity) as { view?: import('../shared/annotation-context').DocumentView; annotationState?: unknown };
+        const view = { details: content.details ?? document.view?.details ?? {} };
+        return { ...document, view, scrollTop: content.scrollTop ?? 0,
+          annotationState: identity.revisionId ? await rpc('captureAnnotationState', { ...identity, view }) : null };
+      }
+      if (name === 'applicationSettings') {
+        return applicationMutation(async () => {
+          const previous = applicationWorkspace.snapshot().settings;
+          applicationWorkspace.settings(args);
+          const current = applicationWorkspace.snapshot().settings;
+          await terminals.configure({ scrollback: applicationWorkspace.snapshot().settings.terminalScrollback });
+          if (previous.codexExecutable !== current.codexExecutable || previous.codexProfile !== current.codexProfile)
+            await codex.resetDiscovery();
+          return applicationWorkspace.snapshot();
+        });
+      }
+      if (['terminalScreen', 'terminalReplay', 'terminalInput', 'terminalResize', 'terminalStop', 'terminalRestart'].includes(name)) {
+        const value = z.object({ id: z.string().min(1), data: z.string().max(1024 * 1024).optional(),
+          viewId: z.string().min(1).optional(), cols: z.number().int().min(2).max(500).optional(),
+          rows: z.number().int().min(1).max(300).optional(), active: z.boolean().optional(),
+          afterSeq: z.number().int().nonnegative().optional() }).strict().parse(args);
+        if (name === 'terminalScreen') return terminals.screen(value.id);
+        if (name === 'terminalReplay') return terminals.replay(value.id, value.afterSeq ?? 0);
+        if (name === 'terminalInput') {
+          if (!value.viewId || value.data === undefined) throw new Error('Invalid terminal input');
+          await terminals.input(value.id, value.data, value.viewId); return { accepted: true };
+        }
+        if (name === 'terminalResize') {
+          if (!value.viewId || value.cols === undefined || value.rows === undefined) throw new Error('Invalid terminal dimensions');
+          await terminals.resize(value.id, { cols: value.cols, rows: value.rows, viewId: value.viewId, active: value.active === true });
+          return { resized: true };
+        }
+        if (name === 'terminalStop') {
+          if (!window) throw new Error('Terminal window unavailable');
+          const answer = await dialog.showMessageBox(window, { type: 'warning',
+            message: 'Stop this terminal process?', detail: 'The process and its owned children will be terminated. Closing a view leaves them running.',
+            buttons: ['Cancel', 'Stop'], defaultId: 0, cancelId: 0 });
+          if (answer.response !== 1) return { stopped: false };
+          return terminals.stop(value.id);
+        }
+        const settings = applicationWorkspace.snapshot().settings;
+        return terminals.restart(value.id, { executable: settings.shell || undefined, args: settings.shellArgs });
+      }
+      if (name === 'applicationCommand') {
+        const value = z.object({ action: z.enum(['select', 'selectTab', 'focus', 'closeTab', 'closePane', 'newTerminal', 'showTerminal', 'newCodex', 'openPlan', 'openHome', 'address', 'openUrl', 'selectVersion', 'split', 'ratio', 'view', 'bottomToggle', 'bottomHeight', 'bottomSelect', 'bottomClose']),
+          projectId: z.string().min(1), sessionId: z.string().min(1).nullable().optional(),
+          key: z.string().optional(), tabId: z.string().optional(), paneId: z.string().optional(),
+          artifactId: z.string().optional(), revisionId: z.string().nullable().optional(), terminalId: z.string().optional(),
+          url: z.string().max(10000).optional(),
+          area: z.enum(['main', 'bottom']).optional(), axis: z.enum(['horizontal', 'vertical']).optional(),
+          ratio: z.number().min(0.1).max(0.9).optional(), height: z.number().int().min(120).max(800).optional(),
+          scrollTop: z.number().finite().nonnegative().optional(), details: z.record(z.string(), z.boolean()).optional(),
+          operationId: z.uuid().optional() }).strict().parse(args);
+        return applicationMutation(async () => {
+          if (!['view', 'ratio', 'bottomHeight'].includes(value.action)) await browser?.finishComment();
+          const snapshot = await rpc('snapshot') as { projects: { id: string; path: string; available?: boolean }[]; artifacts: { id: string; projectId: string }[] };
+          const project = snapshot.projects.find(project => project.id === value.projectId);
+          if (!project) throw new Error('PROJECT_NOT_FOUND');
+          const key = value.key ?? applicationWorkspace.select(value.projectId, value.sessionId ?? null);
+          if (applicationWorkspace.workspace(key).projectId !== project.id) throw new Error('WORKSPACE_PROJECT_MISMATCH');
+          if (value.action === 'select') {
+            applicationWorkspace.select(project.id, applicationWorkspace.workspace(key).sessionId);
+            await rpc('selectProject', { projectId: project.id });
+            const selected = applicationWorkspace.workspace(key);
+            if (selected.activePaneId && project.available !== false) await activateApplicationPane(key, selected.activePaneId);
+            else browser?.select(null);
+          } else if (value.action === 'focus' || value.action === 'selectTab') {
+            if (value.action === 'selectTab') {
+              if (!value.tabId) throw new Error('TAB_REQUIRED');
+              applicationWorkspace.selectTab(key, value.tabId);
+            }
+            const paneId = value.paneId ?? applicationWorkspace.workspace(key).activePaneId;
+            if (paneId) await activateApplicationPane(key, paneId);
+          } else if (value.action === 'openPlan' || value.action === 'openHome') {
+            const artifact = snapshot.artifacts.find(artifact => artifact.id === value.artifactId && artifact.projectId === project.id);
+            if (!artifact) throw new Error('ARTIFACT_NOT_FOUND');
+            const tab = value.action === 'openHome' ? workspace.home(artifact.id) : workspace.document(artifact.id, value.revisionId ?? null);
+            const pane = applicationWorkspace.openPlan(key, artifact.id, tab);
+            await activateApplicationPane(key, pane.id);
+            await workspace.save();
+          } else if (['address', 'openUrl', 'selectVersion'].includes(value.action)) {
+            if (!value.paneId) throw new Error('PANE_REQUIRED');
+            const content = applicationWorkspace.findPane(key, value.paneId).content;
+            if (content.kind !== 'plan') throw new Error('PLAN_PANE_REQUIRED');
+            if (value.action === 'address') {
+              if (content.tab.kind !== 'home') throw new Error('HOME_PANE_REQUIRED');
+              content.tab.address = value.url ?? '';
+            } else if (value.action === 'selectVersion') {
+              if (content.tab.kind !== 'document') throw new Error('DOCUMENT_PANE_REQUIRED');
+              await rpc('getDocument', { artifactId: content.artifactId, revisionId: value.revisionId ?? null });
+              content.tab.revisionId = value.revisionId ?? null;
+              delete content.details;
+              content.scrollTop = 0;
+              await activateApplicationPane(key, value.paneId);
+            } else {
+              if (!browser || !value.url) throw new Error('URL_REQUIRED');
+              if (content.tab.kind !== 'home' && content.tab.kind !== 'browser') throw new Error('BROWSER_PANE_REQUIRED');
+              if (content.tab.kind === 'browser' && content.tab.nativeId) {
+                await browser.command({ tabId: content.tab.nativeId, action: 'navigate', url: value.url });
+              } else {
+                const native = await browser.open({ projectId: project.id, artifactId: content.artifactId, url: value.url, newTab: true });
+                applicationWorkspace.planTab(key, value.paneId, { id: content.tab.id, kind: 'browser',
+                  nativeId: native.id, title: native.title, url: native.url });
+                workspace.browser(content.artifactId, native, content.tab.id);
+                await workspace.save();
+              }
+            }
+          } else if (value.action === 'closeTab' || value.action === 'closePane') {
+            // Detect a failed local write before destroying the external page.
+            await applicationWorkspace.save();
+            const current = applicationWorkspace.workspace(key);
+            const panes = value.action === 'closePane' && value.paneId ? [applicationWorkspace.findPane(key, value.paneId)] :
+              current.tabs.find(tab => tab.id === value.tabId)?.root;
+            const leaves = Array.isArray(panes) ? panes : panes ? paneLeaves(panes) : [];
+            for (const pane of leaves) if (pane.content.kind === 'plan' && pane.content.tab.kind === 'browser' && pane.content.tab.nativeId) {
+              const result = await browser?.command({ tabId: pane.content.tab.nativeId, action: 'close' });
+              if (result && 'cancelled' in result && result.cancelled) return { closed: false };
+            }
+            if (value.action === 'closePane' && value.paneId) applicationWorkspace.closePane(key, value.paneId);
+            else if (value.tabId) applicationWorkspace.closeTab(key, value.tabId);
+            const active = applicationWorkspace.workspace(key).activePaneId;
+            if (active) await activateApplicationPane(key, active); else browser?.select(null);
+          } else if (value.action === 'ratio') {
+            if (!value.paneId || value.ratio === undefined) throw new Error('SPLIT_REQUIRED');
+            applicationWorkspace.ratio(key, value.paneId, value.ratio);
+          } else if (value.action === 'view') {
+            if (!value.paneId) throw new Error('PANE_REQUIRED');
+            applicationWorkspace.view(key, value.paneId, { scrollTop: value.scrollTop, details: value.details });
+          } else if (value.action.startsWith('bottom')) {
+            const bottom = applicationWorkspace.bottom(project.id);
+            if (value.action === 'bottomToggle') bottom.visible = !bottom.visible;
+            if (value.action === 'bottomHeight') bottom.height = value.height ?? bottom.height;
+            if (value.action === 'bottomSelect' && value.terminalId && bottom.tabs.includes(value.terminalId)) bottom.activeTerminalId = value.terminalId;
+            if (value.action === 'bottomClose' && value.terminalId) {
+              bottom.tabs = bottom.tabs.filter(id => id !== value.terminalId);
+              if (bottom.activeTerminalId === value.terminalId) bottom.activeTerminalId = bottom.tabs[0] ?? null;
+            }
+          } else {
+            if (project.available === false) throw new Error('PROJECT_UNAVAILABLE');
+            const settings = applicationWorkspace.snapshot().settings;
+            const records = await terminals.snapshot();
+            let terminal = value.terminalId ? records.find(record => record.id === value.terminalId && record.projectId === project.id) :
+              value.operationId ? records.find(record => record.operationId === value.operationId) : undefined;
+            if (value.action === 'showTerminal' && !terminal) throw new Error('TERMINAL_NOT_FOUND');
+            if (!terminal && value.action === 'newCodex') {
+              const launch = value.sessionId ? await codex.launchResume(project.id, project.path, value.sessionId) : await codex.launchNew(project.id, project.path);
+              try {
+                terminal = await terminals.create({ projectId: project.id, cwd: launch.cwd, kind: 'codex', executable: launch.executable,
+                  args: launch.args, env: launch.env, operationId: value.operationId, harnessSessionId: value.sessionId ?? undefined });
+                codex.bindTerminal(launch.launchId, terminal.id);
+              } catch (error) { await codex.cancelLaunch(launch.launchId); throw error; }
+            }
+            if (!terminal) {
+              const active = applicationWorkspace.workspace(key).activePaneId;
+              const content = value.paneId ? applicationWorkspace.findPane(key, value.paneId).content : active ? applicationWorkspace.findPane(key, active).content : null;
+              const cwd = content?.kind === 'terminal' ? await terminals.currentCwd(content.terminalId) : project.path;
+              terminal = await terminals.create({ projectId: project.id, cwd, kind: 'shell', executable: settings.shell || undefined, args: settings.shellArgs, operationId: value.operationId });
+            }
+            if (value.area === 'bottom') applicationWorkspace.bottomTerminal(project.id, terminal.id);
+            else if (value.action === 'split' && value.paneId)
+              applicationWorkspace.split(key, value.paneId, value.axis ?? 'horizontal', { kind: 'terminal', terminalId: terminal.id });
+            else applicationWorkspace.terminal(key, terminal.id);
+            browser?.select(null);
+          }
+          return applicationWorkspace.snapshot();
+        });
+      }
       if (name === 'projectMenu') {
         const { projectId } = z
           .object({ projectId: z.string().min(1) })
@@ -507,12 +980,7 @@ void app
           sourcePath: string;
           sourceFile: string;
         };
-        await rpc('selectProject', { projectId: input.projectId });
-        await rpc('openArtifact', { artifactId: result.artifactId, revisionId: null });
-        workspace.document(result.artifactId, null);
-        browser?.select(null);
-        await workspace.save();
-        workspaceRefresh();
+        await applicationMutation(() => applicationPlan(result.artifactId, null));
         return result;
       }
       if (name === 'renamePlan') {
@@ -544,7 +1012,7 @@ void app
         try {
           await workspace.save();
         } catch (error) {
-          workspace.restore(previous);
+          if (!workspace.hasPendingConfirmation()) workspace.restore(previous);
           throw error;
         }
         workspaceRefresh();
@@ -646,6 +1114,33 @@ void app
       if (name === 'browserFinishComment') return browser?.finishComment();
       if (name === 'browserSnapshot')
         return browser?.snapshot() ?? { tabs: [], activeTabId: null, annotating: false };
+      if (name === 'browserViews' && browser) {
+        const value = z.object({ views: z.array(z.object({ viewId: z.string().min(1), tabId: z.string().optional(),
+          active: z.boolean(), bounds: z.object({ x: z.number().finite(), y: z.number().finite(),
+            width: z.number().finite().positive(), height: z.number().finite().positive() }) })).max(64) }).strict().parse(args);
+        const key = applicationWorkspace.snapshot().selectedWorkspace;
+        if (!key) { browser.setVisibleViews([]); return { updated: true }; }
+        const current = applicationWorkspace.workspace(key);
+        const selected = current.tabs.find(tab => tab.id === current.activeTabId);
+        const leaves = selected ? paneLeaves(selected.root) : [];
+        const bindings: import('./browser').BrowserViewBinding[] = [];
+        let restored = false;
+        for (const view of value.views) {
+          const pane = leaves.find(pane => pane.id === view.viewId);
+          if (!pane || pane.content.kind !== 'plan' || pane.content.tab.kind !== 'browser') throw new Error('BROWSER_PANE_CHANGED');
+          const content = pane.content;
+          const tab = content.tab;
+          if (tab.kind !== 'browser') throw new Error('BROWSER_PANE_REQUIRED');
+          if (!tab.nativeId || !browser.snapshot().tabs.some(native => native.id === tab.nativeId)) {
+            const native = await ensureApplicationBrowser(key, pane.id);
+            tab.nativeId = native.id; restored = true;
+          }
+          bindings.push({ ...view, tabId: tab.nativeId, active: current.activePaneId === pane.id });
+        }
+        browser.setVisibleViews(bindings);
+        if (restored) workspaceRefresh();
+        return { updated: true };
+      }
       if (name.startsWith('browser') && browser) {
         const input = z.record(z.string(), z.unknown()).parse(args ?? {});
         if (name === 'browserOpen') {
@@ -727,32 +1222,42 @@ void app
           return showCapturedAnnotation(
             z.string().parse(input.artifactId),
             z.string().parse(input.annotationId),
+            input.paneId === undefined ? undefined : z.string().parse(input.paneId),
           );
         }
         if (name === 'browserRestoreDraft') {
           const artifactId = z.string().parse(input.artifactId);
-          const draft = (await rpc('browserEditor', { artifactId })) as
-            Parameters<BrowserManager['restoreDraft']>[0] | null;
-          if (draft) {
+          const owner = browser;
+          return applicationMutation(async () => {
+            const draft = (await rpc('browserEditor', { artifactId })) as
+              Parameters<BrowserManager['restoreDraft']>[0] | null;
+            if (!draft) return { restored: false };
             browserDraftArtifact = artifactId;
             const artifact = (await rpc('artifactProperties', { artifactId })) as {
               id: string;
               projectId: string;
             };
-            const opened = await browser.open({
-              artifactId,
-              projectId: artifact.projectId,
-              url: draft.capture.source.url,
-            });
-            const old = workspace
-              .plan(artifactId)
-              .tabs.find((t) => t.kind === 'browser' && t.url === draft.capture.source.url);
-            workspace.browser(artifactId, opened, old?.id);
+            const key = applicationWorkspace.snapshot().selectedWorkspace;
+            if (!key || applicationWorkspace.workspace(key).projectId !== artifact.projectId)
+              throw new Error('BROWSER_DRAFT_WORKSPACE_CHANGED');
+            const current = applicationWorkspace.workspace(key);
+            const panes = current.tabs.flatMap(tab => paneLeaves(tab.root));
+            const matches = (pane: typeof panes[number]) => pane.content.kind === 'plan' &&
+              pane.content.artifactId === artifactId && pane.content.tab.kind === 'browser';
+            const pane = panes.find(pane => pane.id === current.activePaneId && matches(pane)) ??
+              panes.find(pane => matches(pane) && pane.content.kind === 'plan' && pane.content.tab.kind === 'browser' &&
+                pane.content.tab.url === draft.capture.source.url);
+            if (!pane || pane.content.kind !== 'plan' || pane.content.tab.kind !== 'browser')
+              throw new Error('BROWSER_DRAFT_PANE_NOT_FOUND');
+            const opened = await ensureApplicationBrowser(key, pane.id);
+            workspace.browser(artifactId, opened, pane.content.tab.id);
             await workspace.save();
-            await browser.restoreDraft({ ...draft, tabId: opened.id });
-            await rpc('editing', { active: true });
-          }
-          return { restored: Boolean(draft) };
+            if (browser !== owner) throw new Error('Browser surface changed during restoration');
+            owner.select(opened.id);
+            await owner.restoreDraft({ ...draft, tabId: opened.id });
+            await setEditingScope('browser', true);
+            return { restored: true };
+          });
         }
         throw new Error('Unsupported browser command');
       }
@@ -772,6 +1277,7 @@ void app
             viewport: z.object({ width: z.number(), height: z.number() }),
             scroll: z.object({ x: z.number(), y: z.number() }),
             zoom: z.number(),
+            paneId: z.string().optional(),
           })
           .strict()
           .parse(args);
@@ -779,7 +1285,16 @@ void app
         const current = (await rpc('snapshot')) as {
           selected: { artifactId: string; revisionId: string } | null;
         };
-        if (
+        if (input.paneId) {
+          const key = applicationWorkspace.snapshot().selectedWorkspace;
+          if (!key) throw new Error('Document workspace changed');
+          const entry = applicationWorkspace.workspace(key);
+          const active = entry.tabs.find(tab => tab.id === entry.activeTabId);
+          const pane = active && paneLeaves(active.root).find(pane => pane.id === input.paneId);
+          if (!pane || pane.content.kind !== 'plan' || pane.content.artifactId !== input.artifactId ||
+              pane.content.tab.kind !== 'document' || pane.content.tab.revisionId !== input.revisionId)
+            throw new Error('Document pane changed');
+        } else if (
           current.selected?.artifactId !== input.artifactId ||
           current.selected.revisionId !== input.revisionId
         )
@@ -788,7 +1303,7 @@ void app
         if (input.pointer.x > input.viewport.width || input.pointer.y > input.viewport.height)
           throw new Error('INVALID_POINTER: Pointer exceeds viewport');
         const frameBounds = await window.webContents.executeJavaScript(
-          `(()=>{const f=document.querySelector('iframe');if(!f)throw Error('Document not visible');const b=f.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height}})()`,
+          `(()=>{const id=${JSON.stringify(input.paneId ?? null)};const f=id?Array.from(document.querySelectorAll('iframe')).find(f=>f.dataset.paneId===id):document.querySelector('iframe');if(!f)throw Error('Document not visible');const b=f.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height}})()`,
         );
         const bounds = safeBrowserBounds(frameBounds, {
           width: window.getContentSize()[0],
@@ -851,8 +1366,17 @@ void app
         const result = await dialog.showOpenDialog(window!, { properties: ['openDirectory'] });
         if (result.canceled) return null;
         const path = result.filePaths[0];
+        const registerAndSelect = (command: string, value: Record<string, unknown>) => applicationMutation(async () => {
+          await browser?.finishComment();
+          const project = await rpc(command, value) as { id: string };
+          const key = applicationWorkspace.select(project.id, null);
+          const selected = applicationWorkspace.workspace(key);
+          if (selected.activePaneId) await activateApplicationPane(key, selected.activePaneId);
+          else { await rpc('selectProject', { projectId: project.id }); browser?.select(null); }
+          return project;
+        });
         try {
-          return await rpc('register', { path });
+          return await registerAndSelect('register', { path });
         } catch (error) {
           const conflict = error as Error & {
             code?: string;
@@ -868,11 +1392,10 @@ void app
             cancelId: 0,
           });
           if (answer.response === 1) {
-            await rpc('register', { path: conflict.details.originalPath });
-            return rpc('selectProject', { projectId: conflict.details.projectId });
+            return registerAndSelect('register', { path: conflict.details.originalPath });
           }
           if (answer.response === 2)
-            return rpc('registerCopy', { path, projectId: conflict.details.projectId });
+            return registerAndSelect('registerCopy', { path, projectId: conflict.details.projectId });
           return null;
         }
       }
@@ -894,15 +1417,33 @@ void app
           cancelId: 0,
         });
         if (answer.response !== 1) return { removed: false };
-        const result = await rpc('removeProject', { projectId });
-        const currentBrowser = browser?.snapshot();
-        if (
-          currentBrowser?.tabs.some(
-            (tab) => tab.id === currentBrowser.activeTabId && tab.projectId === projectId,
-          )
-        )
+        let removalAcknowledged = false;
+        const deselect = () => {
+          const value = applicationWorkspace.snapshot();
+          if (!value.selectedWorkspace || value.workspaces[value.selectedWorkspace]?.projectId !== projectId)
+            return;
+          applicationWorkspace.restore({ ...value, selectedWorkspace: null });
           browser?.select(null);
-        return result;
+          browser?.setVisibleViews([]);
+        };
+        try {
+          return await applicationMutation(async () => {
+            await browser?.finishComment();
+            const result = await rpc('removeProject', { projectId });
+            removalAcknowledged = true;
+            deselect();
+            const currentBrowser = browser?.snapshot();
+            if (currentBrowser?.tabs.some(tab => tab.id === currentBrowser.activeTabId && tab.projectId === projectId))
+              browser?.select(null);
+            return result;
+          });
+        } catch (error) {
+          // Registration was already removed. A known metadata failure cannot
+          // restore an active selection that is no longer registered.
+          if (removalAcknowledged && !applicationWorkspace.hasPendingConfirmation()) deselect();
+          workspaceRefresh();
+          throw error;
+        }
       }
       if (name === 'setup') {
         return getMcpSetup({
@@ -910,7 +1451,7 @@ void app
           development: Boolean(developmentUrl),
           appPath: app.getAppPath(),
           resourcesPath: process.resourcesPath,
-          socketPath: socket,
+          descriptorPath,
           nodeOverride: process.env.BLUEPRINT_NODE,
         });
       }
@@ -934,6 +1475,34 @@ void app
         await clipboard.writeText(value.text);
         return { copied: true };
       }
+      if (name === 'copyUpdateMessage') {
+        const value = z.object({ artifactId: z.string().min(1), savedStateId: z.string().min(1),
+          sessionId: z.string().min(1).optional() }).strict().parse(args);
+        const snapshot = await rpc('snapshot') as { artifacts: { id: string; projectId: string }[];
+          savedStates: { id: string; artifactId: string }[] };
+        const artifact = snapshot.artifacts.find(item => item.id === value.artifactId);
+        if (!artifact || !snapshot.savedStates.some(state => state.id === value.savedStateId && state.artifactId === artifact.id))
+          throw new Error('SAVED_STATE_NOT_FOUND');
+        const target = value.sessionId ? codex.snapshot().sessions.find(session => session.id === value.sessionId && session.projectId === artifact.projectId) : null;
+        const terminal = target?.terminalId ? (await terminals.snapshot()).find(record => record.id === target.terminalId && record.status === 'running') : null;
+        if (value.sessionId && !terminal) throw new Error('CODEX_TERMINAL_NOT_RUNNING: Resume the selected session explicitly before copying to its terminal.');
+        const text = `Blueprint projectId="${artifact.projectId}", artifactId="${artifact.id}", savedStateId="${value.savedStateId}". Call read_artifact({artifactId:"${artifact.id}",part:"state",savedStateId:"${value.savedStateId}"}), follow every cursor, and read its attachments with read_attachment. This saved context does not authorize implementation.`;
+        await clipboard.writeText(text);
+        if (target && terminal) await applicationMutation(async () => {
+          const key = applicationWorkspace.select(artifact.projectId, target.id);
+          const pane = applicationWorkspace.terminal(key, terminal.id);
+          await activateApplicationPane(key, pane.id);
+        });
+        return { copied: true, text };
+      }
+      if (name === 'openArtifact') {
+        const value = z.object({ artifactId: z.string().min(1), revisionId: z.string().nullable() }).strict().parse(args);
+        return applicationMutation(() => applicationPlan(value.artifactId, value.revisionId));
+      }
+      if (name === 'editing') {
+        const value = z.object({ active: z.boolean(), scope: z.string().min(1).max(1024).optional() }).strict().parse(args);
+        return setEditingScope(value.scope ?? 'operator', value.active);
+      }
       const allowed = [
         'snapshot',
         'bindSession',
@@ -953,17 +1522,26 @@ void app
         'submit',
         'approve',
         'revokeApproval',
-        'editing',
         'demo',
       ];
       if (!allowed.includes(name)) throw new Error('Unsupported operator command');
       return rpc(name, args);
     });
+    const activeKey = applicationWorkspace.snapshot().selectedWorkspace;
+    const active = activeKey ? applicationWorkspace.workspace(activeKey) : null;
+    if (active) {
+      const state = await rpc('snapshot') as { projects: { id: string; available?: boolean }[] };
+      const project = state.projects.find(project => project.id === active.projectId);
+      // An unavailable folder must leave a recoverable workspace, rather than
+      // making renderer startup depend on reading the missing document.
+      if (activeKey && active.activePaneId && project?.available !== false && project)
+        await activateApplicationPane(activeKey, active.activePaneId);
+      else if (project) await rpc('selectProject', { projectId: active.projectId });
+    }
     createWindow();
   })
-  .catch((error) => {
+  .catch(async (error) => {
     console.error(error);
     quitting = true;
-    worker?.kill();
-    app.quit();
+    await quitAfterCleanup();
   });

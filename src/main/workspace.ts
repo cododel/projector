@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
-import { atomicJson } from '../runtime/files';
+import { MetadataWriter } from './metadata-write';
 import type {
   WorkspaceSnapshot,
   WorkspaceTab,
@@ -38,8 +38,11 @@ const schema = z.object({
 export class Workspace {
   private layout: WorkspaceLayout = { ...defaultLayout };
   private plans: Record<string, PlanWorkspace> = {};
-  private writes: Promise<void> = Promise.resolve();
-  constructor(private path: string) {}
+  private readonly metadata: MetadataWriter;
+  constructor(private path: string) { this.metadata = new MetadataWriter(path); }
+  hasPendingConfirmation(): boolean { return this.metadata.hasPendingConfirmation(); }
+  assertConfirmed(): void { this.metadata.assertConfirmed(); }
+  confirmPending(): Promise<void> { return this.metadata.confirmPending(); }
   async load() {
     try {
       const stored = schema.parse(JSON.parse(await readFile(this.path, 'utf8')));
@@ -53,13 +56,16 @@ export class Workspace {
     return structuredClone({ plans: this.plans, layout: this.layout });
   }
   restore(snapshot: WorkspaceSnapshot) {
+    this.assertConfirmed();
     this.plans = structuredClone(snapshot.plans);
     this.layout = structuredClone(snapshot.layout);
   }
   setLayout(value: WorkspaceLayout) {
+    this.assertConfirmed();
     this.layout = layoutSchema.parse(value);
   }
   plan(artifactId: string): PlanWorkspace {
+    if (!this.plans[artifactId]) this.assertConfirmed();
     return (this.plans[artifactId] ??= { tabs: [], activeTabId: null });
   }
   find(artifactId: string, id: string) {
@@ -68,6 +74,7 @@ export class Workspace {
     return found;
   }
   document(artifactId: string, revisionId: string | null) {
+    this.assertConfirmed();
     const plan = this.plan(artifactId);
     plan.lastDocumentRevisionId = revisionId;
     let entry = plan.tabs.find((t) => t.kind === 'document');
@@ -79,6 +86,7 @@ export class Workspace {
     return entry;
   }
   home(artifactId: string) {
+    this.assertConfirmed();
     const entry: WorkspaceTab = { id: randomUUID(), kind: 'home', address: '' };
     const plan = this.plan(artifactId);
     plan.tabs.push(entry);
@@ -86,6 +94,7 @@ export class Workspace {
     return entry;
   }
   address(artifactId: string, id: string, address: string) {
+    this.assertConfirmed();
     const entry = this.find(artifactId, id);
     if (entry.kind !== 'home') throw new Error('WORKSPACE_HOME_REQUIRED');
     entry.address = address;
@@ -96,6 +105,7 @@ export class Workspace {
     homeId?: string,
     background = false,
   ) {
+    this.assertConfirmed();
     const plan = this.plan(artifactId);
     const existing = homeId
       ? this.find(artifactId, homeId)
@@ -113,10 +123,12 @@ export class Workspace {
     return entry;
   }
   select(artifactId: string, id: string) {
+    this.assertConfirmed();
     this.find(artifactId, id);
     this.plan(artifactId).activeTabId = id;
   }
   close(artifactId: string, id: string) {
+    this.assertConfirmed();
     const plan = this.plan(artifactId),
       index = plan.tabs.findIndex((t) => t.id === id);
     if (index < 0) return;
@@ -125,6 +137,7 @@ export class Workspace {
       plan.activeTabId = plan.tabs[Math.min(index, plan.tabs.length - 1)]?.id ?? null;
   }
   sync(values: { id: string; url: string; title: string }[]) {
+    this.assertConfirmed();
     let changed = false;
     for (const plan of Object.values(this.plans))
       for (const entry of plan.tabs)
@@ -140,8 +153,6 @@ export class Workspace {
   }
   save() {
     const value = schema.parse({ formatVersion: 1, plans: this.plans, layout: this.layout });
-    const write = this.writes.catch(() => {}).then(() => atomicJson(this.path, value));
-    this.writes = write;
-    return write;
+    return this.metadata.write(value);
   }
 }

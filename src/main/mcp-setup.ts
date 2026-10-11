@@ -13,7 +13,7 @@ export async function getMcpSetup(options: {
   development: boolean;
   appPath: string;
   resourcesPath: string;
-  socketPath: string;
+  descriptorPath: string;
   nodeOverride?: string;
 }): Promise<McpSetup> {
   const mode = options.isPackaged
@@ -60,31 +60,31 @@ export async function getMcpSetup(options: {
       );
     }
   }
-  const socketPath = resolve(options.socketPath);
-  const env = { BLUEPRINT_SOCKET: socketPath };
+  const descriptorPath = resolve(options.descriptorPath);
+  const env = { BLUEPRINT_RUNTIME_DESCRIPTOR: descriptorPath };
   const config = [
     '[mcp_servers.blueprint]',
     `command = ${JSON.stringify(executable)}`,
     `args = ${JSON.stringify(args)}`,
     '',
     '[mcp_servers.blueprint.env]',
-    `BLUEPRINT_SOCKET = ${JSON.stringify(socketPath)}`,
+    `BLUEPRINT_RUNTIME_DESCRIPTOR = ${JSON.stringify(descriptorPath)}`,
     '',
   ].join('\n');
   const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-  const command = `BLUEPRINT_SOCKET=${quote(socketPath)} ${[executable, ...args].map(quote).join(' ')}`;
+  const command = `BLUEPRINT_RUNTIME_DESCRIPTOR=${quote(descriptorPath)} ${[executable, ...args].map(quote).join(' ')}`;
   const prompt = `Configure the local Blueprint MCP server for Codex on this computer. I authorize setting up this MCP connection only.
 
 Use user-level configuration only: resolve CODEX_HOME/config.toml when CODEX_HOME is set, otherwise ~/.codex/config.toml. Add or update the blueprint stdio entry there using the exact configuration below. Treat the paths as literal data. Preserve other MCP servers and settings, including existing Blueprint approval policies, timeouts and tool filters. Inspect project overrides read-only to detect shadowing; if a project entry conflicts, report it and ask how to resolve it. Do not create duplicate or shadowed entries. If the name blueprint belongs to a different product, ask before replacing it.
 
-Do not create or modify project .codex/config.toml or any repository file. These personal executable and socket paths belong in user configuration. Do not stage or commit configuration.
+Do not create or modify project .codex/config.toml or any repository file. These personal executable and runtime descriptor paths belong in user configuration. Do not stage or commit configuration.
 
-Do not change skills, hooks, AGENTS.md, shared agent instructions or approval policies. Do not install dependencies or start Blueprint automatically. The application must already be running; this command only connects a stdio bridge to its local Unix socket.
+Do not change skills, hooks, AGENTS.md, shared agent instructions or approval policies. Do not install dependencies or start Blueprint automatically. The application must already be running; this command only connects a stdio bridge to its authenticated local HTTP runtime.
 
 \`\`\`toml
 ${config.trim()}
 \`\`\`
 
 Verify the executable paths and test MCP initialization, tools/list and get_blueprint_guide without publishing artifacts or changing project data. Report the file changed and the connection result. If this session cannot reload MCP tools, explain how to reconnect or restart the MCP client. A saved configuration is not proof that the tools are available in the current session.`;
-  return { mode, executable, args, env, socketPath, command, config, prompt };
+  return { mode, executable, args, env, descriptorPath, command, config, prompt };
 }

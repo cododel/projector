@@ -29,19 +29,20 @@ type RpcGate = {
 // MCP remains connected to that runtime independently and can publish while the
 // shell awaits its older reply. The double controls timing, never state/content.
 async function installGate() {
-  await app.evaluate(() => {
-    const { Socket } = process.getBuiltinModule('net');
-    const write = Socket.prototype.write;
-    const emit = Socket.prototype.emit;
+  const probeFile = join(root, 'ipc-probe.cjs');
+  await writeFile(probeFile, 'process.parentPort.on("message",()=>{});');
+  await app.evaluate(({ utilityProcess }, file) => {
+    const probe = utilityProcess.fork(file, [], { stdio: 'ignore' });
+    const prototype = Object.getPrototypeOf(probe);
+    probe.kill();
+    const post = prototype.postMessage;
+    const emit = prototype.emit;
     const ids = new Map<string, string>();
-    const streams = new WeakMap<InstanceType<typeof Socket>, string>();
     let armed: string | undefined;
-    let held: { socket: InstanceType<typeof Socket>; line: string } | undefined;
+    let held: { target: Electron.UtilityProcess; message: unknown } | undefined;
     const gate: RpcGate = {
       requests: [],
-      get held() {
-        return Boolean(held);
-      },
+      get held() { return Boolean(held); },
       arm(name) {
         if (held) throw Error('Release the previous response before arming');
         gate.requests.length = 0;
@@ -50,59 +51,30 @@ async function installGate() {
       release() {
         const response = held;
         held = undefined;
-        if (response)
-          Reflect.apply(emit, response.socket, ['data', Buffer.from(response.line + '\n')]);
+        if (response) Reflect.apply(emit, response.target, ['message', response.message]);
       },
     };
     Object.assign(globalThis, { refreshGate: gate });
-    Socket.prototype.write = function (
-      value: string | Uint8Array,
-      encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
-      callback?: (error?: Error | null) => void,
-    ) {
-      if (typeof value === 'string') {
-        try {
-          const request = JSON.parse(value) as {
-            id: string;
-            method?: string;
-            params?: { name: string; args?: Record<string, unknown> };
-          };
-          if (request.method === 'operator' && request.params) {
-            ids.set(request.id, request.params.name);
-            gate.requests.push(request.params);
-            streams.set(this, streams.get(this) ?? '');
-          }
-        } catch {
-          // Other Node streams are unrelated to the runtime RPC socket.
-        }
+    prototype.postMessage = function (value: { type?: string; id?: string; name?: string; args?: Record<string, unknown> }) {
+      if (value.type === 'operator' && value.id && value.name) {
+        ids.set(value.id, value.name);
+        gate.requests.push({ name: value.name, args: value.args });
       }
-      return write.call(
-        this,
-        value,
-        typeof encodingOrCallback === 'function' ? undefined : encodingOrCallback,
-        typeof encodingOrCallback === 'function' ? encodingOrCallback : callback,
-      );
+      return Reflect.apply(post, this, [value]);
     };
-    Socket.prototype.emit = function (event: string | symbol, ...args: unknown[]): boolean {
-      if (event !== 'data' || !streams.has(this))
-        return Reflect.apply(emit, this, [event, ...args]);
-      const chunk = args[0];
-      if (!(chunk instanceof Uint8Array) && typeof chunk !== 'string')
-        return Reflect.apply(emit, this, [event, ...args]);
-      const lines = (streams.get(this)! + Buffer.from(chunk).toString()).split('\n');
-      streams.set(this, lines.pop()!);
-      for (const line of lines) {
-        if (!line) continue;
-        const response = JSON.parse(line) as { id?: string };
-        const name = response.id ? ids.get(response.id) : undefined;
+    prototype.emit = function (event: string | symbol, ...args: unknown[]): boolean {
+      const response = args[0] as { type?: string; id?: string } | undefined;
+      if (event === 'message' && response?.type === 'operator-response' && response.id) {
+        const name = ids.get(response.id);
         if (name && name === armed) {
           armed = undefined;
-          held = { socket: this, line };
-        } else Reflect.apply(emit, this, [event, Buffer.from(line + '\n')]);
+          held = { target: this, message: response };
+          return true;
+        }
       }
-      return true;
+      return Reflect.apply(emit, this, [event, ...args]);
     };
-  });
+  }, probeFile);
 }
 async function arm(name: string) {
   await app.evaluate((_, name) => {
@@ -137,7 +109,7 @@ async function start() {
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   const page = await app.firstWindow();

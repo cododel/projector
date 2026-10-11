@@ -13,6 +13,32 @@ import type { WorkspaceSnapshot } from '../shared/workspace';
 import { captureTextSelection, anchorRange } from './anchors';
 import { annotationClip } from './annotation-visibility';
 import { RefreshQueue } from './refresh-queue';
+import { TerminalPane } from './TerminalPane';
+import { WorkspaceSplit } from './WorkspaceSplit';
+import { ApplicationSettings } from './ApplicationSettings';
+import {
+  PlanDocumentPane,
+  BrowserWorkspacePane,
+  HomeWorkspacePane,
+  type DocumentFrame,
+} from './PlanWorkspacePane';
+import { shortcutAction } from './shortcuts';
+import {
+  DEFAULT_SETTINGS,
+  paneLeaves,
+  type ApplicationWorkspaceSnapshot,
+  type ApplicationSettings as Settings,
+  type PaneNode,
+  type ShortcutAction,
+} from '../shared/application-workspace';
+import type { TerminalRecord, TerminalOutput } from '../shared/terminal';
+import type { HarnessSession, HarnessSnapshot } from '../shared/harness';
+interface FullApplicationSnapshot extends ApplicationWorkspaceSnapshot {
+  terminals: TerminalRecord[];
+  harnesses: HarnessSnapshot;
+  metadataPending?: boolean;
+}
+
 import {
   canonicalString as canonical,
   type AnnotationStateContext as AnnotationState,
@@ -97,6 +123,7 @@ interface DocumentResult {
   dirty?: boolean;
   latestSavedStateId?: string | null;
   view?: { details: Record<string, boolean> };
+  scrollTop?: number;
   annotationState?: AnnotationState;
 }
 interface BrowserTab {
@@ -123,6 +150,10 @@ interface Bridge {
     callback: (status: { waiting: boolean; operation?: string }) => void,
   ): () => void;
   onRefresh(callback: () => void): (() => void) | void;
+  onTerminalOutput?(callback: (output: TerminalOutput) => void): () => void;
+  onOpenSettings?(callback: () => void): () => void;
+  onShortcut?(callback: (action: ShortcutAction) => void): () => void;
+  onPaneFocus?(callback: (pane: { key: string; paneId: string }) => void): () => void;
 }
 const isSurface = new URLSearchParams(window.location.search).get('surface') === '1';
 function documentShellOrigin(): string {
@@ -258,6 +289,59 @@ function Icon({
 function App(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
   const [projectId, setProjectId] = useState('');
+  const [application, setApplication] = useState<FullApplicationSnapshot | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sessionMetadata, setSessionMetadata] = useState<HarnessSession | null>(null);
+  const [bottomFocused, setBottomFocused] = useState(false);
+  const [bottomHeightPreview, setBottomHeightPreview] = useState<number | null>(null);
+  const bottomDrag = useRef<{
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+    height: number;
+  } | null>(null);
+  const documentFrames = useRef(new Map<string, DocumentFrame>());
+  const editingFrames = useRef(new Set<string>());
+  const [documentEditing, setDocumentEditing] = useState(false);
+  const nativeFrames = useRef(new Map<string, { nativeId?: string; element: HTMLDivElement }>());
+  const [framesVersion, setFramesVersion] = useState(0);
+  const currentKey = application?.selectedWorkspace ?? null;
+  const sessionWorkspace = currentKey ? application?.workspaces[currentKey] : undefined;
+  const applicationTab = sessionWorkspace?.tabs.find(
+    (tab) => tab.id === sessionWorkspace.activeTabId,
+  );
+  const activePane = applicationTab
+    ? paneLeaves(applicationTab.root).find((pane) => pane.id === sessionWorkspace?.activePaneId)
+    : undefined;
+  const appMode = Boolean(sessionWorkspace);
+  const currentSettings = application?.settings ?? DEFAULT_SETTINGS;
+  const selectedSession = application?.harnesses.sessions.find(
+    (session) => session.id === sessionWorkspace?.sessionId,
+  );
+  const bottom = application?.bottom[sessionWorkspace?.projectId ?? projectId];
+  const registerDocument = useCallback((paneId: string, value: DocumentFrame | null) => {
+    const previous = documentFrames.current.get(paneId);
+    if (value) documentFrames.current.set(paneId, value);
+    else documentFrames.current.delete(paneId);
+    if (
+      previous &&
+      (!value || previous.key !== value.key || previous.revisionId !== value.revisionId)
+    ) {
+      const scope = `pane:${previous.key}:${previous.paneId}`;
+      editingFrames.current.delete(scope);
+      setDocumentEditing(editingFrames.current.size > 0);
+      void invoke('editing', { active: false, scope }).catch((error) => setError(message(error)));
+    }
+    setFramesVersion((version) => version + 1);
+  }, []);
+  const registerBrowser = useCallback(
+    (paneId: string, value: { nativeId?: string; element: HTMLDivElement } | null) => {
+      if (value) nativeFrames.current.set(paneId, value);
+      else nativeFrames.current.delete(paneId);
+      setFramesVersion((version) => version + 1);
+    },
+    [],
+  );
   const [error, setError] = useState('');
   const [waiting, setWaiting] = useState(false);
   useEffect(() => bridge.onOperationStatus?.((value) => setWaiting(value.waiting)), []);
@@ -287,13 +371,17 @@ function App(): React.JSX.Element {
       .catch((error) => setError(message(error)));
   }, []);
   const [notification, setNotification] = useState('');
+  const [notificationState, setNotificationState] = useState<{
+    artifactId: string;
+    savedStateId: string;
+  } | null>(null);
+  const [handoffSessionId, setHandoffSessionId] = useState('');
   const [document, setDocument] = useState<DocumentResult | null>(null);
   const [editing, setEditing] = useState<Annotation | null>(null);
   const [comment, setComment] = useState('');
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [savingCount, setSavingCount] = useState(0);
   const [failedAutosaves, setFailedAutosaves] = useState<Set<string>>(new Set());
-  const [documentEditing, setDocumentEditing] = useState(false);
   const [documentPreview, setDocumentPreview] = useState(false);
   const [jump, setJump] = useState<Annotation | null>(null);
   const [browser, setBrowser] = useState<BrowserSnapshot>({
@@ -369,7 +457,12 @@ function App(): React.JSX.Element {
   const finishRequests = useRef(
     new Map<
       string,
-      { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+      {
+        resolve: () => void;
+        reject: (error: Error) => void;
+        timer: ReturnType<typeof setTimeout>;
+        target: Window;
+      }
     >(),
   );
   const [retryTransition, setRetryTransition] = useState<(() => Promise<void>) | null>(null);
@@ -388,12 +481,40 @@ function App(): React.JSX.Element {
   const readView = useCallback(async (isCurrent: () => boolean) => {
     const next = await invoke<Snapshot>('snapshot');
     if (!isCurrent()) return;
-    const selectionExists =
-      next.selected && next.artifacts.some((a) => a.id === next.selected!.artifactId);
-    const loaded =
-      selectionExists && next.selected
-        ? await invoke<DocumentResult>('getDocument', next.selected)
-        : null;
+    const nextApplication = await invoke<FullApplicationSnapshot>('applicationSnapshot');
+    if (!isCurrent()) return;
+    const nextKey = nextApplication.selectedWorkspace;
+    const nextSession = nextKey ? nextApplication.workspaces[nextKey] : undefined;
+    const nextTab = nextSession?.tabs.find((tab) => tab.id === nextSession.activeTabId);
+    const nextPane = nextTab
+      ? paneLeaves(nextTab.root).find((pane) => pane.id === nextSession?.activePaneId)
+      : undefined;
+    const content = nextPane?.content.kind === 'plan' ? nextPane.content : null;
+    const selection = content
+      ? {
+          artifactId: content.artifactId,
+          revisionId:
+            content.tab.kind === 'document'
+              ? content.tab.revisionId
+              : (next.artifacts.find((a) => a.id === content.artifactId)?.latestRevision ?? null),
+        }
+      : nextSession
+        ? null
+        : next.selected;
+    const selectedArtifact = next.artifacts.find(
+      (artifact) => artifact.id === selection?.artifactId,
+    );
+    const selectedProjectId = nextSession?.projectId ?? selectedArtifact?.projectId;
+    const selectedProjectAvailable =
+      !selectedProjectId ||
+      next.projects.find((project) => project.id === selectedProjectId)?.available !== false;
+    const loaded = !selectedProjectAvailable
+      ? null
+      : content?.tab.kind === 'document' && nextKey && nextPane
+        ? await invoke<DocumentResult>('paneDocument', { key: nextKey, paneId: nextPane.id })
+        : selection && next.artifacts.some((a) => a.id === selection.artifactId)
+          ? await invoke<DocumentResult>('getDocument', selection)
+          : null;
     if (!isCurrent()) return;
     const nextBrowser = await invoke<BrowserSnapshot>('browserSnapshot');
     if (!isCurrent()) return;
@@ -404,6 +525,7 @@ function App(): React.JSX.Element {
     setDocument(loaded);
     setBrowser(nextBrowser);
     setWorkspace(nextWorkspace);
+    setApplication(nextApplication);
     setProjectId(
       (current) =>
         next.selectedProject ??
@@ -415,12 +537,18 @@ function App(): React.JSX.Element {
       if (entry) {
         setEditing(entry);
         setComment(loaded.editor.comment);
-        void invoke('editing', { active: true });
+        void invoke('editing', { active: true, scope: 'operator' });
       }
     }
     // Only a coherent read refreshes the current surface. Identity prevents a late
     // notification from making the departing iframe read its old document again.
-    if (next.selected && surfaceReady.current)
+    for (const owner of documentFrames.current.values())
+      if (owner.ready)
+        owner.frame.contentWindow?.postMessage(
+          { type: 'blueprint-refresh', artifactId: owner.artifactId, revisionId: owner.revisionId },
+          'blueprint://document',
+        );
+    if (next.selected && surfaceReady.current && !nextApplication.selectedWorkspace)
       frame.current?.contentWindow?.postMessage(
         { type: 'blueprint-refresh', ...next.selected },
         'blueprint://document',
@@ -431,12 +559,43 @@ function App(): React.JSX.Element {
     [readView],
   );
   const reload = useCallback(() => refreshQueue.request(), [refreshQueue]);
+  const shortcutCapture = useCallback((active: boolean) => {
+    void invoke('shortcutCapture', { active }).catch((error) => setError(message(error)));
+  }, []);
   useEffect(() => {
     refreshQueue.invalidate();
     return bridge.onRefresh(() => refreshQueue.invalidate());
   }, [refreshQueue]);
-  const selected = snapshot.selected;
+  const activePlan = activePane?.content.kind === 'plan' ? activePane.content : null;
+  const selected = activePlan
+    ? {
+        artifactId: activePlan.artifactId,
+        revisionId:
+          activePlan.tab.kind === 'document'
+            ? activePlan.tab.revisionId
+            : snapshot.selected?.artifactId === activePlan.artifactId
+              ? snapshot.selected.revisionId
+              : (snapshot.artifacts.find((item) => item.id === activePlan.artifactId)
+                  ?.latestRevision ?? null),
+      }
+    : appMode
+      ? null
+      : snapshot.selected;
   const artifact = snapshot.artifacts.find((item) => item.id === selected?.artifactId);
+  useEffect(() => {
+    setNotification('');
+    setNotificationState(null);
+    setHandoffSessionId('');
+    setCopiedText(null);
+  }, [selected?.artifactId]);
+  const lastPlan =
+    sessionWorkspace?.sessionId === null && !activePane
+      ? snapshot.artifacts.find(
+          (item) =>
+            item.id === snapshot.selected?.artifactId &&
+            item.projectId === sessionWorkspace.projectId,
+        )
+      : null;
   useEffect(() => {
     if (selected?.artifactId)
       void invoke('browserRestoreDraft', { artifactId: selected.artifactId })
@@ -445,13 +604,15 @@ function App(): React.JSX.Element {
         .catch((e) => setError(message(e)));
   }, [selected?.artifactId]);
   const annotations = (
-    snapshot.draft?.annotations ??
-    snapshot.annotations ??
-    document?.annotations ??
-    []
+    appMode
+      ? (document?.annotations ?? [])
+      : (snapshot.draft?.annotations ?? snapshot.annotations ?? document?.annotations ?? [])
   ).filter((item) => item.artifactId === artifact?.id);
   const planTabs = selected ? workspace.plans[selected.artifactId] : undefined;
-  const activeTab = planTabs?.tabs.find((t) => t.id === planTabs.activeTabId);
+  const activeTab =
+    activePane?.content.kind === 'plan'
+      ? activePane.content.tab
+      : planTabs?.tabs.find((t) => t.id === planTabs.activeTabId);
   useEffect(() => {
     const strip = titlebarTabs.current;
     const tab = strip?.querySelector<HTMLElement>('.content-tab.active');
@@ -467,7 +628,7 @@ function App(): React.JSX.Element {
     const observer = new ResizeObserver(reveal);
     observer.observe(strip);
     return () => observer.disconnect();
-  }, [activeTab?.id, planTabs?.tabs.length]);
+  }, [activeTab?.id, planTabs?.tabs.length, applicationTab?.id, sessionWorkspace?.tabs.length]);
   const activeBrowser = browser.tabs.find(
     (tab) =>
       activeTab?.kind === 'browser' &&
@@ -487,6 +648,7 @@ function App(): React.JSX.Element {
     }
   }, [activeTab?.id]);
   useEffect(() => {
+    if (appMode) return;
     const element = activeBrowser ? browserArea.current : frame.current;
     if (!element) return;
     const update = () => {
@@ -512,7 +674,224 @@ function App(): React.JSX.Element {
     selected?.revisionId,
     workspace.layout?.leftSidebarVisible,
     workspace.layout?.rightSidebarVisible,
+    appMode,
   ]);
+  useEffect(() => {
+    if (!appMode) return;
+    const owner = activePane ? documentFrames.current.get(activePane.id) : undefined;
+    frame.current = owner?.frame ?? null;
+    surfaceReady.current = owner?.ready ?? false;
+    if (owner?.ready)
+      owner.frame.contentWindow?.postMessage(
+        { type: 'blueprint-document-status-request' },
+        'blueprint://document',
+      );
+  }, [appMode, activePane?.id, framesVersion]);
+  useEffect(() => {
+    if (!appMode) return;
+    let animation = 0;
+    const update = () => {
+      if (animation) cancelAnimationFrame(animation);
+      animation = requestAnimationFrame(() => {
+        const views = [...nativeFrames.current.entries()].map(([viewId, value]) => {
+          const bounds = value.element.getBoundingClientRect();
+          return {
+            viewId,
+            tabId: value.nativeId,
+            bounds: {
+              x: Math.round(bounds.x),
+              y: Math.round(bounds.y),
+              width: Math.round(bounds.width),
+              height: Math.round(bounds.height),
+            },
+            active:
+              viewId === activePane?.id &&
+              !settingsOpen &&
+              !guideOpen &&
+              !setup &&
+              !renaming &&
+              !sessionMetadata,
+          };
+        });
+        void invoke('browserViews', {
+          views: settingsOpen || guideOpen || setup || renaming || sessionMetadata ? [] : views,
+        }).catch((error) => setError(message(error)));
+      });
+    };
+    const observer = new ResizeObserver(update);
+    for (const value of nativeFrames.current.values()) observer.observe(value.element);
+    window.addEventListener('resize', update);
+    update();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', update);
+      cancelAnimationFrame(animation);
+    };
+  }, [
+    appMode,
+    framesVersion,
+    activePane?.id,
+    settingsOpen,
+    guideOpen,
+    setup,
+    renaming,
+    sessionMetadata,
+  ]);
+  useEffect(() => {
+    if (!sessionMetadata) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.isComposing) setSessionMetadata(null);
+    };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [sessionMetadata]);
+  async function applicationCommand(
+    actionName: string,
+    params: Record<string, unknown> = {},
+    useTransition = true,
+  ): Promise<void> {
+    const execute = async () => {
+      await invoke('applicationCommand', {
+        action: actionName,
+        projectId: sessionWorkspace?.projectId ?? projectId,
+        key: currentKey ?? undefined,
+        ...params,
+      });
+    };
+    if (useTransition) await transition(execute);
+    else await action(execute);
+  }
+  function focusPane(paneId: string) {
+    if (paneId === activePane?.id && !bottomFocused) return;
+    setBottomFocused(false);
+    void applicationCommand('focus', { paneId });
+  }
+  function openPlan(plan: Artifact, revisionId = plan.latestRevision) {
+    return transition(() =>
+      invoke('applicationCommand', {
+        action: 'openPlan',
+        projectId: plan.projectId,
+        key: sessionWorkspace?.projectId === plan.projectId ? currentKey : undefined,
+        artifactId: plan.id,
+        revisionId,
+      }),
+    );
+  }
+  function planRevision(plan: Artifact): string | null {
+    const pane =
+      sessionWorkspace?.projectId === plan.projectId
+        ? sessionWorkspace.tabs
+            .flatMap((tab) => paneLeaves(tab.root))
+            .find(
+              (pane) =>
+                pane.content.kind === 'plan' &&
+                pane.content.artifactId === plan.id &&
+                pane.content.tab.kind === 'document',
+            )
+        : undefined;
+    if (pane?.content.kind === 'plan' && pane.content.tab.kind === 'document')
+      return pane.content.tab.revisionId;
+    return (
+      workspace.plans[plan.id]?.lastDocumentRevisionId ??
+      workspace.plans[plan.id]?.tabs.find((tab) => tab.kind === 'document')?.revisionId ??
+      plan.latestRevision
+    );
+  }
+  function openSettings() {
+    void transition(async () => {
+      await invoke('browserSelect', { tabId: null });
+      setSettingsOpen(true);
+    });
+  }
+  useEffect(() => bridge.onOpenSettings?.(openSettings));
+  useEffect(() => bridge.onShortcut?.(shortcut));
+  useEffect(() =>
+    bridge.onPaneFocus?.(({ key, paneId }) => {
+      if (key === currentKey && paneId !== activePane?.id) focusPane(paneId);
+    }),
+  );
+  function shortcut(actionName: ShortcutAction) {
+    if (settingsOpen) return;
+    if (actionName === 'settings') {
+      openSettings();
+      return;
+    }
+    if (!sessionWorkspace || !currentKey) return;
+    if (actionName === 'bottomPanel') {
+      void applicationCommand('bottomToggle');
+      return;
+    }
+    if (actionName === 'newTab') {
+      void applicationCommand(
+        selected || lastPlan ? 'openHome' : 'newTerminal',
+        selected || lastPlan
+          ? { artifactId: selected?.artifactId ?? lastPlan?.id }
+          : { operationId: crypto.randomUUID() },
+      );
+      return;
+    }
+    if (actionName === 'closeTab') {
+      if (bottomFocused && bottom?.activeTerminalId)
+        void applicationCommand('bottomClose', { terminalId: bottom.activeTerminalId });
+      else if (applicationTab) void applicationCommand('closeTab', { tabId: applicationTab.id });
+      return;
+    }
+    if (actionName === 'nextTab' || actionName === 'previousTab') {
+      const index = sessionWorkspace.tabs.findIndex((tab) => tab.id === applicationTab?.id),
+        delta = actionName === 'nextTab' ? 1 : -1;
+      const tab =
+        sessionWorkspace.tabs[
+          (index + delta + sessionWorkspace.tabs.length) % sessionWorkspace.tabs.length
+        ];
+      if (tab) void applicationCommand('selectTab', { tabId: tab.id });
+      return;
+    }
+    if (actionName === 'splitRight' || actionName === 'splitDown') {
+      if (activePane)
+        void applicationCommand('split', {
+          paneId: activePane.id,
+          axis: actionName === 'splitRight' ? 'horizontal' : 'vertical',
+          operationId: crypto.randomUUID(),
+        });
+      return;
+    }
+    if (applicationTab) {
+      const panes = paneLeaves(applicationTab.root),
+        index = panes.findIndex((pane) => pane.id === activePane?.id),
+        delta = actionName === 'nextPane' ? 1 : -1;
+      focusPane(panes[(index + delta + panes.length) % panes.length].id);
+    }
+  }
+  useEffect(() => {
+    const close = (event: PointerEvent | KeyboardEvent) => {
+      for (const popover of window.document.querySelectorAll<HTMLDetailsElement>(
+        'details.terminal-list[open]',
+      ))
+        if (
+          event instanceof KeyboardEvent
+            ? event.key === 'Escape'
+            : !popover.contains(event.target as Node)
+        )
+          popover.open = false;
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', close);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', close);
+    };
+  }, []);
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (settingsOpen || event.defaultPrevented) return;
+      const command = shortcutAction(event, currentSettings.shortcuts);
+      if (!command) return;
+      event.preventDefault();
+      shortcut(command);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  });
   async function action(callback: () => Promise<unknown>): Promise<void> {
     const resume = refreshQueue.pause();
     setBusy(true);
@@ -550,15 +929,23 @@ function App(): React.JSX.Element {
       }
       await editComposer.current?.finish();
     }
-    if (frame.current?.contentWindow && surfaceReady.current) {
-      const target = frame.current.contentWindow,
-        id = crypto.randomUUID();
+    const targets = appMode
+      ? [...documentFrames.current.values()]
+          .filter((owner) => owner.ready)
+          .map((owner) => owner.frame.contentWindow)
+          .filter(Boolean)
+      : surfaceReady.current
+        ? [frame.current?.contentWindow].filter(Boolean)
+        : [];
+    for (const target of targets) {
+      if (!target) continue;
+      const id = crypto.randomUUID();
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           finishRequests.current.delete(id);
           reject(new Error('Comment editor did not respond. Retry before leaving.'));
         }, 10000);
-        finishRequests.current.set(id, { resolve, reject, timer });
+        finishRequests.current.set(id, { resolve, reject, timer, target });
         target.postMessage({ type: 'blueprint-finish', id, retry }, 'blueprint://document');
       });
     }
@@ -615,10 +1002,28 @@ function App(): React.JSX.Element {
       setRetryTransition(null);
     } catch (error) {
       setError(message(error));
-      setRetryTransition(() => () => transition(callback, true, backgroundRefresh));
+      const confirmation = await invoke<{ pending: boolean }>('applicationConfirmation');
+      setRetryTransition(() =>
+        confirmation.pending
+          ? confirmWorkspaceWrite
+          : () => transition(callback, true, backgroundRefresh),
+      );
     } finally {
       resume();
       transitioning.current = false;
+      setBusy(false);
+    }
+  }
+  async function confirmWorkspaceWrite(): Promise<void> {
+    setBusy(true);
+    try {
+      await invoke('confirmWorkspaceWrite');
+      await reload();
+      setError('');
+      setRetryTransition(null);
+    } catch (error) {
+      setError(message(error));
+    } finally {
       setBusy(false);
     }
   }
@@ -669,7 +1074,7 @@ function App(): React.JSX.Element {
     )
       animateSidebars(workspace.layout);
     setSidebarPreview(null);
-    if (activeBrowser)
+    if (activeBrowser || nativeFrames.current.size)
       void invoke('browserResizeMode', { active: false }).catch((e) => setError(message(e)));
   }
   async function saveSidebarWidth(side: 'left' | 'right', width: number) {
@@ -710,16 +1115,40 @@ function App(): React.JSX.Element {
       setError(message(e));
     }
   }
+  async function copyUpdate(text: string, state = notificationState): Promise<void> {
+    if (!state) {
+      await copy(text);
+      return;
+    }
+    await invoke('copyUpdateMessage', { ...state, sessionId: handoffSessionId || undefined });
+    setCopiedText(text);
+    setTimeout(() => setCopiedText(null), 1600);
+    setBottomFocused(false);
+  }
   useEffect(() => {
     function relay(event: MessageEvent): void {
+      const owner = [...documentFrames.current.values()].find(
+        (owner) => owner.frame.contentWindow === event.source,
+      );
+      const legacy = !appMode && event.source === frame.current?.contentWindow;
       if (
         event.origin !== 'blueprint://document' ||
-        event.source !== frame.current?.contentWindow ||
+        (!owner && !legacy) ||
         !event.data ||
         typeof event.data !== 'object'
       )
         return;
+      if (event.data.type === 'blueprint-focus' && owner) {
+        focusPane(owner.paneId);
+        return;
+      }
+      if (event.data.type === 'blueprint-shortcut' && typeof event.data.action === 'string') {
+        if (Object.hasOwn(currentSettings.shortcuts, event.data.action))
+          shortcut(event.data.action as ShortcutAction);
+        return;
+      }
       if (event.data.type === 'blueprint-document-status') {
+        if (owner && owner.paneId !== activePane?.id) return;
         setDocumentToolbar({
           saveStatus: typeof event.data.saveStatus === 'string' ? event.data.saveStatus : '',
           areaMode: event.data.areaMode === true,
@@ -729,7 +1158,7 @@ function App(): React.JSX.Element {
       }
       if (event.data.type === 'blueprint-finished' && typeof event.data.id === 'string') {
         const pending = finishRequests.current.get(event.data.id);
-        if (pending) {
+        if (pending && pending.target === event.source) {
           clearTimeout(pending.timer);
           finishRequests.current.delete(event.data.id);
           if (event.data.error) pending.reject(new Error(event.data.error));
@@ -767,11 +1196,12 @@ function App(): React.JSX.Element {
         'annotationNavigated',
         'previewing',
       ];
+      const identity = owner ?? selected;
       if (
         !allowed.includes(request.method) ||
-        !selected ||
+        !identity ||
         (!['editing', 'previewing'].includes(request.method) &&
-          (params.artifactId !== selected.artifactId || params.revisionId !== selected.revisionId))
+          (params.artifactId !== identity.artifactId || params.revisionId !== identity.revisionId))
       ) {
         target.postMessage(
           {
@@ -784,7 +1214,7 @@ function App(): React.JSX.Element {
         return;
       }
       if (request.method === 'previewing') {
-        setDocumentPreview(params.active === true);
+        if (!owner || owner.paneId === activePane?.id) setDocumentPreview(params.active === true);
         target.postMessage(
           { type: 'blueprint-response', id: request.id, result: {} },
           'blueprint://document',
@@ -801,10 +1231,43 @@ function App(): React.JSX.Element {
       }
       if (['setValue', 'saveEditor', 'setViewState'].includes(String(request.method)))
         setSavingCount((c) => c + 1);
-      if (request.method === 'editing') setDocumentEditing(params.active === true);
-      const saveKey = `${selected.artifactId}:${String(request.method)}:${String(params.widgetId ?? 'editor')}`;
+      if (request.method === 'editing') {
+        const id = owner ? `pane:${owner.key}:${owner.paneId}` : 'pane:legacy';
+        if (params.active === true) editingFrames.current.add(id);
+        else editingFrames.current.delete(id);
+        setDocumentEditing(editingFrames.current.size > 0);
+      }
+      const saveKey = `${identity.artifactId}:${String(request.method)}:${String(params.widgetId ?? 'editor')}`;
+      let method = request.method;
+      let input = params;
+      if (method === 'editing')
+        input = {
+          active: params.active,
+          scope: owner ? `pane:${owner.key}:${owner.paneId}` : 'pane:legacy',
+        };
+      if (owner) {
+        if (method === 'getDocument') {
+          method = 'paneDocument';
+          input = { key: owner.key, paneId: owner.paneId };
+        }
+        if (method === 'setViewState') {
+          method = 'paneView';
+          input = {
+            key: owner.key,
+            paneId: owner.paneId,
+            view: params.view,
+            scrollTop: params.scrollTop,
+          };
+        }
+        if (method === 'captureAnnotationState') {
+          method = 'paneAnnotationState';
+          input = { key: owner.key, paneId: owner.paneId, view: params.view };
+        }
+        if (method === 'captureDocumentArea' || method === 'browserShowCapture')
+          input = { ...params, paneId: owner.paneId };
+      }
       void bridge
-        .invoke(request.method, params)
+        .invoke(method, input)
         .then((result) => {
           if (['setValue', 'saveEditor', 'setViewState'].includes(String(request.method)))
             setFailedAutosaves((previous) => {
@@ -813,7 +1276,11 @@ function App(): React.JSX.Element {
               return next;
             });
           target.postMessage(
-            { type: 'blueprint-response', id: request.id, result },
+            {
+              type: 'blueprint-response',
+              id: request.id,
+              result: method === 'paneView' ? { saved: true, view: result } : result,
+            },
             'blueprint://document',
           );
           if (
@@ -844,7 +1311,15 @@ function App(): React.JSX.Element {
     }
     window.addEventListener('message', relay);
     return () => window.removeEventListener('message', relay);
-  }, [selected?.artifactId, selected?.revisionId, reload, jump]);
+  });
+  useEffect(() => {
+    for (const owner of documentFrames.current.values())
+      if (owner.ready)
+        owner.frame.contentWindow?.postMessage(
+          { type: 'blueprint-shortcuts', shortcuts: currentSettings.shortcuts },
+          'blueprint://document',
+        );
+  }, [framesVersion, currentSettings.shortcuts]);
   function sendJump(): void {
     if (jump)
       frame.current?.contentWindow?.postMessage(
@@ -900,7 +1375,7 @@ function App(): React.JSX.Element {
         editor: null,
       });
       setEditing(null);
-      await invoke('editing', { active: false });
+      await invoke('editing', { active: false, scope: 'operator' });
     }
     // finishEditors may call this while transition has suspended reads. Its
     // caller will await the final refresh after the private write has completed.
@@ -909,22 +1384,37 @@ function App(): React.JSX.Element {
   }
   async function jumpTo(annotation: Annotation): Promise<void> {
     if (annotation.kind === 'browser-area') {
-      await invoke('browserShowCapture', {
-        artifactId: annotation.artifactId,
-        annotationId: annotation.id,
-      });
+      await transition(() =>
+        invoke('browserShowCapture', {
+          artifactId: annotation.artifactId,
+          annotationId: annotation.id,
+          paneId: activePlan?.artifactId === annotation.artifactId ? activePane?.id : undefined,
+        }),
+      );
       return;
     }
-    await invoke('browserSelect', { tabId: null });
-    await invoke('openArtifact', {
-      artifactId: annotation.artifactId,
-      revisionId: annotation.revisionId,
-    });
-    setJump(annotation);
-    if (annotation.kind === 'document-area')
-      await invoke('browserShowCapture', {
+    let opened = false;
+    await transition(async () => {
+      await invoke('browserSelect', { tabId: null });
+      await invoke('openArtifact', {
         artifactId: annotation.artifactId,
-        annotationId: annotation.id,
+        revisionId: annotation.revisionId,
+      });
+      setJump(annotation);
+      opened = true;
+    });
+    if (annotation.kind === 'document-area' && opened)
+      await action(async () => {
+        const current = await invoke<ApplicationWorkspaceSnapshot>('applicationSnapshot');
+        const workspace = current.selectedWorkspace
+          ? current.workspaces[current.selectedWorkspace]
+          : undefined;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        await invoke('browserShowCapture', {
+          artifactId: annotation.artifactId,
+          annotationId: annotation.id,
+          paneId: workspace?.activePaneId ?? undefined,
+        });
       });
   }
   async function createEmptyPlan(project: Project): Promise<void> {
@@ -1033,6 +1523,102 @@ function App(): React.JSX.Element {
     rightSidebarVisible ? requestedRight : 0,
     windowWidth,
   );
+  function renderApplicationPane(
+    pane: Extract<PaneNode, { kind: 'pane' }>,
+    active: boolean,
+  ): React.ReactNode {
+    if (!currentKey || !application) return null;
+    const content = pane.content;
+    if (content.kind === 'terminal') {
+      const record = application.terminals.find((record) => record.id === content.terminalId);
+      return record ? (
+        <TerminalPane
+          record={record}
+          viewId={pane.id}
+          active={
+            active &&
+            !bottomFocused &&
+            !settingsOpen &&
+            !guideOpen &&
+            !setup &&
+            !renaming &&
+            !sessionMetadata
+          }
+          settings={currentSettings}
+          bridge={bridge}
+          onFocus={() => focusPane(pane.id)}
+          onChange={() => void reload()}
+          onResume={
+            record.harnessSessionId
+              ? () =>
+                  void applicationCommand('newCodex', {
+                    sessionId: record.harnessSessionId,
+                    operationId: crypto.randomUUID(),
+                  })
+              : undefined
+          }
+        />
+      ) : (
+        <div className="new-tab-home">Terminal unavailable</div>
+      );
+    }
+    const plan = snapshot.artifacts.find((plan) => plan.id === content.artifactId);
+    if (!plan) return <div className="new-tab-home">Plan unavailable</div>;
+    if (content.tab.kind === 'document')
+      return (
+        <PlanDocumentPane
+          content={content}
+          paneId={pane.id}
+          workspaceKey={currentKey}
+          bridge={bridge}
+          register={registerDocument}
+          onFocus={() => focusPane(pane.id)}
+          onNewTab={() => void applicationCommand('openHome', { artifactId: content.artifactId })}
+          onCopy={() => void copy(agentMessage(plan))}
+          message={agentMessage(plan)}
+        />
+      );
+    if (content.tab.kind === 'browser') {
+      const nativeId = content.tab.nativeId;
+      const native = browser.tabs.find((tab) => tab.id === nativeId);
+      return (
+        <BrowserWorkspacePane
+          paneId={pane.id}
+          nativeId={content.tab.nativeId}
+          error={native?.error}
+          register={registerBrowser}
+          onFocus={() => focusPane(pane.id)}
+        />
+      );
+    }
+    return (
+      <HomeWorkspacePane
+        address={content.tab.address}
+        busy={busy}
+        onFocus={() => focusPane(pane.id)}
+        onAddress={(value) => {
+          const task = () =>
+            invoke('applicationCommand', {
+              action: 'address',
+              projectId: sessionWorkspace?.projectId,
+              key: currentKey,
+              paneId: pane.id,
+              url: value,
+            });
+          homeWrites.current = homeWrites.current.then(async () => {
+            try {
+              await task();
+              failedHomeWrite.current = null;
+            } catch (error) {
+              failedHomeWrite.current = task;
+              setError(message(error));
+            }
+          });
+        }}
+        onOpen={(url) => void applicationCommand('openUrl', { paneId: pane.id, url })}
+      />
+    );
+  }
   return (
     <div
       style={
@@ -1054,62 +1640,141 @@ function App(): React.JSX.Element {
         )}
         <div className="titlebar-section titlebar-center">
           {!leftSidebarVisible && sidebarToggle('left')}
-          {selected && (
-            <nav className="content-tabs" role="tablist" aria-label="Plan tabs" ref={titlebarTabs}>
-              {planTabs?.tabs.map((tab) => (
-                <div
-                  className={`content-tab ${activeTab?.id === tab.id ? 'active' : ''}`}
-                  key={tab.id}
-                >
-                  <button
-                    role="tab"
-                    aria-selected={activeTab?.id === tab.id}
-                    disabled={busy}
-                    onAuxClick={(e) => {
-                      if (e.button === 1) {
-                        e.preventDefault();
-                        void tabCommand('close', tab.id);
-                      }
-                    }}
-                    onMouseDown={(e) => {
-                      if (e.button === 1) e.preventDefault();
-                    }}
-                    onClick={() => void tabCommand('select', tab.id)}
-                    title={
-                      tab.kind === 'browser'
-                        ? tab.title
-                        : tab.kind === 'home'
-                          ? 'New tab'
-                          : artifact?.title
-                    }
+          {appMode ? (
+            <nav
+              className="content-tabs"
+              role="tablist"
+              aria-label="Workspace tabs"
+              ref={titlebarTabs}
+            >
+              {sessionWorkspace?.tabs.map((tab) => {
+                const panes = paneLeaves(tab.root),
+                  content =
+                    panes.find((pane) => pane.id === sessionWorkspace.activePaneId)?.content ??
+                    panes[0].content;
+                const terminal =
+                  content.kind === 'terminal'
+                    ? application?.terminals.find((record) => record.id === content.terminalId)
+                    : null;
+                const title =
+                  content.kind === 'terminal'
+                    ? (terminal?.title ?? 'Terminal')
+                    : content.tab.kind === 'document'
+                      ? 'Plan'
+                      : content.tab.kind === 'home'
+                        ? 'New tab'
+                        : content.tab.title || 'Browser';
+                return (
+                  <div
+                    className={`content-tab ${applicationTab?.id === tab.id ? 'active' : ''}`}
+                    key={tab.id}
                   >
-                    <span aria-hidden="true">{tab.kind === 'document' ? '▤' : '◎'}</span>
-                    <span>
-                      {tab.kind === 'document'
-                        ? 'Plan'
-                        : tab.kind === 'home'
-                          ? 'New tab'
-                          : tab.title || 'Browser'}
-                    </span>
-                  </button>
-                  <button
-                    className="tab-close"
-                    disabled={busy}
-                    aria-label={`Close ${tab.kind === 'document' ? 'plan' : tab.kind === 'home' ? 'new tab' : tab.title || 'browser'} tab`}
-                    onClick={() => void tabCommand('close', tab.id)}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
+                    <button
+                      role="tab"
+                      aria-selected={applicationTab?.id === tab.id}
+                      disabled={busy}
+                      title={title}
+                      onMouseDown={(event) => {
+                        if (event.button === 1) event.preventDefault();
+                      }}
+                      onAuxClick={(event) => {
+                        if (event.button === 1) {
+                          event.preventDefault();
+                          void applicationCommand('closeTab', { tabId: tab.id });
+                        }
+                      }}
+                      onClick={() => {
+                        setBottomFocused(false);
+                        void applicationCommand('selectTab', { tabId: tab.id });
+                      }}
+                    >
+                      <span aria-hidden="true">
+                        {content.kind === 'terminal'
+                          ? '›_'
+                          : content.tab.kind === 'document'
+                            ? '▤'
+                            : '◎'}
+                      </span>
+                      <span>
+                        {title}
+                        {panes.length > 1 ? ` · ${panes.length}` : ''}
+                      </span>
+                    </button>
+                    <button
+                      className="tab-close"
+                      disabled={busy}
+                      aria-label={`Close ${title.toLowerCase()} tab`}
+                      onClick={() => void applicationCommand('closeTab', { tabId: tab.id })}
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
             </nav>
+          ) : (
+            selected && (
+              <nav
+                className="content-tabs"
+                role="tablist"
+                aria-label="Plan tabs"
+                ref={titlebarTabs}
+              >
+                {planTabs?.tabs.map((tab) => (
+                  <div
+                    className={`content-tab ${activeTab?.id === tab.id ? 'active' : ''}`}
+                    key={tab.id}
+                  >
+                    <button
+                      role="tab"
+                      aria-selected={activeTab?.id === tab.id}
+                      disabled={busy}
+                      onAuxClick={(e) => {
+                        if (e.button === 1) {
+                          e.preventDefault();
+                          void tabCommand('close', tab.id);
+                        }
+                      }}
+                      onMouseDown={(e) => {
+                        if (e.button === 1) e.preventDefault();
+                      }}
+                      onClick={() => void tabCommand('select', tab.id)}
+                      title={
+                        tab.kind === 'browser'
+                          ? tab.title
+                          : tab.kind === 'home'
+                            ? 'New tab'
+                            : artifact?.title
+                      }
+                    >
+                      <span aria-hidden="true">{tab.kind === 'document' ? '▤' : '◎'}</span>
+                      <span>
+                        {tab.kind === 'document'
+                          ? 'Plan'
+                          : tab.kind === 'home'
+                            ? 'New tab'
+                            : tab.title || 'Browser'}
+                      </span>
+                    </button>
+                    <button
+                      className="tab-close"
+                      disabled={busy}
+                      aria-label={`Close ${tab.kind === 'document' ? 'plan' : tab.kind === 'home' ? 'new tab' : tab.title || 'browser'} tab`}
+                      onClick={() => void tabCommand('close', tab.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </nav>
+            )
           )}
           <button
             className="new-tab"
             title="New tab"
             aria-label="New tab"
-            disabled={busy || !selected}
-            onClick={() => void tabCommand('new')}
+            disabled={busy || (!selected && !sessionWorkspace)}
+            onClick={() => (appMode ? shortcut('newTab') : void tabCommand('new'))}
           >
             +
           </button>
@@ -1138,7 +1803,7 @@ function App(): React.JSX.Element {
                   side,
                   width: side === 'left' ? requestedLeft : requestedRight,
                 });
-                if (activeBrowser)
+                if (activeBrowser || nativeFrames.current.size)
                   void invoke('browserResizeMode', { active: true }).catch((e) =>
                     setError(message(e)),
                   );
@@ -1227,6 +1892,77 @@ function App(): React.JSX.Element {
                 {item.available === false && !collapsed.has(item.id) && (
                   <small className="project-unavailable">Folder unavailable</small>
                 )}
+                {!collapsed.has(item.id) && (
+                  <div className="project-sessions">
+                    <div className="tree-group-heading">
+                      <span>Codex sessions</span>
+                      <button
+                        title="Refresh local sessions"
+                        aria-label={`Refresh sessions in ${item.path.split('/').at(-1)}`}
+                        disabled={busy}
+                        onClick={() => void action(() => invoke('harnessRefresh'))}
+                      >
+                        ↻
+                      </button>
+                      <button
+                        title="New Codex session"
+                        aria-label={`New Codex session in ${item.path.split('/').at(-1)}`}
+                        disabled={busy || item.available === false}
+                        onClick={() =>
+                          void transition(() =>
+                            invoke('applicationCommand', {
+                              action: 'newCodex',
+                              projectId: item.id,
+                              operationId: crypto.randomUUID(),
+                            }),
+                          )
+                        }
+                      >
+                        +
+                      </button>
+                    </div>
+                    {application?.harnesses.sessions
+                      .filter((session) => session.projectId === item.id)
+                      .map((session) => (
+                        <button
+                          key={session.id}
+                          className={`harness-session ${sessionWorkspace?.sessionId === session.id && sessionWorkspace.projectId === item.id ? 'active' : ''}`}
+                          title={`${session.title} · ${session.id} · ${session.processState === 'unknown' ? 'Process state unknown' : session.processState}`}
+                          onClick={() => {
+                            setBottomFocused(false);
+                            void transition(() =>
+                              invoke('applicationCommand', {
+                                action: 'select',
+                                projectId: item.id,
+                                sessionId: session.id,
+                              }),
+                            );
+                          }}
+                        >
+                          <span aria-hidden="true">›_</span>
+                          <span>{session.title || 'Codex session'}</span>
+                          {session.processState === 'running' && <span className="runtime-dot" />}
+                        </button>
+                      ))}
+                    {!application?.harnesses.sessions.some(
+                      (session) => session.projectId === item.id,
+                    ) && <small className="tree-empty">Refresh to discover local sessions</small>}
+                    <button
+                      className={`tree-group-heading plans-workspace ${sessionWorkspace?.projectId === item.id && sessionWorkspace.sessionId === null ? 'active' : ''}`}
+                      onClick={() =>
+                        void transition(() =>
+                          invoke('applicationCommand', {
+                            action: 'select',
+                            projectId: item.id,
+                            sessionId: null,
+                          }),
+                        )
+                      }
+                    >
+                      Plans
+                    </button>
+                  </div>
+                )}
                 {!collapsed.has(item.id) &&
                   snapshot.artifacts
                     .filter((a) => a.projectId === item.id)
@@ -1256,19 +1992,7 @@ function App(): React.JSX.Element {
                           className="plan-title"
                           title={plan.title}
                           disabled={busy}
-                          onClick={() =>
-                            void transition(() =>
-                              invoke('openArtifact', {
-                                artifactId: plan.id,
-                                revisionId:
-                                  workspace.plans[plan.id]?.lastDocumentRevisionId ??
-                                  workspace.plans[plan.id]?.tabs.find(
-                                    (tab) => tab.kind === 'document',
-                                  )?.revisionId ??
-                                  plan.latestRevision,
-                              }),
-                            )
-                          }
+                          onClick={() => void openPlan(plan, planRevision(plan))}
                         >
                           {plan.title}
                         </button>
@@ -1283,6 +2007,34 @@ function App(): React.JSX.Element {
                     ))}
               </section>
             ))}
+            {(application?.harnesses.sessions.filter((session) => session.projectId === null)
+              .length ?? 0) > 0 && (
+              <details className="other-sessions">
+                <summary>Other sessions</summary>
+                {application?.harnesses.sessions
+                  .filter((session) => session.projectId === null)
+                  .map((session) => (
+                    <div key={session.id}>
+                      <strong>{session.title || 'Codex session'}</strong>
+                      <small title={session.cwd}>{session.cwd}</small>
+                      <small>Process state unknown · open its project folder to resume.</small>
+                      <button
+                        onClick={() =>
+                          void transition(async () => {
+                            const metadata = await invoke<HarnessSession>('harnessRead', {
+                              sessionId: session.id,
+                            });
+                            await invoke('browserSelect', { tabId: null });
+                            setSessionMetadata(metadata);
+                          })
+                        }
+                      >
+                        Read metadata
+                      </button>
+                    </div>
+                  ))}
+              </details>
+            )}
             <button
               className="subtle full"
               disabled={busy}
@@ -1292,6 +2044,9 @@ function App(): React.JSX.Element {
             </button>
           </div>
           <div className="sidebar-bottom">
+            <button className="subtle full" onClick={openSettings}>
+              Settings
+            </button>
             <button
               className="subtle full"
               onClick={() =>
@@ -1334,14 +2089,23 @@ function App(): React.JSX.Element {
                       disabled={busy}
                       aria-label="Document version"
                       value={selected.revisionId}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const revisionId = e.currentTarget.value;
                         void transition(() =>
-                          invoke('openArtifact', {
-                            artifactId: selected.artifactId,
-                            revisionId: e.target.value,
-                          }),
-                        )
-                      }
+                          invoke(
+                            appMode ? 'applicationCommand' : 'openArtifact',
+                            appMode
+                              ? {
+                                  action: 'selectVersion',
+                                  projectId: sessionWorkspace?.projectId,
+                                  key: currentKey,
+                                  paneId: activePane?.id,
+                                  revisionId,
+                                }
+                              : { artifactId: selected.artifactId, revisionId },
+                          ),
+                        );
+                      }}
                     >
                       {(artifact?.revisions ?? [selected.revisionId]).map((r, i) => {
                         const id = typeof r === 'string' ? r : r.id;
@@ -1449,15 +2213,16 @@ function App(): React.JSX.Element {
                   aria-label="Browser zoom"
                   title="Browser zoom · select 100% to reset"
                   value={activeBrowser.zoomFactor ?? 1}
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    const zoomFactor = Number(event.currentTarget.value);
                     void transition(() =>
                       invoke('browserCommand', {
                         tabId: activeBrowser.id,
                         action: 'zoom',
-                        zoomFactor: Number(event.target.value),
+                        zoomFactor,
                       }),
-                    )
-                  }
+                    );
+                  }}
                 >
                   {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((factor) => (
                     <option key={factor} value={factor}>
@@ -1492,6 +2257,69 @@ function App(): React.JSX.Element {
               </div>
             )}
           </header>
+        )}
+        {appMode && (
+          <div className="workspace-tools" role="toolbar" aria-label="Workspace controls">
+            <span>{selectedSession?.title ?? 'Plans workspace'}</span>
+            <button
+              aria-label="New terminal"
+              disabled={busy}
+              onClick={() =>
+                void applicationCommand('newTerminal', { operationId: crypto.randomUUID() })
+              }
+            >
+              New terminal
+            </button>
+            <button
+              aria-label="Split right"
+              title="Split right"
+              disabled={busy || !activePane}
+              onClick={() => shortcut('splitRight')}
+            >
+              ▥
+            </button>
+            <button
+              aria-label="Split down"
+              title="Split down"
+              disabled={busy || !activePane}
+              onClick={() => shortcut('splitDown')}
+            >
+              ▤
+            </button>
+            <button
+              aria-label="Close panel"
+              title="Close panel · process keeps running"
+              disabled={busy || !activePane}
+              onClick={() => void applicationCommand('closePane', { paneId: activePane?.id })}
+            >
+              ×
+            </button>
+            <button
+              aria-label="Toggle project terminals"
+              title="Project terminals"
+              aria-pressed={bottom?.visible ?? false}
+              onClick={() => shortcut('bottomPanel')}
+            >
+              ›_
+            </button>
+            <details className="terminal-list">
+              <summary>All terminals</summary>
+              <div>
+                {application?.terminals
+                  .filter((record) => record.projectId === sessionWorkspace?.projectId)
+                  .map((record) => (
+                    <button
+                      key={record.id}
+                      onClick={() =>
+                        void applicationCommand('showTerminal', { terminalId: record.id })
+                      }
+                    >
+                      {record.title} · {record.status}
+                    </button>
+                  ))}
+              </div>
+            </details>
+          </div>
         )}
         {waiting && (
           <div className="runtime-notice" role="status">
@@ -1537,7 +2365,114 @@ function App(): React.JSX.Element {
             </button>
           </div>
         )}
-        {selected ? (
+        {application?.metadataPending && !settingsOpen && (
+          <div className="runtime-notice" role="status">
+            Local workspace storage needs confirmation. Retry confirms the existing write and does
+            not repeat the action.
+            <button disabled={busy} onClick={() => void confirmWorkspaceWrite()}>
+              Confirm local write
+            </button>
+          </div>
+        )}
+        {appMode ? (
+          <div className="session-workspace-content">
+            {applicationTab ? (
+              <WorkspaceSplit
+                key={applicationTab.id}
+                node={applicationTab.root}
+                activePaneId={sessionWorkspace?.activePaneId ?? null}
+                renderPane={renderApplicationPane}
+                onRatio={(paneId, ratio) => applicationCommand('ratio', { paneId, ratio }, false)}
+                onResizeMode={(active) => {
+                  if (nativeFrames.current.size)
+                    void invoke('browserResizeMode', { active }).catch((error) =>
+                      setError(message(error)),
+                    );
+                }}
+              />
+            ) : selectedSession ? (
+              <div className="session-home new-tab-home">
+                <h2>{selectedSession.title || 'Codex session'}</h2>
+                <dl>
+                  <dt>Session ID</dt>
+                  <dd>{selectedSession.id}</dd>
+                  <dt>Working folder</dt>
+                  <dd>{selectedSession.cwd}</dd>
+                  <dt>Process</dt>
+                  <dd>
+                    {selectedSession.processState === 'unknown'
+                      ? 'Unknown · this session was discovered from history'
+                      : selectedSession.processState}
+                  </dd>
+                </dl>
+                {selectedSession.processState === 'running' && selectedSession.terminalId ? (
+                  <button
+                    className="primary"
+                    onClick={() =>
+                      void applicationCommand('showTerminal', {
+                        terminalId: selectedSession.terminalId,
+                      })
+                    }
+                  >
+                    Open terminal
+                  </button>
+                ) : (
+                  <>
+                    <p className="muted">
+                      Resume explicitly starts this exact session. Another external launch may
+                      exist; its state is unknown.
+                    </p>
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() =>
+                        void applicationCommand('newCodex', {
+                          sessionId: selectedSession.id,
+                          operationId: crypto.randomUUID(),
+                        })
+                      }
+                    >
+                      Resume
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={() =>
+                    void applicationCommand('newTerminal', { operationId: crypto.randomUUID() })
+                  }
+                >
+                  New terminal
+                </button>
+              </div>
+            ) : (
+              <div className="new-tab-home">
+                <h2>No open tabs</h2>
+                <p className="muted">Open a plan from the sidebar or start a project terminal.</p>
+                {lastPlan && (
+                  <>
+                    <button onClick={() => void openPlan(lastPlan, planRevision(lastPlan))}>
+                      Open plan
+                    </button>
+                    <button
+                      onClick={() =>
+                        void applicationCommand('openHome', { artifactId: lastPlan.id })
+                      }
+                    >
+                      New tab
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={() =>
+                    void applicationCommand('newTerminal', { operationId: crypto.randomUUID() })
+                  }
+                >
+                  New terminal
+                </button>
+              </div>
+            )}
+          </div>
+        ) : selected ? (
           <>
             {activeBrowser ? (
               <>
@@ -1643,6 +2578,149 @@ function App(): React.JSX.Element {
             </div>
           </>
         )}
+        {appMode && bottom?.visible && (
+          <section
+            className="project-terminal-panel"
+            style={{ height: bottomHeightPreview ?? bottom.height }}
+            aria-label="Project terminals"
+          >
+            <div
+              className="bottom-resizer"
+              role="separator"
+              tabIndex={0}
+              aria-orientation="horizontal"
+              aria-label="Resize project terminals"
+              aria-valuemin={120}
+              aria-valuemax={800}
+              aria-valuenow={bottom.height}
+              onPointerDown={(event) => {
+                bottomDrag.current = {
+                  pointerId: event.pointerId,
+                  startY: event.clientY,
+                  startHeight: bottom.height,
+                  height: bottom.height,
+                };
+                event.currentTarget.setPointerCapture(event.pointerId);
+                event.preventDefault();
+              }}
+              onPointerMove={(event) => {
+                const drag = bottomDrag.current;
+                if (!drag || drag.pointerId !== event.pointerId) return;
+                drag.height = Math.max(
+                  120,
+                  Math.min(800, Math.round(drag.startHeight + drag.startY - event.clientY)),
+                );
+                setBottomHeightPreview(drag.height);
+              }}
+              onPointerUp={(event) => {
+                const drag = bottomDrag.current;
+                bottomDrag.current = null;
+                event.currentTarget.releasePointerCapture(event.pointerId);
+                if (drag)
+                  void applicationCommand('bottomHeight', { height: drag.height }, false).finally(
+                    () => setBottomHeightPreview(null),
+                  );
+              }}
+              onPointerCancel={() => {
+                bottomDrag.current = null;
+                setBottomHeightPreview(null);
+              }}
+              onKeyDown={(event) => {
+                if (['ArrowUp', 'ArrowDown'].includes(event.key)) {
+                  event.preventDefault();
+                  void applicationCommand(
+                    'bottomHeight',
+                    {
+                      height: Math.max(
+                        120,
+                        Math.min(800, bottom.height + (event.key === 'ArrowUp' ? 20 : -20)),
+                      ),
+                    },
+                    false,
+                  );
+                }
+              }}
+            />
+            <nav className="bottom-terminal-tabs" role="tablist" aria-label="Project terminal tabs">
+              {bottom.tabs.map((id) => {
+                const record = application?.terminals.find((record) => record.id === id);
+                return (
+                  <div className={bottom.activeTerminalId === id ? 'active' : ''} key={id}>
+                    <button
+                      role="tab"
+                      aria-selected={bottom.activeTerminalId === id}
+                      onClick={() => {
+                        setBottomFocused(true);
+                        void applicationCommand('bottomSelect', { terminalId: id });
+                      }}
+                    >
+                      {record?.title ?? 'Terminal'}
+                    </button>
+                    <button
+                      aria-label={`Close ${record?.title ?? 'project terminal'} view`}
+                      onClick={() => void applicationCommand('bottomClose', { terminalId: id })}
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+              <button
+                aria-label="New project terminal"
+                disabled={busy}
+                onClick={() => {
+                  setBottomFocused(true);
+                  void applicationCommand('newTerminal', {
+                    area: 'bottom',
+                    operationId: crypto.randomUUID(),
+                  });
+                }}
+              >
+                +
+              </button>
+              <button
+                className="bottom-hide"
+                aria-label="Hide project terminals"
+                onClick={() => void applicationCommand('bottomToggle')}
+              >
+                ⌄
+              </button>
+            </nav>
+            {application?.terminals.find((record) => record.id === bottom.activeTerminalId) ? (
+              <TerminalPane
+                record={application.terminals.find(
+                  (record) => record.id === bottom.activeTerminalId,
+                )!}
+                viewId={`bottom-${sessionWorkspace?.projectId}-${bottom.activeTerminalId}`}
+                active={
+                  bottomFocused &&
+                  !settingsOpen &&
+                  !guideOpen &&
+                  !setup &&
+                  !renaming &&
+                  !sessionMetadata
+                }
+                settings={currentSettings}
+                bridge={bridge}
+                onFocus={() => setBottomFocused(true)}
+                onChange={() => void reload()}
+              />
+            ) : (
+              <div className="new-tab-home">
+                <button
+                  onClick={() =>
+                    void applicationCommand('newTerminal', {
+                      area: 'bottom',
+                      operationId: crypto.randomUUID(),
+                    })
+                  }
+                >
+                  New project terminal
+                </button>
+              </div>
+            )}
+          </section>
+        )}
       </main>
       <div className="feedback-viewport">
         <aside className="feedback-panel" ref={rightSidebarContent}>
@@ -1728,10 +2806,7 @@ function App(): React.JSX.Element {
               annotations.map((annotation, i) => (
                 <article className="annotation" key={annotation.id}>
                   <div className="annotation-heading">
-                    <button
-                      className="annotation-jump"
-                      onClick={() => void transition(() => jumpTo(annotation))}
-                    >
+                    <button className="annotation-jump" onClick={() => void jumpTo(annotation)}>
                       <AnnotationBadge number={annotation.number ?? i + 1} />
                       <blockquote>{annotation.quote || 'Selected area'}</blockquote>
                     </button>
@@ -1758,7 +2833,7 @@ function App(): React.JSX.Element {
                               },
                             });
                             editWriteError.current = null;
-                            await invoke('editing', { active: true });
+                            await invoke('editing', { active: true, scope: 'operator' });
                             setEditing(annotation);
                             setComment(annotation.comment);
                           });
@@ -1795,9 +2870,7 @@ function App(): React.JSX.Element {
                       onError={(error) => setError(message(error))}
                     />
                   ) : (
-                    <p onClick={() => void transition(() => jumpTo(annotation))}>
-                      {annotation.comment}
-                    </p>
+                    <p onClick={() => void jumpTo(annotation)}>{annotation.comment}</p>
                   )}
                 </article>
               ))
@@ -1834,6 +2907,11 @@ function App(): React.JSX.Element {
                     );
                     saveIntents.current.delete(key);
                     setNotification(result.notification);
+                    if (selected)
+                      setNotificationState({
+                        artifactId: selected.artifactId,
+                        savedStateId: result.id,
+                      });
                   } catch (e) {
                     if (/STATE_CONFLICT|INVALID_STATE|UNFINISHED_ANNOTATION/.test(message(e)))
                       saveIntents.current.delete(key);
@@ -1862,7 +2940,34 @@ function App(): React.JSX.Element {
             </small>
             {notification && (
               <div className="notification">
-                <button className="secondary full" onClick={() => void copy(notification)}>
+                <label className="handoff-session-label">
+                  Target session
+                  <select
+                    aria-label="Target Codex session"
+                    value={handoffSessionId}
+                    onChange={(event) => setHandoffSessionId(event.target.value)}
+                  >
+                    <option value="">Copy only</option>
+                    {application?.harnesses.sessions
+                      .filter((session) => session.projectId === artifact?.projectId)
+                      .map((session) => (
+                        <option
+                          key={session.id}
+                          value={session.id}
+                          disabled={!session.terminalId || session.processState !== 'running'}
+                        >
+                          {session.title || session.id}
+                          {session.terminalId && session.processState === 'running'
+                            ? ''
+                            : ' · Resume first'}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <button
+                  className="secondary full"
+                  onClick={() => void transition(() => copyUpdate(notification))}
+                >
                   {copiedText === notification ? 'Copied' : 'Copy update message'}
                 </button>
                 <small>Saved · notify your agent manually</small>
@@ -1913,7 +3018,18 @@ function App(): React.JSX.Element {
                   <div key={state.id}>
                     <small>{new Date(state.createdAt).toLocaleString()}</small>
                     {state.notification && (
-                      <button onClick={() => void copy(state.notification ?? '')}>
+                      <button
+                        onClick={() =>
+                          void transition(() =>
+                            copyUpdate(
+                              state.notification ?? '',
+                              state.artifactId
+                                ? { artifactId: state.artifactId, savedStateId: state.id }
+                                : null,
+                            ),
+                          )
+                        }
+                      >
                         Copy update message
                       </button>
                     )}
@@ -1993,6 +3109,72 @@ function App(): React.JSX.Element {
           </section>
         </div>
       )}
+      {settingsOpen && (
+        <ApplicationSettings
+          settings={currentSettings}
+          harnesses={
+            application?.harnesses ?? {
+              sessions: [],
+              compatibility: null,
+              error: null,
+              mcpStartup: [],
+            }
+          }
+          onClose={() => setSettingsOpen(false)}
+          onSave={async (settings: Settings) => {
+            try {
+              await invoke('applicationSettings', settings as unknown as Record<string, unknown>);
+            } finally {
+              await reload();
+            }
+          }}
+          onCheck={async () => {
+            await invoke('harnessCheck');
+            await reload();
+          }}
+          onShortcutCapture={shortcutCapture}
+          metadataPending={Boolean(application?.metadataPending)}
+          onConfirm={async () => {
+            await invoke('confirmWorkspaceWrite');
+            await reload();
+          }}
+        />
+      )}
+      {sessionMetadata && (
+        <div
+          className="modal-backdrop"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) setSessionMetadata(null);
+          }}
+        >
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Codex session metadata"
+          >
+            <div className="modal-heading">
+              <h2>{sessionMetadata.title || 'Codex session'}</h2>
+              <button onClick={() => setSessionMetadata(null)}>Close</button>
+            </div>
+            <dl>
+              <dt>Session ID</dt>
+              <dd>{sessionMetadata.id}</dd>
+              <dt>Working folder</dt>
+              <dd>{sessionMetadata.cwd}</dd>
+              <dt>Process</dt>
+              <dd>
+                {sessionMetadata.processState === 'unknown'
+                  ? 'Unknown'
+                  : sessionMetadata.processState}
+              </dd>
+            </dl>
+            <p className="muted">
+              Open this session's project folder in Blueprint to enable explicit Resume.
+            </p>
+          </section>
+        </div>
+      )}
       {guideOpen && <GuideViewer load={guideLoad} close={closeInformation} />}
       {setup && (
         <div
@@ -2037,10 +3219,10 @@ function App(): React.JSX.Element {
                     : 'Production build from source — uses the source bridge and your Node.js installation.'}
               </p>
               <p>
-                MCP calls reach this application through a local Unix socket. No TCP port is used.
+                MCP calls reach this application through an authenticated loopback HTTP runtime.
               </p>
-              <label>Runtime socket</label>
-              <pre>{setup.socketPath}</pre>
+              <label>Runtime descriptor</label>
+              <pre>{setup.descriptorPath}</pre>
               <label>Stdio command</label>
               <pre>{setup.command}</pre>
               <label>Configuration</label>
@@ -2198,8 +3380,45 @@ function DocumentSurface(): React.JSX.Element {
   const query = new URLSearchParams(window.location.search);
   const artifactId = query.get('artifactId') ?? '';
   const revisionId = query.get('revisionId') || null;
+  const paneId = query.get('paneId');
+  const scrollRestored = useRef(false);
+  const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [data, setData] = useState<DocumentResult | null>(null);
   const [error, setError] = useState('');
+  useEffect(() => {
+    let shortcuts = DEFAULT_SETTINGS.shortcuts;
+    const receive = (event: MessageEvent) => {
+      if (
+        event.source !== window.parent ||
+        event.origin !== documentShellOrigin() ||
+        event.data?.type !== 'blueprint-shortcuts'
+      )
+        return;
+      const candidate = event.data.shortcuts;
+      if (!candidate || typeof candidate !== 'object') return;
+      const keys = Object.keys(DEFAULT_SETTINGS.shortcuts) as ShortcutAction[];
+      if (keys.every((key) => candidate[key] === null || typeof candidate[key] === 'string'))
+        shortcuts = candidate;
+    };
+    const keydown = (event: KeyboardEvent) => {
+      const action = shortcutAction(event, shortcuts);
+      if (!action) return;
+      event.preventDefault();
+      window.parent.postMessage({ type: 'blueprint-shortcut', action }, documentShellOrigin());
+    };
+    const focus = () =>
+      window.parent.postMessage({ type: 'blueprint-focus' }, documentShellOrigin());
+    window.addEventListener('message', receive);
+    window.addEventListener('keydown', keydown);
+    window.addEventListener('pointerdown', focus, true);
+    window.addEventListener('focus', focus);
+    return () => {
+      window.removeEventListener('message', receive);
+      window.removeEventListener('keydown', keydown);
+      window.removeEventListener('pointerdown', focus, true);
+      window.removeEventListener('focus', focus);
+    };
+  }, []);
   const [saveStatus, setSaveStatus] = useState('Saved locally');
   const [candidate, setCandidate] = useState<SelectionData | null>(null);
   const [selection, setSelection] = useState<SelectionData | null>(null);
@@ -2358,6 +3577,32 @@ function DocumentSurface(): React.JSX.Element {
     },
     [refreshQueue],
   );
+  useEffect(() => {
+    if (!paneId || !data || scrollRestored.current) return;
+    const id = requestAnimationFrame(() => {
+      window.scrollTo({ top: data.scrollTop ?? 0, behavior: 'instant' });
+      scrollRestored.current = true;
+    });
+    return () => cancelAnimationFrame(id);
+  }, [paneId, data]);
+  useEffect(() => {
+    if (!paneId) return;
+    const scroll = () => {
+      if (scrollTimer.current) clearTimeout(scrollTimer.current);
+      scrollTimer.current = setTimeout(() => {
+        scrollTimer.current = null;
+        void queue(
+          () => invoke('setViewState', { artifactId, revisionId, scrollTop: window.scrollY }),
+          'scroll',
+        );
+      }, 180);
+    };
+    window.addEventListener('scroll', scroll);
+    return () => {
+      window.removeEventListener('scroll', scroll);
+      if (scrollTimer.current) clearTimeout(scrollTimer.current);
+    };
+  }, [paneId, artifactId, revisionId, queue]);
   useEffect(() => {
     refreshQueue.invalidate();
     return bridge.onRefresh(() => refreshQueue.invalidate());
@@ -2673,6 +3918,14 @@ function DocumentSurface(): React.JSX.Element {
         origin = event.origin;
       void (async () => {
         await contextWork.current;
+        if (paneId && scrollTimer.current) {
+          clearTimeout(scrollTimer.current);
+          scrollTimer.current = null;
+          await queue(
+            () => invoke('setViewState', { artifactId, revisionId, scrollTop: window.scrollY }),
+            'scroll',
+          );
+        }
         if (event.data.retry) for (const [key, task] of failedTasks.current) await queue(task, key);
         await saves.current;
         if (failedTasks.current.size)

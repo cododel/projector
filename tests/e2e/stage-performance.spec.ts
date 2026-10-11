@@ -31,7 +31,7 @@ test('qualifies the current-stage dataset at production boundaries', async () =>
     env: {
       ...process.env,
       BLUEPRINT_DATA: join(root, 'data'),
-      BLUEPRINT_SOCKET: socket,
+      BLUEPRINT_RUNTIME_DESCRIPTOR: socket,
       BLUEPRINT_E2E_BACKGROUND: '1',
     },
   });

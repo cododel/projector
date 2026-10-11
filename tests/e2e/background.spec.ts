@@ -11,7 +11,7 @@ test('background startup and second-instance handling keep the native window hid
     env: {
       ...process.env,
       BLUEPRINT_DATA: join(root, 'data'),
-      BLUEPRINT_SOCKET: join(root, 's.sock'),
+      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
     },
   });
   try {

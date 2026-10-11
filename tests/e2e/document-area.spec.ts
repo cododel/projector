@@ -14,7 +14,7 @@ test('document area capture stays private until Save and opens its numbered froz
   await mkdir(project);
   const app = await electron.launch({
     args: [resolve('.')],
-    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: socket },
+    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
   });
   let mcp: Mcp | undefined;
   try {

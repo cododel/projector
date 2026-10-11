@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createServer, type Server } from 'node:http';
+import { paneLeaves, type ApplicationWorkspaceSnapshot } from '../../src/shared/application-workspace';
 
 class BrowserMcp {
   private child: ChildProcessWithoutNullStreams;
@@ -16,7 +17,7 @@ class BrowserMcp {
   >();
   constructor(socket: string) {
     this.child = spawn(process.execPath, [resolve('out/bridge.cjs')], {
-      env: { ...process.env, BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
     const lines = createInterface({ input: this.child.stdout });
     lines.on('line', (line) => {
@@ -95,7 +96,7 @@ test('application browser composer survives restart, remains private, and Save e
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   let page = await app.firstWindow();
@@ -127,30 +128,45 @@ test('application browser composer survives restart, remains private, and Save e
   });
   await mcp.tool('show_content', { artifactId: artifact.artifactId, url });
   await expect(page.getByRole('tab', { name: 'Scenario browser', exact: true })).toBeVisible();
-  const originalWidth = (await page.locator('.browser-area').boundingBox())!.width;
+  const originalBounds = await page.locator('.browser-area').boundingBox();
+  if (!originalBounds) throw new Error('Missing browser pane bounds');
+  const rounded = ({ x, y, width, height }: typeof originalBounds) => ({
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  });
+  const host = await app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].getContentSize(),
+  );
+  const geometry = async () => {
+    // Read both current surfaces on every attempt. A DOM snapshot captured halfway
+    // through the sidebar transition is not the intended final native bounds.
+    const shell = await page.locator('.browser-area').boundingBox();
+    if (!shell) throw new Error('Missing browser pane bounds');
+    const native = await app.evaluate(({ BrowserWindow, WebContentsView }, url) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find(
+        (view) => view instanceof WebContentsView && view.webContents.getURL() === url,
+      );
+      return view?.getBounds();
+    }, url);
+    return { shell: rounded(shell), native };
+  };
   await page.getByRole('button', { name: 'Hide projects sidebar', exact: true }).click();
   await page.getByRole('button', { name: 'Hide feedback sidebar', exact: true }).click();
-  await expect
-    .poll(async () => (await page.locator('.browser-area').boundingBox())!.width)
-    .toBeGreaterThan(originalWidth + 400);
-  const shellBounds = await page.locator('.browser-area').boundingBox();
-  await expect
-    .poll(async () =>
-      app.evaluate(({ BrowserWindow, WebContentsView }, url) => {
-        const view = BrowserWindow.getAllWindows()[0].contentView.children.find(
-          (view) => view instanceof WebContentsView && view.webContents.getURL() === url,
-        );
-        return view?.getBounds();
-      }, url),
-    )
-    .toEqual({
-      x: Math.round(shellBounds!.x),
-      y: Math.round(shellBounds!.y),
-      width: Math.round(shellBounds!.width),
-      height: Math.round(shellBounds!.height),
-    });
+  const expandedBounds = {
+    x: 0,
+    y: Math.round(originalBounds.y),
+    width: host[0],
+    height: host[1] - Math.round(originalBounds.y),
+  };
+  expect(expandedBounds.width).toBeGreaterThan(originalBounds.width + 400);
+  await expect.poll(geometry).toEqual({ shell: expandedBounds, native: expandedBounds });
   await page.getByRole('button', { name: 'Show projects sidebar', exact: true }).click();
   await page.getByRole('button', { name: 'Show feedback sidebar', exact: true }).click();
+  await expect
+    .poll(geometry)
+    .toEqual({ shell: rounded(originalBounds), native: rounded(originalBounds) });
   await page.getByRole('button', { name: 'Annotate browser', exact: true }).click();
   await expect
     .poll(
@@ -201,7 +217,12 @@ test('application browser composer survives restart, remains private, and Save e
   await app.close();
   app = await launch();
   page = await app.firstWindow();
-  await page.getByRole('button', { name: 'Browser planning scenario', exact: true }).click();
+  // The restored browser pane already owns the unfinished composer. Opening the
+  // document is a real pane transition and correctly finishes that comment.
+  await expect(page.getByRole('tab', { name: 'Scenario browser', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
   await expect
     .poll(
       () =>
@@ -218,6 +239,32 @@ test('application browser composer survives restart, remains private, and Save e
   await expect(overlay.getByLabel('Area annotation comment')).toHaveValue(
     'This captured case needs clarification',
   );
+  // Restoring the private editor and the browser pane must share one native page.
+  await expect.poll(() => app.context().pages().filter((p) => p.url() === url).length).toBe(1);
+  const restoredOwnership = await page.evaluate(async () => {
+    const bridge = (window as unknown as {
+      blueprint: { invoke(name: string): Promise<unknown> };
+    }).blueprint;
+    return {
+      application: await bridge.invoke('applicationSnapshot'),
+      browser: await bridge.invoke('browserSnapshot'),
+    };
+  }) as {
+    application: ApplicationWorkspaceSnapshot;
+    browser: { activeTabId: string; tabs: { id: string; url: string }[] };
+  };
+  const restoredWorkspace = restoredOwnership.application.workspaces[
+    restoredOwnership.application.selectedWorkspace!
+  ];
+  const restoredBrowserPanes = restoredWorkspace.tabs.flatMap((tab) => paneLeaves(tab.root))
+    .filter((pane) => pane.content.kind === 'plan' && pane.content.tab.kind === 'browser');
+  expect(restoredBrowserPanes).toHaveLength(1);
+  expect(restoredBrowserPanes[0].content).toMatchObject({
+    kind: 'plan',
+    artifactId: artifact.artifactId,
+    tab: { kind: 'browser', nativeId: restoredOwnership.browser.activeTabId, url },
+  });
+  expect(restoredOwnership.browser.tabs).toHaveLength(1);
   await overlay.getByRole('button', { name: 'Save annotation', exact: true }).click();
   await expect(
     page.getByText('This captured case needs clarification', { exact: true }),
@@ -283,6 +330,8 @@ test('application browser composer survives restart, remains private, and Save e
   app = await launch();
   page = await app.firstWindow();
   await page.getByRole('button', { name: 'Browser planning scenario', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Plan', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.frameLocator('iframe').getByRole('heading', { name: 'Browser planning scenario' })).toBeVisible();
   await page
     .locator('.annotation')
     .filter({ hasText: 'This captured case needs clarification' })

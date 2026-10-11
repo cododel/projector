@@ -70,7 +70,7 @@ test('operator empty workspace has native menu actions and retains private brows
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   let page = await app.firstWindow();
@@ -184,7 +184,8 @@ test('operator empty workspace has native menu actions and retains private brows
   await app.close();
   app = await launch();
   page = await app.firstWindow();
-  await page.getByRole('button', { name: 'Research workspace', exact: true }).click();
+  // The selected workspace now restores immediately. Cancel the recovered edit
+  // before navigating: navigation correctly finalizes a nonempty comment.
   await expect(page.getByLabel('Edit annotation', { exact: true })).toHaveValue(
     'Unfinished edit before publication',
   );
@@ -266,6 +267,35 @@ test('operator empty workspace has native menu actions and retains private brows
     { type: 'separator' },
     { label: 'Remove from list' },
   ]);
+  await expect(
+    page.getByRole('button', { name: 'New plan in project', exact: true }),
+  ).toBeDisabled();
+  // A missing folder must also be safe when it is the selected restored workspace.
+  await page.evaluate(async () => {
+    const bridge = (
+      window as unknown as {
+        blueprint: { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> };
+      }
+    ).blueprint;
+    const snapshot = (await bridge.invoke('snapshot')) as {
+      projects: { id: string; available?: boolean }[];
+    };
+    const missing = snapshot.projects.find((project) => project.available === false);
+    if (!missing) throw Error('The disposable missing project was not reported.');
+    await bridge.invoke('applicationCommand', {
+      action: 'select',
+      projectId: missing.id,
+      sessionId: null,
+    });
+  });
+  mcp.close();
+  mcp = undefined;
+  await app.close();
+  app = await launch();
+  page = await app.firstWindow();
+  await expect(
+    page.getByRole('button', { name: 'Project actions for project', exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'New plan in project', exact: true }),
   ).toBeDisabled();

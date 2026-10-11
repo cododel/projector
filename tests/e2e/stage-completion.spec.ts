@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
-import { mkdtemp, mkdir, rm, rename, cp, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, rename, cp, writeFile, chmod, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -20,7 +20,7 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: join(root, 's.sock') },
+      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock') },
     });
   app = await launch();
   await app.evaluate(({ session }) => {
@@ -142,6 +142,30 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   await expect(page.locator('.project-row')).toHaveCount(2);
   await expect(page.getByRole('button', { name: 'Original plan', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('heading', { name: 'No open tabs', exact: true })).toBeVisible();
+  const copied = await page.evaluate(async () => {
+    const bridge = (window as unknown as {
+      blueprint: { invoke(name: string): Promise<unknown> };
+    }).blueprint;
+    return {
+      runtime: await bridge.invoke('snapshot'),
+      application: await bridge.invoke('applicationSnapshot'),
+    };
+  }) as {
+    runtime: { projects: { id: string; path: string }[]; artifacts: { id: string; projectId: string }[] };
+    application: { selectedWorkspace: string; workspaces: Record<string, { projectId: string; tabs: unknown[] }> };
+  };
+  const copiedPath = await realpath(join(root, 'copy'));
+  const copiedProject = copied.runtime.projects.find((item) => item.path === copiedPath)!;
+  expect(copiedProject).toBeTruthy();
+  expect(copied.application.workspaces[copied.application.selectedWorkspace]).toMatchObject({
+    projectId: copiedProject.id,
+    tabs: [],
+  });
+  expect(copied.runtime.artifacts.filter((item) => item.projectId === copiedProject.id)).toEqual([]);
+  // Creating a new empty project selects its standalone workspace. Returning to
+  // the registered original must restore its own private answers.
+  await page.getByRole('button', { name: 'Original plan', exact: true }).click();
   await expect(page.frameLocator('iframe').getByRole('textbox')).toHaveValue('PRIVATE retained');
 });
 test('version summary and approval revocation are visible and separate from Save', async () => {
@@ -153,7 +177,7 @@ test('version summary and approval revocation are visible and separate from Save
     env: {
       ...process.env,
       BLUEPRINT_DATA: join(root, 'data'),
-      BLUEPRINT_SOCKET: join(root, 's.sock'),
+      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
     },
   });
   const page = await app.firstWindow();
@@ -268,7 +292,7 @@ test('a failed Save retry remains bound to its own artifact when another plan is
     env: {
       ...process.env,
       BLUEPRINT_DATA: join(root, 'data'),
-      BLUEPRINT_SOCKET: join(root, 's.sock'),
+      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
     },
   });
   const page = await app.firstWindow();

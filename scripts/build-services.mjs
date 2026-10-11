@@ -1,4 +1,6 @@
 import { build } from 'esbuild';
+import { prepareTerminal } from './prepare-terminal.mjs';
+await prepareTerminal();
 await build({
   entryPoints: ['src/runtime/service.ts'],
   outfile: 'out/runtime/service.cjs',
@@ -25,4 +27,15 @@ await build({
   platform: 'node',
   format: 'cjs',
   target: 'node24',
+});
+
+await build({
+  entryPoints: ['src/terminal/service.ts'],
+  outfile: 'out/terminal/service.cjs',
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node24',
+  external: ['node-pty'],
+  sourcemap: true,
 });

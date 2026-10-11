@@ -46,6 +46,19 @@ it('refuses to create a demo without explicit origin even when a legacy project 
   });
   expect(await store.artifacts()).toHaveLength(0);
 });
+it('selects a workspace document without re-emitting public navigation', async () => {
+  const { ops, create } = await setup();
+  const { a, r } = await create('author-session');
+  const events: unknown[] = [];
+  const selected = new Operations(store, (event) => events.push(event));
+  await selected.operator('openArtifact', { artifactId: a.artifactId, revisionId: r.revisionId, workspace: true });
+  expect(selected.selected).toEqual({ artifactId: a.artifactId, revisionId: r.revisionId });
+  expect(events).toEqual([{ type: 'refresh' }]);
+  await selected.tool('show_artifact', { artifactId: a.artifactId, revisionId: r.revisionId });
+  expect(events).toEqual([{ type: 'refresh' }, { type: 'show-artifact', artifactId: a.artifactId, revisionId: r.revisionId }, { type: 'refresh' }]);
+  expect((await store.artifact(a.artifactId)).originSession?.sessionId).toBe('author-session');
+  expect(ops.selected).toBeNull();
+});
 it.each([null, 'unrelated-session'])(
   'creates demos for their explicit sessions independent of project recipient %s',
   async (recipient) => {

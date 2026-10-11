@@ -8,6 +8,8 @@ import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 import type { McpSetup } from '../../src/shared/protocol';
+import type { TerminalRecord, TerminalScreen } from '../../src/shared/terminal';
+import type { ApplicationWorkspaceSnapshot } from '../../src/shared/application-workspace';
 
 test('relocated packaged app uses its own stdio helper without system Node and preserves runtime lifecycle', async () => {
   test.setTimeout(120000);
@@ -44,16 +46,18 @@ test('relocated packaged app uses its own stdio helper without system Node and p
         PATH: '/usr/bin:/bin',
         BLUEPRINT_NODE: '/missing/system/node',
         BLUEPRINT_DATA: join(root, 'data'),
-        BLUEPRINT_SOCKET: socket,
+        BLUEPRINT_RUNTIME_DESCRIPTOR: socket,
       },
     });
+    let applicationStderr = '';
+    app.process().stderr?.on('data', chunk => { applicationStderr += String(chunk); });
     await app.evaluate(({ session }) => {
       session.defaultSession.webRequest.onBeforeRequest(
         { urls: ['http://*/*', 'https://*/*'] },
         (_details, callback) => callback({ cancel: true }),
       );
     });
-    const page = await app.firstWindow();
+    const page = await app.firstWindow().catch(error => { throw new Error(`${String(error)}\n${applicationStderr}`); });
     await page.getByRole('button', { name: 'Blueprint guide', exact: true }).click();
     await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toContainText(
       'Available offline',
@@ -78,7 +82,7 @@ test('relocated packaged app uses its own stdio helper without system Node and p
       'Moved app with spaces/Blueprint.app/Contents/Resources/mcp/blueprint-mcp',
     );
     expect(setup.args).toEqual([]);
-    expect(setup.env.BLUEPRINT_SOCKET).toBe(socket);
+    expect(setup.env.BLUEPRINT_RUNTIME_DESCRIPTOR).toBe(socket);
     await page.getByRole('button', { name: 'MCP connection', exact: true }).click();
     await expect(page.getByRole('dialog')).toContainText('Packaged application');
     await expect(page.getByRole('dialog')).toContainText(setup.executable);
@@ -168,7 +172,37 @@ test('relocated packaged app uses its own stdio helper without system Node and p
     expect(
       String((await tool('read_artifact', { artifactId: a.artifactId, part: 'state' })).content),
     ).toContain('Saved through the bundled helper');
+    // Exercise the relocated native PTY payload and real renderer input as well
+    // as the bundled bridge/compiler. No system Node or external network is available.
+    const invoke = <T>(name: string, args?: Record<string, unknown>) => page.evaluate(
+      ({ name, args }) => (window as unknown as { blueprint: { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> } }).blueprint.invoke(name, args),
+      { name, args },
+    ) as Promise<T>;
+    type Application = ApplicationWorkspaceSnapshot & { terminals: TerminalRecord[] };
+    const application = await invoke<Application>('applicationSnapshot');
+    await invoke('applicationSettings', { ...application.settings, shell: '/bin/sh', shellArgs: ['-i'] });
+    await page.getByRole('button', { name: 'New terminal', exact: true }).first().click();
+    await expect.poll(async () => (await invoke<Application>('applicationSnapshot')).terminals.length).toBe(1);
+    const terminal = (await invoke<Application>('applicationSnapshot')).terminals[0];
+    await page.locator('.terminal-pane .xterm-helper-textarea').focus();
+    await page.keyboard.insertText('stty -echo; printf "\\nPACKAGED_NATIVE_輸入🙂\\n"');
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => (await invoke<TerminalScreen>('terminalScreen', { id: terminal.id })).content)
+      .toContain('\r\nPACKAGED_NATIVE_輸入🙂\r\n');
+    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('PACKAGED_NATIVE_輸入🙂');
+    await page.getByRole('button', { name: 'Close shell tab', exact: true }).click();
+    expect((await invoke<Application>('applicationSnapshot')).terminals[0].pid).toBe(terminal.pid);
+    await invoke('applicationCommand', { action: 'showTerminal', projectId: terminal.projectId,
+      key: application.selectedWorkspace, terminalId: terminal.id });
+    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('PACKAGED_NATIVE_輸入🙂');
+    expect((await invoke<Application>('applicationSnapshot')).terminals[0].pid).toBe(terminal.pid);
+    const terminalImage = test.info().outputPath('installed-production-terminal.png');
+    await page.screenshot({ path: terminalImage });
+    await test.info().attach('installed-production-terminal', {
+      path: terminalImage, contentType: 'image/png',
+    });
     await page.close();
+    expect(await app.evaluate((_, pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }, terminal.pid!)).toBe(true);
     const guide = await request('tools/call', { name: 'get_blueprint_guide', arguments: {} });
     expect(JSON.stringify(guide.result)).toContain('guideVersion');
     const exit = once(child, 'exit');
@@ -178,6 +212,7 @@ test('relocated packaged app uses its own stdio helper without system Node and p
     await expect.poll(() => app!.evaluate(({ app }) => app.isReady())).toBe(true);
     await app.close();
     app = undefined;
+    expect(() => process.kill(terminal.pid!, 0)).toThrow();
     // A disconnected runtime must not cause the helper to start the app.
     await expect(
       promisify(execFile)(setup.executable, [], {

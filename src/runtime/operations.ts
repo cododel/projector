@@ -246,7 +246,7 @@ export class Operations {
   refresh() {
     this.emit({ type: 'refresh' });
   }
-  async show(artifactId: string, revisionId: string | null) {
+  async show(artifactId: string, revisionId: string | null, notifyShell = true) {
     if (revisionId) await this.store.revision(artifactId, revisionId);
     else await this.store.artifact(artifactId);
     if (this.editing) {
@@ -255,7 +255,7 @@ export class Operations {
     }
     this.selected = { artifactId, revisionId };
     this.selectedProject = (await this.store.artifact(artifactId)).projectId;
-    this.emit({ type: 'show-artifact', artifactId, revisionId });
+    if (notifyShell) this.emit({ type: 'show-artifact', artifactId, revisionId });
     this.refresh();
     return { status: 'shown' };
   }
@@ -582,6 +582,7 @@ export class Operations {
         return this.show(
           required('artifactId'),
           args.revisionId == null ? null : required('revisionId'),
+          args.workspace !== true,
         );
       case 'createEmptyPlan': {
         const input = z.object({ projectId: id, operationId: id }).strict().parse(args);

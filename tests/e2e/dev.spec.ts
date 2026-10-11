@@ -27,7 +27,7 @@ test('development renderer proxy loads the isolated document without production 
     env: {
       ...process.env,
       BLUEPRINT_DATA: data,
-      BLUEPRINT_SOCKET: join(root, 's.sock'),
+      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
       ELECTRON_RENDERER_URL: url,
     },
   });
@@ -38,7 +38,7 @@ test('development renderer proxy loads the isolated document without production 
     ).toBeVisible();
     await page.getByRole('button', { name: 'MCP connection', exact: true }).click();
     const setup = page.getByRole('dialog', { name: 'MCP connection' });
-    await expect(setup).toContainText(`BLUEPRINT_SOCKET = ${JSON.stringify(join(root, 's.sock'))}`);
+    await expect(setup).toContainText(`BLUEPRINT_RUNTIME_DESCRIPTOR = ${JSON.stringify(join(root, 's.sock'))}`);
     await expect(setup).toContainText('Development');
     // Observe the IPC clipboard boundary without changing the operator's OS clipboard.
     await app.evaluate(({ clipboard }) => {
@@ -55,7 +55,7 @@ test('development renderer proxy loads the isolated document without production 
     expect(prompt).toContain('user-level configuration only');
     expect(prompt).toContain('Do not create or modify project .codex/config.toml');
     expect(prompt).toContain('Do not stage or commit configuration');
-    expect(prompt).toContain(`BLUEPRINT_SOCKET = ${JSON.stringify(join(root, 's.sock'))}`);
+    expect(prompt).toContain(`BLUEPRINT_RUNTIME_DESCRIPTOR = ${JSON.stringify(join(root, 's.sock'))}`);
     expect(prompt).toContain('Do not change skills, hooks, AGENTS.md');
     expect(prompt).toContain('reconnect');
     await setup.getByText('Connection details and manual configuration', { exact: true }).click();
@@ -115,8 +115,10 @@ test('development renderer proxy loads the isolated document without production 
               requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
             ),
         );
-      await page.screenshot({
-        path: resolve('.tmp/tasks/titlebar-20261010/development.png'),
+      const sidebarImage = test.info().outputPath('development-sidebar-layout.png');
+      await page.screenshot({ path: sidebarImage });
+      await test.info().attach('development-sidebar-layout', {
+        path: sidebarImage, contentType: 'image/png',
       });
       await page.getByRole('button', { name: 'Show feedback sidebar' }).click();
       await expect
@@ -135,11 +137,19 @@ test('development renderer proxy loads the isolated document without production 
       ).toBeVisible();
       const saved = await mcp.tool('read_artifact', { artifactId: a.artifactId, part: 'state' });
       expect(String(saved.content)).toContain('Use the existing contract');
-      await page.screenshot({ path: '.tmp/tasks/compact-tabs-20261009/dev-document.png' });
+      const documentImage = test.info().outputPath('development-document.png');
+      await page.screenshot({ path: documentImage });
+      await test.info().attach('development-document', {
+        path: documentImage, contentType: 'image/png',
+      });
       await page.getByRole('button', { name: 'New tab', exact: true }).click();
       await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeFocused();
       await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveCount(0);
-      await page.screenshot({ path: '.tmp/tasks/compact-tabs-20261009/dev-home.png' });
+      const homeImage = test.info().outputPath('development-home.png');
+      await page.screenshot({ path: homeImage });
+      await test.info().attach('development-home', {
+        path: homeImage, contentType: 'image/png',
+      });
       await page.getByRole('tab', { name: 'Plan', exact: true }).click();
       await expect(frame.getByLabel('Decision', { exact: true })).toHaveValue(
         'Use the existing contract',

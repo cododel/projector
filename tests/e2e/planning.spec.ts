@@ -11,7 +11,7 @@ class Mcp {
   next = 0;
   constructor(socket: string) {
     this.child = spawn(process.execPath, [resolve('out/bridge.cjs')], {
-      env: { ...process.env, BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       const value = JSON.parse(line) as Record<string, unknown>;
@@ -70,7 +70,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   const page = await app.firstWindow();
@@ -80,7 +80,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
     'Production build from source',
   );
   await expect(page.getByRole('dialog', { name: 'MCP connection' })).toContainText(
-    `BLUEPRINT_SOCKET = ${JSON.stringify(socket)}`,
+    `BLUEPRINT_RUNTIME_DESCRIPTOR = ${JSON.stringify(socket)}`,
   );
   await page.getByRole('button', { name: 'Close', exact: true }).click();
   // Exercise native folder choice with a deterministic dialog result.
@@ -92,7 +92,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   bridge = new Mcp(socket);
   await bridge.initialize();
   const guide = await bridge.tool('get_blueprint_guide', {});
-  expect(guide.guideVersion).toBe('0.1.0-alpha.1+guide.3');
+  expect(guide.guideVersion).toBe('0.1.0-alpha.1+guide.4');
   const context = await bridge.tool('get_blueprint_context', {});
   const projectId = (context.project as { id: string }).id;
   const a = await bridge.tool('create_artifact', {
@@ -237,7 +237,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   await expect(page.getByText('In review', { exact: true })).toBeVisible();
   // Close last window: macOS runtime survives and bridge still answers.
   await page.close();
-  expect((await bridge.tool('get_blueprint_guide', {})).guideVersion).toBe('0.1.0-alpha.1+guide.3');
+  expect((await bridge.tool('get_blueprint_guide', {})).guideVersion).toBe('0.1.0-alpha.1+guide.4');
   bridge.close();
   await app.close();
   app = await launch();
@@ -259,7 +259,7 @@ test('unfinished private annotation survives restart and cannot approve the docu
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   let page = await app.firstWindow();
@@ -347,7 +347,7 @@ test('overlapping markers, disclosed old-version navigation and private annotati
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   let page = await app.firstWindow();
@@ -516,7 +516,6 @@ test('overlapping markers, disclosed old-version navigation and private annotati
   await app.close();
   app = await launch();
   page = await app.firstWindow();
-  await page.locator('.plan-title').click();
   frame = page.frameLocator('iframe');
   await expect(page.getByLabel('Edit annotation', { exact: true })).toHaveValue(
     'Unfinished edit remains private',
@@ -565,7 +564,7 @@ test('text markers bind to widget and disclosure state and historical preview ne
   await mkdir(project);
   app = await electron.launch({
     args: [resolve('.')],
-    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: socket },
+    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
   });
   const page = await app.firstWindow();
   await app.evaluate(({ dialog }, path) => {

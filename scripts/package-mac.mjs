@@ -1,4 +1,5 @@
 import { packager } from '@electron/packager';
+import { copyTerminalPayload } from './prepare-terminal.mjs';
 import {
   access,
   chmod,
@@ -73,6 +74,7 @@ export async function packageMac({ output = resolve('dist'), node = process.exec
     await mkdir(source);
     await mkdir(helper);
     await cp('out', join(source, 'out'), { recursive: true });
+    await copyTerminalPayload(source);
     await writeFile(
       join(source, 'package.json'),
       JSON.stringify({

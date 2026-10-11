@@ -4,8 +4,8 @@ export interface McpSetup {
   mode: 'development' | 'production-preview' | 'packaged';
   executable: string;
   args: string[];
-  env: { BLUEPRINT_SOCKET: string };
-  socketPath: string;
+  env: { BLUEPRINT_RUNTIME_DESCRIPTOR: string };
+  descriptorPath: string;
   command: string;
   config: string;
   prompt: string;

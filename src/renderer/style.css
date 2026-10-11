@@ -1536,3 +1536,387 @@ svg.annotation-number::after {
   gap: 8px;
   margin-top: 16px;
 }
+
+/* Session views share the existing shell columns; each pane owns its content viewport. */
+.session-workspace-content {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+}
+.workspace-split,
+.workspace-pane,
+.split-child {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.workspace-pane {
+  flex-direction: column;
+  position: relative;
+}
+.workspace-pane.active {
+  box-shadow: inset 0 0 0 1px #d4dcf8;
+}
+.workspace-split.horizontal {
+  flex-direction: row;
+}
+.workspace-split.vertical {
+  flex-direction: column;
+}
+.pane-divider {
+  background: var(--border);
+  flex: 0 0 3px;
+  position: relative;
+  z-index: 4;
+  touch-action: none;
+}
+.horizontal > .pane-divider {
+  cursor: col-resize;
+}
+.vertical > .pane-divider {
+  cursor: row-resize;
+}
+.pane-divider:hover,
+.pane-divider:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+.workspace-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 33px;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  min-width: 0;
+  font-size: 10px;
+}
+.workspace-tools > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+.workspace-tools button {
+  font-size: 10px;
+  padding: 4px 5px;
+  white-space: nowrap;
+}
+.terminal-list {
+  position: relative;
+}
+.terminal-list summary {
+  cursor: pointer;
+  white-space: nowrap;
+}
+.terminal-list > div {
+  position: absolute;
+  right: 0;
+  top: 25px;
+  width: 240px;
+  padding: 6px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px #26314220;
+  z-index: 25;
+}
+.terminal-list > div button {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+.terminal-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  background: white;
+}
+.xterm-container {
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  padding: 5px 8px;
+  overflow: hidden;
+}
+.xterm-container .xterm {
+  height: 100%;
+}
+.terminal-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  height: 27px;
+  flex-shrink: 0;
+  background: #f8f9fc;
+  font-size: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.terminal-statusbar > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.terminal-statusbar small {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.terminal-statusbar button {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 2px 5px;
+}
+.terminal-inactive-note {
+  margin: 0;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: #f8f9fc;
+}
+.project-terminal-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  max-height: 65%;
+  position: relative;
+  border-top: 1px solid var(--border);
+}
+.bottom-resizer {
+  height: 4px;
+  cursor: row-resize;
+  position: absolute;
+  inset: -2px 0 auto;
+  z-index: 5;
+  touch-action: none;
+}
+.bottom-resizer:hover,
+.bottom-resizer:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+.bottom-terminal-tabs {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: 31px;
+  gap: 4px;
+  padding: 2px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  background: #f2f4f8;
+}
+.bottom-terminal-tabs > div {
+  display: flex;
+  align-items: center;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+.bottom-terminal-tabs > div.active {
+  background: white;
+}
+.bottom-terminal-tabs button {
+  font-size: 11px;
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+.bottom-terminal-tabs .bottom-hide {
+  margin-left: auto;
+}
+.tree-group-heading {
+  color: var(--muted);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 4px 3px 22px;
+}
+.tree-group-heading > span {
+  flex: 1;
+}
+.tree-group-heading button {
+  font-size: 13px;
+  padding: 0 4px;
+}
+.plans-workspace {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+.plans-workspace.active {
+  color: var(--accent);
+}
+.harness-session {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  height: 29px;
+  padding: 4px 7px 4px 23px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  min-width: 0;
+}
+.harness-session > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.harness-session.active {
+  background: #e3e8f7;
+}
+.tree-empty {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  padding: 3px 10px 5px 22px;
+}
+.other-sessions {
+  margin: 12px 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.other-sessions > div {
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+}
+.other-sessions small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-home dl {
+  max-width: 100%;
+  font-size: 12px;
+}
+.session-home dt {
+  font-weight: 550;
+  margin-top: 8px;
+}
+.session-home dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.application-settings {
+  width: min(940px, calc(100vw - 64px));
+  height: min(660px, calc(100vh - 80px));
+  display: flex;
+  background: white;
+  border-radius: 14px;
+  box-shadow: 0 18px 80px #25324b30;
+  overflow: hidden;
+}
+.application-settings > nav {
+  width: 190px;
+  flex-shrink: 0;
+  padding: 22px 12px;
+  border-right: 1px solid var(--border);
+  background: #f7f8fb;
+}
+.application-settings > nav h2 {
+  padding: 0 8px 18px;
+  font-size: 16px;
+}
+.application-settings > nav button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  margin: 4px 0;
+  padding: 8px;
+}
+.application-settings > nav button.active {
+  background: #e3e8f7;
+  color: var(--accent);
+}
+.application-settings > form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.application-settings header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 22px 24px 12px;
+}
+.application-settings header h2 {
+  font-size: 19px;
+}
+.settings-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 24px;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding: 14px 0;
+  font-size: 12px;
+}
+.settings-row > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.settings-row p {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+.settings-row > input:not([type='checkbox']),
+.settings-row > select {
+  width: 210px;
+  font-size: 12px;
+}
+.settings-row input[type='number'] {
+  width: 90px;
+}
+.settings-row > input[type='checkbox'] {
+  width: auto;
+  flex-shrink: 0;
+}
+.shortcut-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  width: 225px;
+}
+.shortcut-controls button {
+  font-size: 11px;
+  border: 1px solid var(--border);
+  padding: 5px 6px;
+}
+.application-settings footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+}
+.application-settings footer small {
+  margin-right: auto;
+  color: var(--muted);
+}

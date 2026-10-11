@@ -4,6 +4,7 @@ import {
   _electron as electron,
   type ElectronApplication,
   type Page,
+  type Locator,
 } from '@playwright/test';
 import { mkdtemp, mkdir, rm, writeFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,10 @@ import { join, resolve } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Mcp } from './mcp';
+import {
+  paneLeaves,
+  type ApplicationWorkspaceSnapshot,
+} from '../../src/shared/application-workspace';
 let app: ElectronApplication, root: string, server: Server | undefined, mcp: Mcp | undefined;
 test.afterEach(async () => {
   mcp?.close();
@@ -26,7 +31,56 @@ async function choose(page: Page, path: string) {
   }, path);
   await page.getByRole('button', { name: '+ Open project folder' }).click();
 }
-test('plan-owned tabs, local comments, browser close and restart preserve independent work', async () => {
+async function applicationSnapshot(page: Page): Promise<ApplicationWorkspaceSnapshot> {
+  return page.evaluate(() =>
+    (
+      window as unknown as {
+        blueprint: { invoke(name: string): Promise<ApplicationWorkspaceSnapshot> };
+      }
+    ).blueprint.invoke('applicationSnapshot'),
+  );
+}
+const tabs = (page: Page) => page.getByRole('tablist', { name: 'Workspace tabs' }).getByRole('tab');
+const newTab = (page: Page) =>
+  page
+    .getByRole('toolbar', { name: 'Window toolbar' })
+    .getByRole('button', { name: 'New tab', exact: true });
+async function planTab(
+  page: Page,
+  artifactId: unknown,
+  kind: 'document' | 'home' | 'browser',
+): Promise<Locator> {
+  await expect
+    .poll(async () => {
+      const value = await applicationSnapshot(page),
+        current = value.selectedWorkspace ? value.workspaces[value.selectedWorkspace] : null;
+      return (
+        current?.tabs.findIndex((tab) =>
+          paneLeaves(tab.root).some(
+            (pane) =>
+              pane.content.kind === 'plan' &&
+              pane.content.artifactId === artifactId &&
+              pane.content.tab.kind === kind,
+          ),
+        ) ?? -1
+      );
+    })
+    .toBeGreaterThanOrEqual(0);
+  const value = await applicationSnapshot(page),
+    current = value.workspaces[value.selectedWorkspace!];
+  const index = current.tabs.findIndex((tab) =>
+    paneLeaves(tab.root).some(
+      (pane) =>
+        pane.content.kind === 'plan' &&
+        pane.content.artifactId === artifactId &&
+        pane.content.tab.kind === kind,
+    ),
+  );
+  if (index < 0) throw new Error(`Missing ${kind} tab for requested artifact.`);
+  await expect(tabs(page)).toHaveCount(current.tabs.length);
+  return tabs(page).nth(index);
+}
+test('project Plans workspaces, local comments, browser close and restart preserve independent artifact work', async () => {
   root = await mkdtemp(join(tmpdir(), 'bp-workspace-'));
   const data = join(root, 'data'),
     project = join(root, 'project'),
@@ -35,7 +89,11 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_SOCKET: join(root, 's.sock') },
+      env: {
+        ...process.env,
+        BLUEPRINT_DATA: data,
+        BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
+      },
     });
   app = await launch();
   let page = await app.firstWindow();
@@ -101,7 +159,7 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   await frame.getByRole('button', { name: 'Annotate', exact: true }).click();
   await frame.getByLabel('Annotation comment', { exact: true }).fill('Private annotation');
   // Tab transition finalizes the editor, waits for private persistence, and never publishes.
-  await page.getByRole('button', { name: 'New tab', exact: true }).click();
+  await newTab(page).click();
   await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeFocused();
   await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveCount(0);
   await expect(page.locator('.annotation p')).toContainText('Private annotation');
@@ -115,15 +173,16 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
     .getByRole('textbox', { name: 'New tab address' })
     .fill('https://example.test/unfinished');
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
-  await expect(page.getByRole('tab')).toHaveCount(1);
-  await page.getByRole('button', { name: 'New tab', exact: true }).click();
+  // Standalone Plans now shares one tabstrip per project. Artifact state stays independent.
+  await expect(tabs(page)).toHaveCount(3);
+  await newTab(page).click();
   await page.getByRole('textbox', { name: 'New tab address' }).fill('https://example.test/second');
   await page.getByRole('button', { name: 'Third plan', exact: true }).click();
-  await expect(page.getByRole('tab')).toHaveCount(1);
+  await expect(tabs(page)).toHaveCount(1);
   await page.getByRole('button', { name: 'First plan', exact: true }).click();
   await expect(frame.getByRole('heading', { name: 'First plan', exact: true })).toBeVisible();
   await expect(frame.getByLabel('Decision', { exact: true })).toHaveValue('Private answer');
-  await page.getByRole('tab', { name: 'New tab', exact: true }).click();
+  await (await planTab(page, a.artifact.artifactId, 'home')).click();
   await expect(page.getByRole('textbox', { name: 'New tab address' })).toHaveValue(
     'https://example.test/unfinished',
   );
@@ -136,8 +195,8 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   const url = `http://127.0.0.1:${address.port}`;
   await page.getByRole('textbox', { name: 'New tab address' }).fill(url);
   await page.getByRole('textbox', { name: 'New tab address' }).press('Enter');
-  await expect(page.getByRole('tab')).toHaveCount(2);
-  await expect(page.getByRole('tab', { name: 'New tab', exact: true })).toHaveCount(0);
+  await expect(tabs(page)).toHaveCount(4);
+  await expect(page.getByRole('tab', { name: 'New tab', exact: true })).toHaveCount(1);
   await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveValue(url + '/');
   await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toBeVisible();
   const toolbar = page.locator('.plan-header');
@@ -188,7 +247,9 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
         .getByLabel('Annotate browser')
         .evaluate((el) => el.scrollWidth <= el.clientWidth),
     ).toBe(true);
-    await page.screenshot({ path: `.tmp/browser-toolbar-${left}-${right}.png` });
+    await page.screenshot({
+      path: `.tmp/tasks/harness-workspaces-20261011/pty-gate/browser-toolbar-${left}-${right}.png`,
+    });
   }
   await page.getByRole('button', { name: 'Show feedback sidebar' }).click();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1360, 900));
@@ -276,20 +337,28 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
     )
     .toBe(1);
   await expect(
-    page.getByRole('button', { name: 'Close Local browser page tab', exact: true }),
+    page.getByRole('button', { name: 'Close local browser page tab', exact: true }),
   ).toBeEnabled();
   await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toBeVisible();
   await app.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = () => 0;
   });
-  await page.getByRole('button', { name: 'Close Local browser page tab', exact: true }).click();
+  await page.getByRole('button', { name: 'Close local browser page tab', exact: true }).click();
   await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toHaveCount(0);
-  // The document can close too. Answers and comments are retained, without Save.
-  await page.getByRole('tab', { name: 'Plan', exact: true }).click({ button: 'middle' });
-  await expect(page.getByRole('heading', { name: 'No open tabs' })).toBeVisible();
-  await page.getByRole('button', { name: 'Open plan', exact: true }).click();
+  // Closing this artifact's document retains its private work and leaves the
+  // other artifact's document/home tabs intact in the shared project workspace.
+  await (await planTab(page, a.artifact.artifactId, 'document')).click({ button: 'middle' });
+  await expect(tabs(page)).toHaveCount(2);
+  await page.getByRole('button', { name: 'First plan', exact: true }).click();
   await expect(frame.getByLabel('Decision', { exact: true })).toHaveValue('Private answer');
   await expect(page.locator('.annotation p')).toContainText('Private annotation');
+  // The other project's only tab exercises last-tab closure without deleting
+  // the first project's preserved Second plan home workspace.
+  await page.getByRole('button', { name: 'Third plan', exact: true }).click();
+  await (await planTab(page, c.artifact.artifactId, 'document')).click({ button: 'middle' });
+  await expect(page.getByRole('heading', { name: 'No open tabs' })).toBeVisible();
+  await page.getByRole('button', { name: 'Open plan', exact: true }).click();
+  await expect(frame.getByRole('heading', { name: 'Third plan', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Close plan tab', exact: true }).click();
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   await page.getByRole('button', { name: 'First plan', exact: true }).click();
@@ -301,7 +370,18 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   await page.getByRole('tab', { name: 'Local browser page', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveValue(url + '/');
-  await page.screenshot({ path: resolve('.tmp/tasks/compact-tabs-20261009/browser.png') });
+  await page.screenshot({
+    path: resolve('.tmp/tasks/harness-workspaces-20261011/pty-gate/browser.png'),
+  });
+  // Restoration is lazy for an unselected browser tab. A selected browser is
+  // expected to restore when its visible pane mounts, so leave a document active.
+  await (await planTab(page, b.artifact.artifactId, 'document')).click();
+  await expect(frame.getByRole('heading', { name: 'Second plan', exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveCount(0);
+  const beforeRestart = await applicationSnapshot(page);
+  const savedTabIds = beforeRestart.workspaces[beforeRestart.selectedWorkspace!].tabs.map(
+    (tab) => tab.id,
+  );
   mcp.close();
   mcp = undefined;
   await app.close();
@@ -313,7 +393,11 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
     '260',
   );
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
-  await expect(page.getByRole('tab')).toHaveCount(3);
+  await expect(tabs(page)).toHaveCount(4);
+  const afterRestart = await applicationSnapshot(page);
+  expect(
+    afterRestart.workspaces[afterRestart.selectedWorkspace!].tabs.map((tab) => tab.id),
+  ).toEqual(savedTabIds);
   await expect
     .poll(() =>
       app.evaluate(
@@ -323,7 +407,7 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
       ),
     )
     .toBe(0);
-  await page.getByRole('tab', { name: 'New tab', exact: true }).click();
+  await (await planTab(page, b.artifact.artifactId, 'home')).click();
   await expect(page.getByRole('textbox', { name: 'New tab address' })).toHaveValue(
     'https://example.test/second',
   );
@@ -336,7 +420,9 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   await expect(frame.getByLabel('Decision', { exact: true })).toHaveValue('Private answer');
   await expect(page.locator('.annotation p')).toContainText('Private annotation');
   await expect(page.getByText('VISUAL PLANNING')).toHaveCount(0);
-  await page.screenshot({ path: resolve('.tmp/tasks/compact-tabs-20261009/document.png') });
+  await page.screenshot({
+    path: resolve('.tmp/tasks/harness-workspaces-20261011/pty-gate/document.png'),
+  });
   await page.getByRole('button', { name: 'Edit annotation 1', exact: true }).click();
   await page.getByLabel('Edit annotation', { exact: true }).fill('Edited private annotation');
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
@@ -362,51 +448,49 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   await frame.getByRole('button', { name: 'Annotate', exact: true }).click();
   await frame.getByLabel('Annotation comment', { exact: true }).fill('Retry this comment');
   await expect(page.getByText('Saved locally')).toBeVisible();
-  await app.evaluate(() => {
-    const { Socket } = process.getBuiltinModule('net');
-    const original = Socket.prototype.write;
-    Socket.prototype.write = function (
-      value: string | Uint8Array,
-      encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
-      callback?: (error?: Error | null) => void,
+  const probeFile = join(root, 'annotation-fault-probe.cjs');
+  await writeFile(probeFile, 'process.parentPort.on("message",()=>{});');
+  const tabsBeforeFailedWrite = await tabs(page).count();
+  await app.evaluate(({ utilityProcess }, file) => {
+    const probe = utilityProcess.fork(file, [], { stdio: 'ignore' });
+    const prototype = Object.getPrototypeOf(probe);
+    probe.kill();
+    const original = prototype.postMessage;
+    Object.assign(globalThis, { workspaceAnnotationFaults: 0 });
+    prototype.postMessage = function (
+      request: { id?: string; type?: string; name?: string },
+      transfer?: Electron.MessagePortMain[],
     ) {
-      if (typeof value === 'string') {
-        let request: { id?: string; method?: string; params?: { name?: string } } = {};
-        try {
-          request = JSON.parse(value);
-        } catch {
-          /* other streams */
-        }
-        if (request.method === 'operator' && request.params?.name === 'addAnnotation') {
-          Socket.prototype.write = original;
-          queueMicrotask(() =>
-            this.emit(
-              'data',
-              Buffer.from(
-                JSON.stringify({
-                  id: request.id,
-                  error: { code: 'DISK_WRITE_FAILED', message: 'Injected isolated write failure' },
-                }) + '\n',
-              ),
-            ),
-          );
-          return true;
-        }
+      if (request.type === 'operator' && request.name === 'addAnnotation') {
+        prototype.postMessage = original;
+        (globalThis as unknown as { workspaceAnnotationFaults: number })
+          .workspaceAnnotationFaults++;
+        // Fail before forwarding the mutation, matching a known failed write.
+        // Sending then losing the reply would be UNKNOWN_RESULT, a separate oracle.
+        queueMicrotask(() =>
+          this.emit('message', {
+            type: 'operator-response',
+            id: request.id,
+            error: { code: 'DISK_WRITE_FAILED', message: 'Injected isolated write failure' },
+          }),
+        );
+        return;
       }
-      return original.call(
-        this,
-        value,
-        typeof encodingOrCallback === 'function' ? undefined : encodingOrCallback,
-        typeof encodingOrCallback === 'function' ? encodingOrCallback : callback,
-      );
+      return Reflect.apply(original, this, [request, transfer]);
     };
-  });
-  await page.getByRole('button', { name: 'New tab', exact: true }).click();
+  }, probeFile);
+  await newTab(page).click();
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
   await expect(frame.getByLabel('Annotation comment', { exact: true })).toHaveValue(
     'Retry this comment',
   );
-  await expect(page.getByRole('tab')).toHaveCount(1);
+  await expect(tabs(page)).toHaveCount(tabsBeforeFailedWrite);
+  expect(
+    await app.evaluate(
+      () =>
+        (globalThis as unknown as { workspaceAnnotationFaults: number }).workspaceAnnotationFaults,
+    ),
+  ).toBe(1);
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeVisible();
   await expect(page.locator('.annotation p').filter({ hasText: 'Retry this comment' })).toHaveCount(
@@ -416,10 +500,10 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   await page.getByRole('tab', { name: 'Local browser page', exact: true }).click();
   await expect(
-    page.getByRole('button', { name: 'Close Local browser page tab', exact: true }),
+    page.getByRole('button', { name: 'Close local browser page tab', exact: true }),
   ).toBeEnabled();
-  const metadata = join(data, 'workspace.json'),
-    backup = join(root, 'workspace.backup.json');
+  const metadata = join(data, 'application-workspace.json'),
+    backup = join(root, 'application-workspace.backup.json');
   await rename(metadata, backup);
   await mkdir(metadata);
   await page

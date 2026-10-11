@@ -8,7 +8,7 @@ export class Mcp {
   next = 0;
   constructor(socket: string) {
     this.child = spawn(process.execPath, [resolve('out/bridge.cjs')], {
-      env: { ...process.env, BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       const value = JSON.parse(line) as Record<string, unknown>;

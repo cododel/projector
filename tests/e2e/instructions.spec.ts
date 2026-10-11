@@ -84,7 +84,7 @@ test('Codex delivers Blueprint server instructions to its model request without 
   try {
     app = await electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: join(root, 'data'), BLUEPRINT_SOCKET: socket },
+      env: { ...process.env, BLUEPRINT_DATA: join(root, 'data'), BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
     });
     await app.firstWindow();
     const overrides = {
@@ -99,7 +99,7 @@ test('Codex delivers Blueprint server instructions to its model request without 
       'model_providers.blueprint_delivery_probe.stream_idle_timeout_ms': 10000,
       'mcp_servers.blueprint.command': process.execPath,
       'mcp_servers.blueprint.args': [resolve('out/bridge.cjs')],
-      'mcp_servers.blueprint.env.BLUEPRINT_SOCKET': socket,
+      'mcp_servers.blueprint.env.BLUEPRINT_RUNTIME_DESCRIPTOR': socket,
     };
     child = spawn(
       'codex',

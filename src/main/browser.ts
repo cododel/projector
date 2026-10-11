@@ -57,10 +57,19 @@ export type BrowserCapture = {
   };
 };
 type CaptureDraft = { capture: BrowserCapture; comment: string };
-type BrowserHooks = {
+export type BrowserViewBinding = {
+  viewId: string;
+  tabId: string;
+  bounds: AreaRect;
+  active: boolean;
+};
+export type BrowserHooks = {
   overlayPreload: string;
   onChange: () => void;
   onTabOpened?: (tab: BrowserTab, background: boolean) => void;
+  onViewFocus?: (value: { viewId: string; tabId: string }) => void | Promise<void>;
+  hasUnfinishedEditor?: () => boolean;
+  onShortcut?: (input: Electron.Input) => boolean;
   getRevision?: (artifactId: string) => Promise<string | null>;
   getAnnotations?: (artifactId: string) => Promise<BrowserMarkerAnnotation[]>;
   onMarkerSelect?: (value: { artifactId: string; annotationId: string }) => Promise<unknown>;
@@ -87,6 +96,7 @@ type InternalTab = {
   navigationEpoch: number;
   gestureAt: number;
   grants: Set<string>;
+  suppressedMouseButtons: Set<string>;
   downloadNavigation?: string;
 };
 type PageProbe = {
@@ -142,6 +152,13 @@ export class BrowserManager {
   private tabs = new Map<string, InternalTab>();
   private activeTabId: string | null = null;
   private bounds: AreaRect = { x: 0, y: 0, width: 0, height: 0 };
+  private nonBrowserBounds: AreaRect | null = null;
+  private visibleViews: Map<string, BrowserViewBinding> | null = null;
+  private attachedTabs = new Set<string>();
+  private layoutGeneration = 0;
+  private resizing = false;
+  private focusRequest: string | null = null;
+  private pendingEditorFocus = new Set<string>();
   private overlay: WebContentsView | null = null;
   private overlayReady: Promise<void> | null = null;
   private overlayContents: WebContents | null = null;
@@ -283,6 +300,7 @@ export class BrowserManager {
       navigationEpoch: 0,
       gestureAt: 0,
       grants: new Set(),
+      suppressedMouseButtons: new Set(),
     };
     this.tabs.set(state.id, internal);
     contents.once('destroyed', () => this.unregisterTab(internal));
@@ -306,11 +324,22 @@ export class BrowserManager {
     contents.on('will-redirect', guard);
     contents.on('will-frame-navigate', (event) => guard(event, event.url));
     contents.on('will-attach-webview', (event) => event.preventDefault());
-    contents.on('before-mouse-event', (_event, input) => {
+    contents.on('before-mouse-event', (event, input) => {
+      const button = input.button ?? 'left';
+      if (input.type === 'mouseUp' && internal.suppressedMouseButtons.delete(button)) {
+        event.preventDefault();
+        return;
+      }
+      if (input.type === 'mouseDown' && this.viewFocused(internal, event)) {
+        internal.suppressedMouseButtons.add(button);
+        return;
+      }
       if (input.type === 'mouseDown' || input.type === 'mouseUp') internal.gestureAt = Date.now();
     });
-    contents.on('before-input-event', (_event, input) => {
+    contents.on('focus', () => this.viewFocused(internal));
+    contents.on('before-input-event', (event, input) => {
       if (input.type === 'keyDown') internal.gestureAt = Date.now();
+      if (this.hooks.onShortcut?.(input)) event.preventDefault();
     });
     contents.setWindowOpenHandler((details) => {
       const gesture = Date.now() - internal.gestureAt < 1000;
@@ -550,7 +579,11 @@ export class BrowserManager {
     if (this.tabs.get(tab.state.id) !== tab) return;
     tab.grants.clear();
     this.tabs.delete(tab.state.id);
-    if (!this.window.isDestroyed()) this.window.contentView.removeChildView(tab.view);
+    this.pendingEditorFocus.delete(tab.state.id);
+    this.detachTab(tab);
+    for (const [id, binding] of this.visibleViews ?? [])
+      if (binding.tabId === tab.state.id) this.visibleViews!.delete(id);
+    ++this.layoutGeneration;
     ++tab.navigationEpoch;
     if (this.activeTabId === tab.state.id) {
       this.activeTabId = null;
@@ -632,34 +665,170 @@ export class BrowserManager {
     }
   }
 
-  select(tabId: string | null) {
+  private checkSelection(tabId: string | null) {
     if (this.tool && this.activeTabId !== tabId) this.hideOverlay();
     if (this.capture && !this.capture.readonly && this.activeTabId !== tabId)
       throw new Error('UNFINISHED_COMMENT: Save or cancel the area annotation first.');
     if (tabId !== null && !this.tabs.has(tabId)) throw new Error('BROWSER_TAB_NOT_FOUND');
-    const previous = this.activeTabId && this.tabs.get(this.activeTabId);
-    if (previous) this.window.contentView.removeChildView(previous.view);
-    this.activeTabId = tabId;
-    this.clearMarkers();
-    if (tabId) {
-      const tab = this.tabs.get(tabId)!;
+  }
+
+  private attachTab(tab: InternalTab) {
+    if (!this.attachedTabs.has(tab.state.id)) {
       this.window.contentView.addChildView(tab.view);
+      this.attachedTabs.add(tab.state.id);
+    }
+    tab.view.setVisible(!this.resizing);
+  }
+
+  private detachTab(tab: InternalTab) {
+    if (!this.attachedTabs.delete(tab.state.id)) return;
+    if (!this.window.isDestroyed()) this.window.contentView.removeChildView(tab.view);
+  }
+
+  private viewFocused(tab: InternalTab, event?: Electron.Event) {
+    if (this.closed || this.resizing || !this.visibleViews || this.activeTabId === tab.state.id)
+      return false;
+    const binding = [...this.visibleViews.values()].find((value) => value.tabId === tab.state.id);
+    if (!binding || !binding.bounds.width || !binding.bounds.height) return false;
+    const browserEditor = this.capture && !this.capture.readonly;
+    const blocked = Boolean(browserEditor || this.hooks.hasUnfinishedEditor?.() ||
+      this.pendingEditorFocus.has(tab.state.id));
+    if (blocked) {
+      // Suppress the original gesture until the shell confirms pane activation.
+      // Replaying it would act on an external page after a delayed private write.
+      this.pendingEditorFocus.add(tab.state.id);
+      event?.preventDefault();
+      if (browserEditor) this.overlayContents?.focus();
+      else this.window.webContents.focus();
+    }
+    if (this.focusRequest === binding.viewId) return blocked;
+    this.focusRequest = binding.viewId;
+    const notify = this.hooks.onViewFocus
+      ? () => this.hooks.onViewFocus!({ viewId: binding.viewId, tabId: binding.tabId })
+      : async () => {
+          await this.finishComment();
+          this.select(tab.state.id);
+        };
+    void Promise.resolve()
+      .then(notify)
+      .catch((error: unknown) => {
+        if (!this.closed && this.tabs.get(tab.state.id) === tab) {
+          tab.state.error = String(error);
+          this.hooks.onChange();
+        }
+      })
+      .finally(() => {
+        if (this.focusRequest === binding.viewId) this.focusRequest = null;
+      });
+    return blocked;
+  }
+
+  select(tabId: string | null) {
+    this.checkSelection(tabId);
+    if (!this.visibleViews)
+      for (const id of [...this.attachedTabs]) {
+        const tab = this.tabs.get(id);
+        if (tab) this.detachTab(tab);
+      }
+    this.activeTabId = tabId;
+    if (tabId) this.pendingEditorFocus.delete(tabId);
+    this.focusRequest = null;
+    ++this.layoutGeneration;
+    this.clearMarkers();
+    if (this.visibleViews) {
+      const binding = [...this.visibleViews.values()].find((value) => value.tabId === tabId);
+      for (const value of this.visibleViews.values()) value.active = value === binding;
+      this.bounds = binding?.bounds ?? this.nonBrowserBounds ?? { x: 0, y: 0, width: 0, height: 0 };
+      this.overlay?.setBounds(this.bounds);
+    } else if (tabId) {
+      const tab = this.tabs.get(tabId)!;
+      this.attachTab(tab);
       tab.view.setBounds(this.bounds);
     }
     if (this.capture?.readonly) this.hideOverlay();
     this.hooks.onChange();
   }
 
+  setVisibleViews(bindings: readonly BrowserViewBinding[]) {
+    if (this.closed) return;
+    const [width, height] = this.window.getContentSize();
+    const next = new Map<string, BrowserViewBinding>();
+    const tabIds = new Set<string>();
+    let active: BrowserViewBinding | undefined;
+    for (const value of bindings) {
+      if (!value.viewId || next.has(value.viewId) || tabIds.has(value.tabId))
+        throw new Error('INVALID_BROWSER_VIEWS: Each pane and browser tab must be unique.');
+      if (!this.tabs.has(value.tabId)) throw new Error('BROWSER_TAB_NOT_FOUND');
+      if (value.active && active)
+        throw new Error('INVALID_BROWSER_VIEWS: Only one browser pane can be active.');
+      const binding = { ...value, bounds: safeBrowserBounds(value.bounds, { width, height }) };
+      next.set(binding.viewId, binding);
+      tabIds.add(binding.tabId);
+      if (binding.active) active = binding;
+    }
+    const tabId = active?.tabId ?? null;
+    this.checkSelection(tabId);
+    const activeChanged = tabId !== this.activeTabId;
+    const nextBounds = active?.bounds ?? this.nonBrowserBounds ?? { x: 0, y: 0, width: 0, height: 0 };
+    const geometryChanged =
+      this.bounds.x !== nextBounds.x ||
+      this.bounds.y !== nextBounds.y ||
+      this.bounds.width !== nextBounds.width ||
+      this.bounds.height !== nextBounds.height;
+    if (activeChanged || geometryChanged) {
+      ++this.layoutGeneration;
+      this.clearMarkers();
+      if (this.tool) this.hideOverlay();
+      if (this.capture?.readonly && activeChanged) this.hideOverlay();
+    }
+    this.visibleViews = next;
+    this.activeTabId = tabId;
+    if (tabId) this.pendingEditorFocus.delete(tabId);
+    this.bounds = nextBounds;
+    if (activeChanged) this.focusRequest = null;
+    for (const id of [...this.attachedTabs]) {
+      if (tabIds.has(id)) continue;
+      const tab = this.tabs.get(id);
+      if (tab) this.detachTab(tab);
+    }
+    for (const binding of next.values()) {
+      const tab = this.tabs.get(binding.tabId)!;
+      tab.view.setBounds(binding.bounds);
+      this.attachTab(tab);
+      tab.view.setVisible(!this.resizing && binding.bounds.width > 0 && binding.bounds.height > 0);
+    }
+    this.overlay?.setBounds(this.bounds);
+    // Newly attached browser panes must not cover an existing trusted editor.
+    if ((this.tool || this.capture) && this.overlay)
+      this.window.contentView.addChildView(this.overlay);
+    if (activeChanged) this.hooks.onChange();
+  }
+
   setResizeMode(active: boolean) {
     // Native views sit above renderer DOM; temporarily hide them without changing
     // tab selection, capture ownership, or an unfinished annotation editor.
-    for (const tab of this.tabs.values()) tab.view.setVisible(!active);
+    this.resizing = active;
+    for (const tab of this.tabs.values()) {
+      const binding =
+        this.visibleViews &&
+        [...this.visibleViews.values()].find((value) => value.tabId === tab.state.id);
+      tab.view.setVisible(
+        !active && (!binding || (binding.bounds.width > 0 && binding.bounds.height > 0)),
+      );
+    }
     this.overlay?.setVisible(!active);
+    for (const marker of this.markerViews.values()) marker.view.setVisible(!active);
   }
 
   setBounds(bounds: AreaRect) {
+    // Active native panes own their geometry. When a document owns focus, its
+    // separately measured surface hosts saved captures and survives empty browser layouts.
+    if (this.visibleViews && this.activeTabId) return;
     const [width, height] = this.window.getContentSize();
+    ++this.layoutGeneration;
+    this.clearMarkers();
     this.bounds = safeBrowserBounds(bounds, { width, height });
+    if (this.visibleViews) this.nonBrowserBounds = this.bounds;
     if (this.activeTabId) this.tabs.get(this.activeTabId)?.view.setBounds(this.bounds);
     this.overlay?.setBounds(this.bounds);
   }
@@ -1105,7 +1274,15 @@ export class BrowserManager {
   }
 
   private async refreshMarkers() {
-    if (this.closed || this.markerBusy || !this.activeTabId || this.tool || this.capture) return;
+    if (
+      this.closed ||
+      this.resizing ||
+      this.markerBusy ||
+      !this.activeTabId ||
+      this.tool ||
+      this.capture
+    )
+      return;
     const tab = this.tabs.get(this.activeTabId);
     if (!tab || tab.contents.isDestroyed()) return;
     if (tab.contents.isLoading()) {
@@ -1113,6 +1290,7 @@ export class BrowserManager {
       return;
     }
     const navigationEpoch = tab.navigationEpoch;
+    const layoutGeneration = this.layoutGeneration;
     if (!tab.annotations.length) {
       this.clearMarkers();
       return;
@@ -1128,7 +1306,9 @@ export class BrowserManager {
         this.tabs.get(tab.state.id) !== tab ||
         this.tool ||
         this.capture ||
+        this.resizing ||
         this.activeTabId !== tab.state.id ||
+        this.layoutGeneration !== layoutGeneration ||
         tab.navigationEpoch !== navigationEpoch ||
         tab.contents.isLoading()
       )
@@ -1231,7 +1411,9 @@ export class BrowserManager {
             this.tabs.get(tab.state.id) !== tab ||
             this.tool ||
             this.capture ||
+            this.resizing ||
             this.activeTabId !== tab.state.id ||
+            this.layoutGeneration !== layoutGeneration ||
             tab.navigationEpoch !== navigationEpoch ||
             tab.contents.isLoading()
           ) {
@@ -1412,6 +1594,10 @@ export class BrowserManager {
     for (const { contents } of [...this.tabs.values()])
       if (!contents.isDestroyed()) contents.close();
     this.tabs.clear();
+    this.attachedTabs.clear();
+    this.visibleViews?.clear();
+    this.focusRequest = null;
+    ++this.layoutGeneration;
     this.activeTabId = null;
     this.capture = null;
     this.tool = null;

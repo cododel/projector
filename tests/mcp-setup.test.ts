@@ -15,11 +15,11 @@ async function paths() {
     development: false,
     appPath: directory,
     resourcesPath: join(directory, 'moved app with spaces', 'Contents', 'Resources'),
-    socketPath: join(directory, 'runtime socket.sock'),
+    descriptorPath: join(directory, 'runtime descriptor.json'),
     nodeOverride: process.execPath,
   };
 }
-it('source production preview follows appPath, resolves symlinks and preserves the exact socket', async () => {
+it('source production preview follows appPath, resolves symlinks and preserves the exact descriptor', async () => {
   const options = await paths();
   await mkdir(join(directory, 'out'));
   await writeFile(join(directory, 'out', 'bridge.cjs'), '');
@@ -29,8 +29,8 @@ it('source production preview follows appPath, resolves symlinks and preserves t
   expect(setup.mode).toBe('production-preview');
   expect(setup.executable).not.toBe(alias);
   expect(setup.args).toEqual([join(directory, 'out', 'bridge.cjs')]);
-  expect(setup.env.BLUEPRINT_SOCKET).toBe(options.socketPath);
-  expect(setup.config).toContain(`BLUEPRINT_SOCKET = ${JSON.stringify(options.socketPath)}`);
+  expect(setup.env.BLUEPRINT_RUNTIME_DESCRIPTOR).toBe(options.descriptorPath);
+  expect(setup.config).toContain(`BLUEPRINT_RUNTIME_DESCRIPTOR = ${JSON.stringify(options.descriptorPath)}`);
 });
 it('packaged builds use only their actual bundled resources, ignoring source Node overrides', async () => {
   const options = await paths();
