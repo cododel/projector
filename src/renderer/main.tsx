@@ -319,6 +319,7 @@ function App(): React.JSX.Element {
   const saveIntents = useRef(new Map<string, Record<string, unknown>>());
   const browserArea = useRef<HTMLDivElement>(null);
   const homeAddress = useRef<HTMLInputElement>(null);
+  const titlebarTabs = useRef<HTMLElement>(null);
   const restoredEditing = useRef<string | null>(null);
   const editWrites = useRef(Promise.resolve());
   const editWriteError = useRef<string | null>(null);
@@ -393,6 +394,22 @@ function App(): React.JSX.Element {
   ).filter((item) => item.artifactId === artifact?.id);
   const planTabs = selected ? workspace.plans[selected.artifactId] : undefined;
   const activeTab = planTabs?.tabs.find((t) => t.id === planTabs.activeTabId);
+  useEffect(() => {
+    const strip = titlebarTabs.current;
+    const tab = strip?.querySelector<HTMLElement>('.content-tab.active');
+    if (!strip || !tab) return;
+    const reveal = () => {
+      const bounds = strip.getBoundingClientRect();
+      const selectedBounds = tab.getBoundingClientRect();
+      if (selectedBounds.left < bounds.left) strip.scrollLeft -= bounds.left - selectedBounds.left;
+      else if (selectedBounds.right > bounds.right)
+        strip.scrollLeft += selectedBounds.right - bounds.right;
+    };
+    reveal();
+    const observer = new ResizeObserver(reveal);
+    observer.observe(strip);
+    return () => observer.disconnect();
+  }, [activeTab?.id, planTabs?.tabs.length]);
   const activeBrowser = browser.tabs.find(
     (tab) =>
       activeTab?.kind === 'browser' &&
@@ -830,9 +847,68 @@ function App(): React.JSX.Element {
         >
           <Icon name="sidebar-left" />
         </button>
-        <span className="window-title" title={artifact?.title ?? 'Blueprint'}>
-          {artifact?.title ?? 'Blueprint'}
-        </span>
+        <span className="titlebar-divider" aria-hidden="true" />
+        {selected && (
+          <nav className="content-tabs" role="tablist" aria-label="Plan tabs" ref={titlebarTabs}>
+            {planTabs?.tabs.map((tab) => (
+              <div
+                className={`content-tab ${activeTab?.id === tab.id ? 'active' : ''}`}
+                key={tab.id}
+              >
+                <button
+                  role="tab"
+                  aria-selected={activeTab?.id === tab.id}
+                  disabled={busy}
+                  onAuxClick={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                      void tabCommand('close', tab.id);
+                    }
+                  }}
+                  onMouseDown={(e) => {
+                    if (e.button === 1) e.preventDefault();
+                  }}
+                  onClick={() => void tabCommand('select', tab.id)}
+                  title={
+                    tab.kind === 'browser'
+                      ? tab.title
+                      : tab.kind === 'home'
+                        ? 'New tab'
+                        : artifact?.title
+                  }
+                >
+                  <span aria-hidden="true">{tab.kind === 'document' ? '▤' : '◎'}</span>
+                  <span>
+                    {tab.kind === 'document'
+                      ? 'Plan'
+                      : tab.kind === 'home'
+                        ? 'New tab'
+                        : tab.title || 'Browser'}
+                  </span>
+                </button>
+                <button
+                  className="tab-close"
+                  disabled={busy}
+                  aria-label={`Close ${tab.kind === 'document' ? 'plan' : tab.kind === 'home' ? 'new tab' : tab.title || 'browser'} tab`}
+                  onClick={() => void tabCommand('close', tab.id)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </nav>
+        )}
+        <button
+          className="new-tab"
+          title="New tab"
+          aria-label="New tab"
+          disabled={busy || !selected}
+          onClick={() => void tabCommand('new')}
+        >
+          +
+        </button>
+        <span className="titlebar-drag-space" />
+        <span className="titlebar-divider" aria-hidden="true" />
         <button
           className="sidebar-toggle"
           aria-label={
@@ -995,6 +1071,175 @@ function App(): React.JSX.Element {
         </div>
       </aside>
       <main className="workspace">
+        {selected && (
+          <header className={`plan-header ${activeBrowser ? 'browser-plan-header' : ''}`}>
+            {selected && (
+              <div className="version-tools">
+                {selected.revisionId && (
+                  <label>
+                    <select
+                      disabled={busy}
+                      aria-label="Document version"
+                      value={selected.revisionId}
+                      onChange={(e) =>
+                        void transition(() =>
+                          invoke('openArtifact', {
+                            artifactId: selected.artifactId,
+                            revisionId: e.target.value,
+                          }),
+                        )
+                      }
+                    >
+                      {(artifact?.revisions ?? [selected.revisionId]).map((r, i) => {
+                        const id = typeof r === 'string' ? r : r.id;
+                        return (
+                          <option key={id} value={id}>
+                            Version {i + 1}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
+                )}
+                <span className={`status ${document?.approved ? 'approved' : ''}`}>
+                  {document?.draft
+                    ? 'Draft preview'
+                    : document?.approved
+                      ? 'Approved'
+                      : 'In review'}
+                </span>
+              </div>
+            )}
+            {activeTab?.kind === 'document' && (
+              <>
+                <span
+                  className={`document-save-status ${documentToolbar.saveStatus === 'Save failed' ? 'save-error' : ''}`}
+                  role="status"
+                >
+                  {document?.draft ? 'Read-only preview' : documentToolbar.saveStatus}
+                </span>
+                <button
+                  className={`annotate-tool ${documentToolbar.areaMode ? 'active' : ''}`}
+                  aria-label="Annotate document"
+                  aria-pressed={documentToolbar.areaMode}
+                  disabled={busy || !documentToolbar.canAnnotate || document?.draft}
+                  onClick={() =>
+                    void transition(async () => {
+                      frame.current?.contentWindow?.postMessage(
+                        { type: 'blueprint-toggle-annotate' },
+                        'blueprint://document',
+                      );
+                    })
+                  }
+                >
+                  Annotate
+                </button>
+              </>
+            )}
+            {activeBrowser && <span className="toolbar-divider" aria-hidden="true" />}
+            {activeBrowser && (
+              <div className="browser-toolbar">
+                <button
+                  aria-label="Back"
+                  disabled={!activeBrowser.canGoBack}
+                  onClick={() =>
+                    void transition(() =>
+                      invoke('browserCommand', { tabId: activeBrowser.id, action: 'back' }),
+                    )
+                  }
+                >
+                  ←
+                </button>
+                <button
+                  aria-label="Forward"
+                  disabled={!activeBrowser.canGoForward}
+                  onClick={() =>
+                    void transition(() =>
+                      invoke('browserCommand', { tabId: activeBrowser.id, action: 'forward' }),
+                    )
+                  }
+                >
+                  →
+                </button>
+                <button
+                  aria-label={activeBrowser.loading ? 'Stop' : 'Reload'}
+                  onClick={() =>
+                    void transition(() =>
+                      invoke('browserCommand', {
+                        tabId: activeBrowser.id,
+                        action: activeBrowser.loading ? 'stop' : 'reload',
+                      }),
+                    )
+                  }
+                >
+                  {activeBrowser.loading ? '■' : '↻'}
+                </button>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void transition(() =>
+                      invoke('browserCommand', {
+                        tabId: activeBrowser.id,
+                        action: 'navigate',
+                        url,
+                      }),
+                    );
+                  }}
+                >
+                  <input
+                    aria-label="Browser address"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                  />
+                </form>
+                <select
+                  aria-label="Browser zoom"
+                  title="Browser zoom · select 100% to reset"
+                  value={activeBrowser.zoomFactor ?? 1}
+                  onChange={(event) =>
+                    void transition(() =>
+                      invoke('browserCommand', {
+                        tabId: activeBrowser.id,
+                        action: 'zoom',
+                        zoomFactor: Number(event.target.value),
+                      }),
+                    )
+                  }
+                >
+                  {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((factor) => (
+                    <option key={factor} value={factor}>
+                      {Math.round(factor * 100) + '%'}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  aria-label="Open page in external browser"
+                  title="Open externally · sign-in remains in that browser"
+                  onClick={() =>
+                    void action(() =>
+                      invoke('browserCommand', { tabId: activeBrowser.id, action: 'external' }),
+                    )
+                  }
+                >
+                  ↗
+                </button>
+
+                <button
+                  className={browser.annotating ? 'active' : ''}
+                  aria-label="Annotate browser"
+                  aria-pressed={browser.annotating}
+                  onClick={() =>
+                    void action(() =>
+                      invoke('browserCommand', { tabId: activeBrowser.id, action: 'annotate' }),
+                    )
+                  }
+                >
+                  Annotate
+                </button>
+              </div>
+            )}
+          </header>
+        )}
         {waiting && (
           <div className="runtime-notice" role="status">
             Waiting for local storage. The operation may complete; do not repeat it until its result
@@ -1041,230 +1286,8 @@ function App(): React.JSX.Element {
         )}
         {selected ? (
           <>
-            <div className="tab-bar">
-              <nav className="content-tabs" role="tablist" aria-label="Plan tabs">
-                {planTabs?.tabs.map((tab) => (
-                  <div
-                    className={`content-tab ${activeTab?.id === tab.id ? 'active' : ''}`}
-                    key={tab.id}
-                  >
-                    <button
-                      role="tab"
-                      aria-selected={activeTab?.id === tab.id}
-                      disabled={busy}
-                      onAuxClick={(e) => {
-                        if (e.button === 1) {
-                          e.preventDefault();
-                          void tabCommand('close', tab.id);
-                        }
-                      }}
-                      onMouseDown={(e) => {
-                        if (e.button === 1) e.preventDefault();
-                      }}
-                      onClick={() => void tabCommand('select', tab.id)}
-                      title={
-                        tab.kind === 'browser'
-                          ? tab.title
-                          : tab.kind === 'home'
-                            ? 'New tab'
-                            : artifact?.title
-                      }
-                    >
-                      <span aria-hidden="true">{tab.kind === 'document' ? '▤' : '◎'}</span>
-                      <span>
-                        {tab.kind === 'document'
-                          ? 'Plan'
-                          : tab.kind === 'home'
-                            ? 'New tab'
-                            : tab.title || 'Browser'}
-                      </span>
-                    </button>
-                    <button
-                      className="tab-close"
-                      disabled={busy}
-                      aria-label={`Close ${tab.kind === 'document' ? 'plan' : tab.kind === 'home' ? 'new tab' : tab.title || 'browser'} tab`}
-                      onClick={() => void tabCommand('close', tab.id)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-                <button
-                  className="new-tab"
-                  title="New tab"
-                  aria-label="New tab"
-                  disabled={busy}
-                  onClick={() => void tabCommand('new')}
-                >
-                  +
-                </button>
-              </nav>
-            </div>
-            <header className="plan-header">
-              <h1 title={artifact?.title}>{artifact?.title ?? 'Blueprint'}</h1>{' '}
-              {selected && (
-                <div className="version-tools">
-                  {selected.revisionId && (
-                    <label>
-                      <select
-                        disabled={busy}
-                        aria-label="Document version"
-                        value={selected.revisionId}
-                        onChange={(e) =>
-                          void transition(() =>
-                            invoke('openArtifact', {
-                              artifactId: selected.artifactId,
-                              revisionId: e.target.value,
-                            }),
-                          )
-                        }
-                      >
-                        {(artifact?.revisions ?? [selected.revisionId]).map((r, i) => {
-                          const id = typeof r === 'string' ? r : r.id;
-                          return (
-                            <option key={id} value={id}>
-                              Version {i + 1}
-                            </option>
-                          );
-                        })}
-                      </select>
-                    </label>
-                  )}
-                  <span className={`status ${document?.approved ? 'approved' : ''}`}>
-                    {document?.draft
-                      ? 'Draft preview'
-                      : document?.approved
-                        ? 'Approved'
-                        : 'In review'}
-                  </span>
-                </div>
-              )}
-              {activeTab?.kind === 'document' && (
-                <>
-                  <span
-                    className={`document-save-status ${documentToolbar.saveStatus === 'Save failed' ? 'save-error' : ''}`}
-                    role="status"
-                  >
-                    {document?.draft ? 'Read-only preview' : documentToolbar.saveStatus}
-                  </span>
-                  <button
-                    className={`annotate-tool ${documentToolbar.areaMode ? 'active' : ''}`}
-                    aria-label="Annotate document"
-                    aria-pressed={documentToolbar.areaMode}
-                    disabled={busy || !documentToolbar.canAnnotate || document?.draft}
-                    onClick={() =>
-                      void transition(async () => {
-                        frame.current?.contentWindow?.postMessage(
-                          { type: 'blueprint-toggle-annotate' },
-                          'blueprint://document',
-                        );
-                      })
-                    }
-                  >
-                    Annotate
-                  </button>
-                </>
-              )}
-            </header>
             {activeBrowser ? (
               <>
-                <div className="browser-toolbar">
-                  <button
-                    aria-label="Back"
-                    disabled={!activeBrowser.canGoBack}
-                    onClick={() =>
-                      void transition(() =>
-                        invoke('browserCommand', { tabId: activeBrowser.id, action: 'back' }),
-                      )
-                    }
-                  >
-                    ←
-                  </button>
-                  <button
-                    aria-label="Forward"
-                    disabled={!activeBrowser.canGoForward}
-                    onClick={() =>
-                      void transition(() =>
-                        invoke('browserCommand', { tabId: activeBrowser.id, action: 'forward' }),
-                      )
-                    }
-                  >
-                    →
-                  </button>
-                  <button
-                    aria-label={activeBrowser.loading ? 'Stop' : 'Reload'}
-                    onClick={() =>
-                      void transition(() =>
-                        invoke('browserCommand', {
-                          tabId: activeBrowser.id,
-                          action: activeBrowser.loading ? 'stop' : 'reload',
-                        }),
-                      )
-                    }
-                  >
-                    {activeBrowser.loading ? '■' : '↻'}
-                  </button>
-                  <select
-                    aria-label="Browser zoom"
-                    value={activeBrowser.zoomFactor ?? 1}
-                    onChange={(event) =>
-                      void transition(() =>
-                        invoke('browserCommand', {
-                          tabId: activeBrowser.id,
-                          action: 'zoom',
-                          zoomFactor: Number(event.target.value),
-                        }),
-                      )
-                    }
-                  >
-                    {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((factor) => (
-                      <option key={factor} value={factor}>
-                        {factor === 1 ? '100% · Reset' : Math.round(factor * 100) + '%'}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    aria-label="Open page in external browser"
-                    title="Open externally · sign-in remains in that browser"
-                    onClick={() =>
-                      void action(() =>
-                        invoke('browserCommand', { tabId: activeBrowser.id, action: 'external' }),
-                      )
-                    }
-                  >
-                    ↗
-                  </button>
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void transition(() =>
-                        invoke('browserCommand', {
-                          tabId: activeBrowser.id,
-                          action: 'navigate',
-                          url,
-                        }),
-                      );
-                    }}
-                  >
-                    <input
-                      aria-label="Browser address"
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                    />
-                  </form>
-                  <button
-                    className={browser.annotating ? 'active' : ''}
-                    aria-label="Annotate browser"
-                    aria-pressed={browser.annotating}
-                    onClick={() =>
-                      void action(() =>
-                        invoke('browserCommand', { tabId: activeBrowser.id, action: 'annotate' }),
-                      )
-                    }
-                  >
-                    Annotate
-                  </button>
-                </div>
                 {activeBrowser.error && (
                   <div role="alert" className="error-banner">
                     {activeBrowser.error}

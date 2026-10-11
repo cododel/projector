@@ -65,7 +65,10 @@ test('document area capture stays private until Save and opens its numbered froz
     const frame = page.frameLocator('iframe');
     await expect(frame.getByRole('heading', { name: 'Captured plan' })).toBeVisible();
     const fixedHeader = await page.locator('.plan-header').boundingBox();
-    const strip = await page.locator('.tab-bar').boundingBox();
+    await expect(titlebar.getByRole('tab', { name: 'Plan', exact: true })).toBeVisible();
+    await expect(page.locator('.workspace [role=tablist]')).toHaveCount(0);
+    await expect(page.locator('.window-title, .plan-header h1')).toHaveCount(0);
+    const strip = await titlebar.boundingBox();
     expect(fixedHeader!.y).toBeCloseTo(strip!.y + strip!.height, 0);
     await frame.locator('body').evaluate(() => window.scrollTo(0, 100));
     expect((await page.locator('.plan-header').boundingBox())!.y).toBe(fixedHeader!.y);
@@ -87,6 +90,32 @@ test('document area capture stays private until Save and opens its numbered froz
     await page.screenshot({
       path: resolve('.tmp/tasks/titlebar-20261010/production.png'),
     });
+
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 700));
+    for (let i = 0; i < 9; i++) {
+      await titlebar.getByRole('button', { name: 'New tab', exact: true }).click();
+      await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeFocused();
+    }
+    await expect(titlebar.getByRole('tab')).toHaveCount(10);
+    const overflow = await titlebar.locator('.content-tabs').evaluate((el) => ({
+      width: el.clientWidth,
+      total: el.scrollWidth,
+      left: el.scrollLeft,
+    }));
+    expect(overflow.total).toBeGreaterThan(overflow.width);
+    expect(overflow.left).toBeGreaterThan(0);
+    const selectedTab = await titlebar.locator('.content-tab.active').boundingBox();
+    const plus = await titlebar.getByRole('button', { name: 'New tab', exact: true }).boundingBox();
+    expect(selectedTab!.x + selectedTab!.width).toBeLessThanOrEqual(plus!.x + 1);
+    await page.screenshot({ path: resolve('.tmp/tasks/titlebar-20261010/overflow.png') });
+    await titlebar.getByRole('tab', { name: 'Plan', exact: true }).click();
+    await expect
+      .poll(() => titlebar.locator('.content-tabs').evaluate((el) => el.scrollLeft))
+      .toBe(0);
+    for (let i = 0; i < 9; i++) {
+      await titlebar.getByRole('button', { name: 'Close new tab tab', exact: true }).last().click();
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1360, 900));
 
     await page.getByRole('button', { name: 'Annotate document', exact: true }).click();
     const bounds = await frame.getByLabel('Select annotation area').boundingBox();

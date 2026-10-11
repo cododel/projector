@@ -152,6 +152,51 @@ test('plan-owned tabs, local comments, browser close and restart preserve indepe
   await expect(page.getByRole('tab', { name: 'New tab', exact: true })).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveValue(url + '/');
   await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toBeVisible();
+  const toolbar = page.locator('.plan-header');
+  await expect(toolbar.getByRole('textbox', { name: 'Browser address' })).toBeVisible();
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 700));
+  for (const [left, right] of [
+    [true, true],
+    [false, true],
+    [false, false],
+    [true, false],
+  ]) {
+    for (const [side, visible] of [
+      ['projects', left],
+      ['feedback', right],
+    ] as const) {
+      const toggle = page.getByRole('button', {
+        name: `${visible ? 'Show' : 'Hide'} ${side} sidebar`,
+      });
+      if (await toggle.count()) await toggle.click();
+    }
+    const bounds = await toolbar.boundingBox();
+    for (const name of [
+      'Document version',
+      'Browser zoom',
+      'Browser address',
+      'Annotate browser',
+    ]) {
+      const control = toolbar.getByLabel(name, { exact: true });
+      await expect(control).toBeVisible();
+      const box = await control.boundingBox();
+      expect(box!.y).toBeGreaterThanOrEqual(bounds!.y);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(bounds!.y + bounds!.height);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
+    }
+    expect(
+      await toolbar.getByLabel('Browser address').evaluate((el) => el.clientWidth),
+    ).toBeGreaterThan(45);
+    expect(
+      await toolbar
+        .getByLabel('Annotate browser')
+        .evaluate((el) => el.scrollWidth <= el.clientWidth),
+    ).toBe(true);
+    await page.screenshot({ path: `.tmp/browser-toolbar-${left}-${right}.png` });
+  }
+  await page.getByRole('button', { name: 'Show feedback sidebar' }).click();
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1360, 900));
+
   await app.evaluate(async ({ webContents, dialog }, url) => {
     const contents = webContents.getAllWebContents().find((c) => c.getURL() === url + '/')!;
     await contents.executeJavaScript('window.onbeforeunload=()=>true;void 0', true);
