@@ -1,6 +1,31 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+// Electron can initialize these before our main module chooses userData.
+// They do not establish a Projector identity. Unknown entries and persistent
+// browser Partitions remain meaningful so an ambiguous store is never hidden.
+const electronShellFiles = new Set([
+  'Cache',
+  'Code Cache',
+  'DawnGraphiteCache',
+  'DawnWebGPUCache',
+  'GPUCache',
+  'GPUPersistentCache',
+  'GraphiteDawnCache',
+  'DevToolsActivePort',
+  'Local State',
+  'Local Storage',
+  'Network Persistent State',
+  'Preferences',
+  'Session Storage',
+  'Shared Dictionary',
+  'Trust Tokens',
+  'Trust Tokens-journal',
+  'blob_storage',
+  'declarative_performance_observer.db',
+  'declarative_performance_observer.db-journal',
+]);
+
 /** Keep legacy data in place: recovery receipts and browser profiles refer to this root. */
 export function resolveApplicationData(
   appData: string,
@@ -16,7 +41,7 @@ export function resolveApplicationData(
     join(appData, 'agentic-blueprint'),
   ].filter((path) => {
     try {
-      return readdirSync(path).length > 0;
+      return readdirSync(path).some((name) => !electronShellFiles.has(name));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       throw new Error(

@@ -45,6 +45,31 @@ describe('application data identity across the rename', () => {
     expect(resolveApplicationData(root, {})).toBe(legacy);
     expect(await readdir(join(root, 'Projector'))).toEqual([]);
   });
+  it('ignores Electron-only directories without discarding or moving their files', async () => {
+    const root = await appData();
+    const legacy = await stored(root, 'Blueprint');
+    for (const name of ['Projector', 'agentic-blueprint']) {
+      const path = join(root, name);
+      await mkdir(join(path, 'Local Storage'), { recursive: true });
+      await mkdir(join(path, 'GPUCache'));
+      await writeFile(join(path, 'Preferences'), '{"fixture":true}');
+      await writeFile(join(path, 'Local State'), '{}');
+    }
+    expect(resolveApplicationData(root, {})).toBe(legacy);
+    for (const name of ['Projector', 'agentic-blueprint'])
+      expect(await readFile(join(root, name, 'Preferences'), 'utf8')).toBe('{"fixture":true}');
+  });
+  it('treats unknown files and browser partitions as meaningful data', async () => {
+    const root = await appData();
+    await stored(root, 'Blueprint');
+    const other = join(root, 'agentic-blueprint');
+    await mkdir(other);
+    await writeFile(join(other, 'unrecognized-data.json'), '{}');
+    expect(() => resolveApplicationData(root, {})).toThrow(/multiple.*application data/i);
+    await rm(join(other, 'unrecognized-data.json'));
+    await mkdir(join(other, 'Partitions'));
+    expect(() => resolveApplicationData(root, {})).toThrow(/multiple.*application data/i);
+  });
   it('keeps the existing new-brand root when it is the only nonempty root', async () => {
     const root = await appData();
     const preferred = await stored(root, 'Projector');
