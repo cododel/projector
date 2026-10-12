@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WebSocket } from 'ws';
@@ -601,4 +601,38 @@ it('reports an active writer as a session conflict without starting or resuming 
   expect((await auditRequests(audit)).some(request => request.method === 'thread/start' || request.method === 'thread/resume')).toBe(false);
   // The refused read must not poison the connection or block unrelated sessions.
   await expect(manager.read('other-thread')).resolves.toMatchObject({ id: 'other-thread' });
+});
+
+it('retains exact live ownership when discovery finishes after Resume identification', async () => {
+  const environment: Record<string, string> = {};
+  const { manager, root, project } = await setup(environment);
+  const gate = join(root, 'list-gate');
+  environment.CODEX_FIXTURE_LIST_GATE = gate;
+  const discovery = manager.discover([{ id: 'project', path: project }]);
+  await expect.poll(() => readFile(gate + '.waiting', 'utf8').catch(() => '')).toBe('waiting');
+  const launch = await manager.launchResume('project', project, 'thread-exact-fixture');
+  manager.bindTerminal(launch.launchId, 'race-terminal');
+  children.push(
+    spawn(launch.executable, launch.args, { cwd: launch.cwd, env: launch.env, stdio: 'ignore' }),
+  );
+  const current = () =>
+    manager.snapshot().sessions.find((session) => session.id === 'thread-exact-fixture');
+  await until(() => current()?.processState === 'running');
+  await writeFile(gate, 'release');
+  await discovery;
+  expect(current()).toMatchObject({
+    processState: 'running',
+    status: 'idle',
+    launchId: launch.launchId,
+    terminalId: 'race-terminal',
+  });
+  await manager.discover([{ id: 'project', path: project }]);
+  expect(current()).toMatchObject({
+    processState: 'running',
+    launchId: launch.launchId,
+    terminalId: 'race-terminal',
+  });
+  await expect(manager.launchResume('project', project, 'thread-exact-fixture')).rejects.toThrow(
+    'CODEX_SESSION_ALREADY_RUNNING',
+  );
 });

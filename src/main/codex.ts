@@ -415,7 +415,12 @@ export class CodexManager {
     const cwd = await canonical(thread.cwd);
     const previous = this.sessions.get(thread.id);
     const project = this.projects.find((value) => value.path === cwd);
-    const owned = launch ?? (previous?.launchId ? this.launches.get(previous.launchId) : undefined);
+    const owned =
+      launch ??
+      (previous?.launchId ? this.launches.get(previous.launchId) : undefined) ??
+      [...this.launches.values()].find(
+        (record) => record.sessionId === thread.id && !record.stopped,
+      );
     const running = owned && !owned.stopped;
     return {
       id: thread.id,
@@ -485,10 +490,24 @@ export class CodexManager {
         } while (cursor);
       }
       this.listedIds = new Set(found.keys());
-      // A live new thread can precede its persisted listing; do not drop that identity.
-      for (const session of this.sessions.values())
-        if (session.launchId && this.launches.has(session.launchId) && !found.has(session.id))
-          found.set(session.id, session);
+      // Listing can overlap Resume or Stop. Keep current process ownership while
+      // retaining fresh catalog metadata, including archive/subagent classification.
+      for (const session of this.sessions.values()) {
+        const owned = session.launchId ? this.launches.get(session.launchId) : undefined;
+        if (!owned && session.processState !== 'stopped') continue;
+        const listed = found.get(session.id);
+        if (listed) {
+          delete listed.launchId;
+          delete listed.terminalId;
+          found.set(session.id, {
+            ...listed,
+            processState: session.processState,
+            status: session.status,
+            ...(owned ? { launchId: owned.id, projectId: owned.projectId } : {}),
+            ...(session.terminalId ? { terminalId: session.terminalId } : {}),
+          });
+        } else if (owned) found.set(session.id, session);
+      }
       this.sessions = found;
       this.error = null;
       this.changed();

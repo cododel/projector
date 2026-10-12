@@ -2,7 +2,7 @@
 import process from 'node:process';
 import console from 'node:console';
 import { URL } from 'node:url';
-import { setTimeout } from 'node:timers';
+import { setTimeout, setInterval, clearInterval } from 'node:timers';
 import { spawn } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
@@ -221,6 +221,26 @@ if (args.includes('--remote')) {
       default:
         send({ id: value.id, error: { code: -32601, message: 'Unsupported fixture method' } });
         return;
+    }
+    if (
+      value.method === 'thread/list' &&
+      value.params?.archived &&
+      process.env.CODEX_FIXTURE_LIST_GATE
+    ) {
+      const gate = process.env.CODEX_FIXTURE_LIST_GATE;
+      writeFileSync(gate + '.waiting', 'waiting');
+      const timer = setInterval(() => {
+        let released = false;
+        try {
+          released = readFileSync(gate, 'utf8') === 'release';
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+        if (!released) return;
+        clearInterval(timer);
+        send({ id: value.id, result });
+      }, 10);
+      return;
     }
     send({ id: value.id, result });
     if (
