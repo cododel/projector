@@ -461,7 +461,23 @@ test('live browser annotation supports focused keyboard element and region selec
   );
   const layer = overlay.getByRole('region', { name: 'Browser annotation selection' });
   await expect(layer).toBeFocused();
+  // Showing a native overlay can synthesize a stationary pointer event under the
+  // desktop cursor. It must not replace the keyboard's centered selection.
+  await layer.dispatchEvent('pointermove', {
+    clientX: 3,
+    clientY: 423,
+    movementX: 0,
+    movementY: 0,
+  });
   for (let index = 0; index < 4; index++) await layer.press('Shift+ArrowUp');
+  await layer.dispatchEvent('pointermove', {
+    clientX: 3,
+    clientY: 423,
+    movementX: 0,
+    movementY: 0,
+  });
+  await expect(overlay.locator('#keyboard-pointer')).toHaveCSS('left', '420px');
+  await expect(overlay.locator('#keyboard-pointer')).toHaveCSS('top', '70px');
   await layer.press('Enter');
   const composer = overlay.getByLabel('Area annotation comment');
   await expect(composer).toBeFocused();
