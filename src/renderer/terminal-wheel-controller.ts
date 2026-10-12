@@ -78,7 +78,12 @@ export function terminalWheelController(
     if (generated.has(event)) return true;
     const tui =
       terminal.modes.mouseTrackingMode !== 'none' || terminal.buffer.active.type === 'alternate';
-    if (!tui || event.shiftKey || event.deltaX !== 0 || event.deltaY === 0) {
+    if (
+      !tui ||
+      event.shiftKey ||
+      Math.abs(event.deltaX) > Math.abs(event.deltaY) ||
+      event.deltaY === 0
+    ) {
       reset();
       return true;
     }

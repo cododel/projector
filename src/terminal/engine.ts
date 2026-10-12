@@ -81,6 +81,8 @@ interface Context {
   activeView: string | null;
   pending: Promise<void>;
   pendingBytes: number;
+  outputQueue?: { data: string; bytes: number }[];
+  outputFailed?: boolean;
   paused: boolean;
   timer?: ReturnType<typeof setTimeout>;
   retiring?: boolean;
@@ -157,7 +159,7 @@ export class TerminalService {
     context.removal = (async () => {
       if (context.timer) clearTimeout(context.timer);
       context.timer = undefined;
-      await context.pending;
+      await context.pending.catch(() => {});
       try {
         await context.processCleanup;
       } catch (error) {
@@ -285,37 +287,77 @@ export class TerminalService {
     }
   }
   private output(context: Context, data: string) {
+    if (context.outputFailed) return;
     const bytes = Buffer.byteLength(data);
     context.pendingBytes += bytes;
     if (context.pendingBytes > 4 * 1024 * 1024 && !context.paused && context.pty) {
       context.paused = true;
       context.pty.pause();
     }
+    const entry = { data, bytes };
+    if (context.outputQueue) {
+      context.outputQueue.push(entry);
+      return;
+    }
+    const queue = [entry];
+    context.outputQueue = queue;
     context.pending = context.pending
       .then(async () => {
-        await this.write(context, data);
-        const output = {
-          id: context.record.id,
-          generation: context.generation,
-          seq: ++context.seq,
-          data,
-        };
-        context.replay.push(output);
-        context.replayBytes += bytes;
-        this.trimReplay(context);
-        if (context.terminal.buffer.normal.baseY >= this.options.scrollback)
-          this.markTruncated(context);
-        this.events.output?.(output);
-        this.schedule(context);
+        // Freeze this worker's queue before parsing. Later arrivals extend a new
+        // pending promise, so screen reads retain a finite confirmation barrier.
+        context.outputQueue = undefined;
+        // xterm schedules each empty-buffer write separately. Coalesce waiting
+        // fragments without delaying fresh output or changing replay/event boundaries.
+        while (queue.length) {
+          let count = 1,
+            size = queue[0].bytes;
+          while (count < queue.length && size + queue[count].bytes <= 65536) {
+            size += queue[count++].bytes;
+          }
+          // A single oversized PTY fragment stays intact, including Unicode and CSI.
+          const batch = queue.splice(0, count);
+          await this.write(context, batch.map((item) => item.data).join(''));
+          for (const item of batch) {
+            const output = {
+              id: context.record.id,
+              generation: context.generation,
+              seq: ++context.seq,
+              data: item.data,
+            };
+            context.replay.push(output);
+            context.replayBytes += item.bytes;
+            this.trimReplay(context);
+            if (context.terminal.buffer.normal.baseY >= this.options.scrollback)
+              this.markTruncated(context);
+            this.events.output?.(output);
+            context.pendingBytes -= item.bytes;
+          }
+          this.schedule(context);
+          if (context.paused && context.pendingBytes < 1024 * 1024) {
+            context.paused = false;
+            context.pty?.resume();
+          }
+        }
       })
-      .finally(() => {
-        context.pendingBytes -= bytes;
-        if (context.paused && context.pendingBytes < 1024 * 1024) {
+      .catch((error) => {
+        context.outputFailed = true;
+        context.outputQueue = undefined;
+        context.pendingBytes = 0;
+        queue.length = 0;
+        if (context.paused) {
           context.paused = false;
           context.pty?.resume();
         }
+        context.record.error =
+          'Terminal output could not be parsed. Close the terminal and start a new process.';
+        this.changed();
+        throw error;
       });
+    // screen/Stop callers reconcile through pending; also observe rejection when
+    // no renderer is subscribed so it cannot become an unhandled rejection.
+    void context.pending.catch(() => {});
   }
+
   private markTruncated(context: Context) {
     if (context.truncated && context.record.truncated) return;
     context.truncated = true;
@@ -669,7 +711,7 @@ export class TerminalService {
     if (!context) return;
     await this.checkpointCwd(context);
     await this.terminate(context);
-    await context.pending;
+    await context.pending.catch(() => {});
     await this.retire(context);
     return { ...context.record };
   }
@@ -714,7 +756,7 @@ export class TerminalService {
         try {
           await this.checkpointCwd(context);
           await this.terminate(context);
-          await context.pending;
+          await context.pending.catch(() => {});
           await this.retire(context);
         } catch (error) {
           errors.push(error);

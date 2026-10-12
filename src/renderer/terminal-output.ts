@@ -77,6 +77,7 @@ export class TerminalOutputReader {
       if (replay.gap || !this.sameGeneration(replay)) await this.restore();
       else
         for (const event of replay.events) {
+          if (this.stopped) return;
           if (event.seq <= this.seq) continue;
           if (!this.sameGeneration(event) || event.seq !== this.seq + 1) {
             await this.restore();
@@ -101,10 +102,36 @@ export class TerminalOutputReader {
       while (this.pending.length && !this.stopped) {
         const event = this.pending.shift()!;
         this.bytes -= event.data.length * 2;
-        await this.accept(event);
+        // Batch only an already contiguous live stream. Gaps and incarnation
+        // changes still reconcile through the authoritative screen/replay path.
+        if (!event.gap && this.sameGeneration(event) && event.seq === this.seq + 1) {
+          const batch = [event];
+          let size = event.data.length * 2;
+          while (this.pending.length) {
+            const next = this.pending[0];
+            if (
+              next.gap ||
+              next.generation !== event.generation ||
+              next.seq !== batch[batch.length - 1].seq + 1 ||
+              size + next.data.length * 2 > 65536
+            )
+              break;
+            this.pending.shift();
+            this.bytes -= next.data.length * 2;
+            size += next.data.length * 2;
+            batch.push(next);
+          }
+          await this.source.write(batch.map((item) => item.data).join(''));
+          this.seq = batch[batch.length - 1].seq;
+        } else await this.accept(event);
       }
     } catch (error) {
-      if (!this.stopped) this.source.error(error);
+      if (!this.stopped) {
+        // The parser may already have consumed part of a rejected write. Do not
+        // replay it or continue drawing until a new view restores a fresh screen.
+        this.stop();
+        this.source.error(error);
+      }
     } finally {
       this.draining = false;
     }

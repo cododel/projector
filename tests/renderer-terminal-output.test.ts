@@ -17,6 +17,96 @@ const event = (seq: number, data: string, gap?: boolean): TerminalOutput => ({
   gap,
 });
 describe('ordered renderer terminal consumption', () => {
+  it('batches queued contiguous fragments without changing Unicode or escape bytes', async () => {
+    let release!: () => void;
+    const writes: string[] = [];
+    const reader = new TerminalOutputReader({
+      screen: async () => screen(0, ''),
+      replay: async () => {
+        throw new Error('Unexpected replay');
+      },
+      reset: async () => {},
+      write: async (data) => {
+        writes.push(data);
+        if (data === 'hold')
+          await new Promise<void>((done) => {
+            release = done;
+          });
+      },
+      error: (error) => {
+        throw error;
+      },
+    });
+    await reader.start();
+    reader.push(event(1, 'hold'));
+    const fragments = ['\x1b[', '31m', '日本語 ', '\ud83d', '\ude42', '\x1b[0m'];
+    fragments.forEach((data, i) => reader.push(event(i + 2, data)));
+    release();
+    await tick();
+    expect(writes).toEqual(['hold', fragments.join('')]);
+    reader.stop();
+  });
+  it('does not parse pending output after a failed write with an unknown partial result', async () => {
+    let reject!: (error: Error) => void;
+    const writes: string[] = [],
+      errors: unknown[] = [];
+    const reader = new TerminalOutputReader({
+      screen: async () => screen(0, ''),
+      replay: async () => {
+        throw new Error('Unexpected replay');
+      },
+      reset: async () => {},
+      write: async (data) => {
+        writes.push(data);
+        await new Promise<void>((_, fail) => {
+          reject = fail;
+        });
+      },
+      error: (error) => {
+        errors.push(error);
+      },
+    });
+    await reader.start();
+    reader.push(event(1, 'possibly parsed'));
+    reader.push(event(2, 'queued'));
+    reject(new Error('parse failed'));
+    await tick();
+    reader.push(event(3, 'later'));
+    await tick();
+    expect(writes).toEqual(['possibly parsed']);
+    expect(errors).toHaveLength(1);
+    reader.stop();
+  });
+  it('bounds parser batches and drops queued data when stopped during parsing', async () => {
+    let release!: () => void;
+    const writes: string[] = [];
+    const reader = new TerminalOutputReader({
+      screen: async () => screen(0, ''),
+      replay: async () => {
+        throw new Error('Unexpected replay');
+      },
+      reset: async () => {},
+      write: async (data) => {
+        writes.push(data);
+        await new Promise<void>((done) => {
+          release = done;
+        });
+      },
+      error: (error) => {
+        throw error;
+      },
+    });
+    await reader.start();
+    reader.push(event(1, 'hold'));
+    for (let seq = 2; seq <= 101; seq++) reader.push(event(seq, 'x'.repeat(1024)));
+    release();
+    await tick();
+    expect(writes).toEqual(['hold', 'x'.repeat(32768)]);
+    reader.stop();
+    release();
+    await tick();
+    expect(writes).toHaveLength(2);
+  });
   it('buffers events racing screen restoration and ignores older/duplicate output', async () => {
     let resolve!: (value: TerminalScreen) => void;
     const output: string[] = [];

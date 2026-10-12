@@ -70,3 +70,12 @@ clipboard integration or OS IME composition.
 
 
 Terminal wheel regressions use the installed xterm and real PTYs in both mouse-reporting and alternate-buffer arrow modes. They assert proportional counts, fractional accumulation, direction changes, bounded frame packets, parser mode resets and inactive-pane isolation. Ordinary scrollback is checked with browser-generated wheel input and must send no PTY input. The warmed measurement test attaches `wheel-measurements.json`: 100 measured actions after 10 warmups, normalized rows, IPC packets, wheel-to-output notification and output-to-DOM latencies. These are fixture pipeline measurements, not physical presentation timing or proof of a Codex CPU/GPU bottleneck. Visible installed Codex qualification uses isolated local history and no model turn; native synthesized gestures do not qualify physical trackpad hardware.
+
+Predominantly vertical TUI wheel gestures remain proportional when they have minor
+horizontal drift; Shift and predominantly horizontal gestures retain xterm handling.
+The service and renderer coalesce already waiting contiguous output into parser
+writes of up to 64 KiB (a single larger incoming fragment stays intact). Original
+PTY events and sequence numbers are retained. Regression tests exercise fragmented
+Unicode/CSI, batch bounds, replay/generation reconciliation, stop during parsing,
+PTY pause/resume under pressure and parser errors. An unknown partial parser result
+is surfaced and is never automatically replayed; process cleanup remains available.

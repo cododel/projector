@@ -745,7 +745,7 @@ for (const mode of ['mouse', 'arrows'])
     const rows = page.locator('.terminal-pane .xterm-rows');
     await expect(rows).toContainText('WHEEL_READY');
     await page.locator('.xterm-helper-textarea').focus();
-    const wheel = (deltaY: number, deltaMode = 1) =>
+    const wheel = (deltaY: number, deltaMode = 1, deltaX = 0) =>
       page.locator('.xterm-screen').evaluate(
         (element, delta) => {
           const rect = element.getBoundingClientRect();
@@ -754,15 +754,16 @@ for (const mode of ['mouse', 'arrows'])
               bubbles: true,
               cancelable: true,
               deltaY: delta.deltaY,
+              deltaX: delta.deltaX,
               deltaMode: delta.deltaMode,
               clientX: rect.x + 40,
               clientY: rect.y + 40,
             }),
           );
         },
-        { deltaY, deltaMode },
+        { deltaY, deltaMode, deltaX },
       );
-    await wheel(-5);
+    await wheel(-5, 1, 0.1);
     await expect(rows).toContainText('SCROLL_UP=5 DOWN=0');
     await wheel(10);
     await expect(rows).toContainText('SCROLL_UP=5 DOWN=10');
