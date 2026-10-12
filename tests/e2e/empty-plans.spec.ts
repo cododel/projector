@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { Mcp } from './mcp';
+import { paneLeaves, type ApplicationWorkspaceSnapshot } from '../../src/shared/application-workspace';
 let app: ElectronApplication, root: string, server: Server | undefined, mcp: Mcp | undefined;
 test.afterEach(async () => {
   mcp?.close();
@@ -212,12 +213,75 @@ test('agent-created unpublished plan has native project actions and retains priv
     join(String(manifest.sourcePath), String(manifest.sourceFile)),
     '# First publication\n\n<TextAnswer id="decision" meaning="Decision" semanticsVersion="1" defaultValue="" />',
   );
+  // Keep the shell's old preview mounted while the real main process switches
+  // the pane to the first publication. This controls timing, never document data.
+  await app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].webContents.send('projector:refresh'),
+  );
+  await expect(page.frameLocator('iframe').getByLabel('Decision', { exact: true })).toBeDisabled();
+  await app.evaluate(({ BrowserWindow }) => {
+    const contents = BrowserWindow.getAllWindows()[0].webContents;
+    const send = contents.send.bind(contents);
+    contents.send = (channel, ...args) => {
+      if (channel !== 'projector:refresh') send(channel, ...args);
+    };
+    Object.assign(globalThis, {
+      releasePlanRefresh: () => {
+        contents.send = send;
+        send('projector:refresh');
+      },
+    });
+  });
   const revision = await mcp.tool('publish_artifact', {
     artifactId,
     expectedLatestRevision: null,
     operationId: randomUUID(),
   });
   await mcp.tool('show_artifact', { artifactId, revisionId: revision.revisionId });
+  await expect
+    .poll(async () => {
+      const current = (await page.evaluate(() =>
+        (
+          window as unknown as { projector: { invoke(name: string): Promise<unknown> } }
+        ).projector.invoke('applicationSnapshot'),
+      )) as ApplicationWorkspaceSnapshot;
+      return current.workspaces[current.selectedWorkspace!].tabs
+        .flatMap((tab) => paneLeaves(tab.root))
+        .flatMap((pane) =>
+          pane.content.kind === 'plan' && pane.content.tab.kind === 'document'
+            ? (pane.content.tab.revisionId ?? [])
+            : [],
+        );
+    })
+    .toContain(String(revision.revisionId));
+  const stale = await page
+    .frameLocator('iframe')
+    .locator('body')
+    .evaluate(async (_body, artifactId) => {
+      const id = crypto.randomUUID();
+      return new Promise<{ error?: string; result?: unknown }>((resolve) => {
+        const receive = (event: MessageEvent) => {
+          if (event.source === window.parent && event.data?.id === id) {
+            window.removeEventListener('message', receive);
+            resolve(event.data);
+          }
+        };
+        window.addEventListener('message', receive);
+        window.parent.postMessage(
+          {
+            type: 'projector-request',
+            id,
+            method: 'getDocument',
+            params: { artifactId, revisionId: null },
+          },
+          new URLSearchParams(location.search).get('shellOrigin')!,
+        );
+      });
+    }, artifactId);
+  expect(stale.error).toContain('DOCUMENT_PANE_CHANGED');
+  await app.evaluate(() =>
+    (globalThis as unknown as { releasePlanRefresh(): void }).releasePlanRefresh(),
+  );
   await expect(
     page.frameLocator('iframe').getByRole('heading', { name: 'First publication' }),
   ).toBeVisible();

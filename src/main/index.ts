@@ -804,12 +804,20 @@ void app
       }
       if (name === 'paneDocument' || name === 'paneView' || name === 'paneAnnotationState') {
         const value = z.object({ key: z.string().min(1), paneId: z.string().min(1),
+          artifactId: z.string().min(1).optional(),
+          revisionId: z.string().min(1).nullable().optional(),
           scrollTop: z.number().finite().nonnegative().optional(),
           view: z.object({ details: z.record(z.string(), z.boolean()) }).optional(),
         }).strict().parse(args);
         const content = applicationWorkspace.findPane(value.key, value.paneId).content;
         if (content.kind !== 'plan' || content.tab.kind !== 'document') throw new Error('DOCUMENT_PANE_REQUIRED');
         const identity = { artifactId: content.artifactId, revisionId: content.tab.revisionId };
+        // An old iframe may still be mounted while the shell catches up with a
+        // main-process selection. Never give it another revision's editable state.
+        if (name === 'paneDocument' &&
+          ((value.artifactId !== undefined && value.artifactId !== identity.artifactId) ||
+            (value.revisionId !== undefined && value.revisionId !== identity.revisionId)))
+          throw new Error('DOCUMENT_PANE_CHANGED: The document view has changed.');
         if (name === 'paneView') return applicationMutation(async () => {
           if (identity.revisionId && value.view) {
             const context = await rpc('captureAnnotationState', { ...identity, view: value.view }) as import('../shared/annotation-context').AnnotationStateContext;

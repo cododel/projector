@@ -1254,7 +1254,8 @@ function App(): React.JSX.Element {
       if (owner) {
         if (method === 'getDocument') {
           method = 'paneDocument';
-          input = { key: owner.key, paneId: owner.paneId };
+          input = { key: owner.key, paneId: owner.paneId,
+            artifactId: owner.artifactId, revisionId: owner.revisionId };
         }
         if (method === 'setViewState') {
           method = 'paneView';
