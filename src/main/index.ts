@@ -1,3 +1,4 @@
+import { normalizeLegacyEnvironment, resolveApplicationData } from '../shared/brand-compat';
 import {
   app,
   BrowserWindow,
@@ -34,16 +35,19 @@ import { safeBrowserBounds, validateArea } from './browser-policy';
 import { z } from 'zod';
 const here = dirname(fileURLToPath(import.meta.url));
 const developmentUrl = app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL;
+normalizeLegacyEnvironment();
 auditE2EWindows(app);
-app.setName('Blueprint');
-if (process.env.BLUEPRINT_DATA) app.setPath('userData', process.env.BLUEPRINT_DATA);
+app.setName('Projector');
+const applicationData = resolveApplicationData(app.getPath('appData'));
+app.setPath('userData', applicationData);
+app.setPath('sessionData', applicationData);
 const workspace = new Workspace(join(app.getPath('userData'), 'workspace.json'));
 const applicationWorkspace = new ApplicationWorkspace(join(app.getPath('userData'), 'application-workspace.json'));
 let mcpSetup: McpSetup | null = null;
 const runningTerminals = new Set<string>();
 const knownTerminals = new Set<string>();
-const terminalDelivery = new TerminalOutputDelivery(delivery => window?.webContents.send('blueprint:terminal-output', delivery));
-ipcMain.on('blueprint:terminal-output-ack', (event, deliveryId: unknown) => {
+const terminalDelivery = new TerminalOutputDelivery(delivery => window?.webContents.send('projector:terminal-output', delivery));
+ipcMain.on('projector:terminal-output-ack', (event, deliveryId: unknown) => {
   if (window && event.sender === window.webContents && event.senderFrame === event.sender.mainFrame && typeof deliveryId === 'string')
     terminalDelivery.acknowledge(deliveryId);
 });
@@ -71,15 +75,15 @@ const terminals = new TerminalManager({
 const codex = new CodexManager({
   getExecutable: () => {
     const path = applicationWorkspace.snapshot().settings.codexExecutable;
-    return path === 'codex' ? process.env.BLUEPRINT_E2E_CODEX_EXECUTABLE ?? path : path;
+    return path === 'codex' ? process.env.PROJECTOR_E2E_CODEX_EXECUTABLE ?? path : path;
   },
   getProfile: () => applicationWorkspace.snapshot().settings.codexProfile || undefined,
   getMcpOverrides: () => {
     if (!mcpSetup) throw new Error('MCP setup is unavailable');
     return {
-      'mcp_servers.blueprint.command': mcpSetup.executable,
-      'mcp_servers.blueprint.args': mcpSetup.args,
-      'mcp_servers.blueprint.env.BLUEPRINT_RUNTIME_DESCRIPTOR': mcpSetup.descriptorPath,
+      'mcp_servers.projector.command': mcpSetup.executable,
+      'mcp_servers.projector.args': mcpSetup.args,
+      'mcp_servers.projector.env.PROJECTOR_RUNTIME_DESCRIPTOR': mcpSetup.descriptorPath,
     };
   },
   onIdentity: (terminalId, sessionId) => {
@@ -100,7 +104,7 @@ const codex = new CodexManager({
   onChange: workspaceRefresh,
   onError: workspaceRefresh,
 });
-const harnessInterval = Number(process.env.BLUEPRINT_E2E_HARNESS_INTERVAL_MS);
+const harnessInterval = Number(process.env.PROJECTOR_E2E_HARNESS_INTERVAL_MS);
 const harnessSync = new HarnessSync(async () => {
   const state = await rpc('snapshot') as { projects: { id: string; path: string }[] };
   await codex.discover(state.projects);
@@ -108,7 +112,7 @@ const harnessSync = new HarnessSync(async () => {
 let harnessChanges: Promise<unknown> = Promise.resolve();
 function harnessMutation<T>(action: () => Promise<T>): Promise<T> {
   const operation = harnessChanges.catch(() => {}).then(async () => {
-    if (quitting) throw new Error('Blueprint is shutting down.');
+    if (quitting) throw new Error('Projector is shutting down.');
     harnessSync.stop(); await harnessSync.settled();
     try { return await action(); }
     finally { if (!quitting) harnessSync.start(); }
@@ -129,7 +133,7 @@ function clearRendererEditingScopes() {
   return rpc('editing', { active: editingScopes.size > 0 });
 }
 function applicationMutation<T>(action: () => Promise<T> | T): Promise<T> {
-  if (quitting) return Promise.reject(new Error('Blueprint is shutting down.'));
+  if (quitting) return Promise.reject(new Error('Projector is shutting down.'));
   const write = applicationWrites.catch(() => {}).then(async () => {
     applicationWorkspace.assertConfirmed();
     workspace.assertConfirmed();
@@ -219,7 +223,7 @@ async function applicationPlan(artifactId: string, revisionId: string | null, al
   return pane;
 }
 function workspaceRefresh() {
-  window?.webContents.send('blueprint:refresh');
+  window?.webContents.send('projector:refresh');
 }
 function applicationShortcut(input: Electron.Input): boolean {
   if (shortcutCapture || input.type !== 'keyDown') return false;
@@ -227,7 +231,7 @@ function applicationShortcut(input: Electron.Input): boolean {
     altKey: input.alt, shiftKey: input.shift, isComposing: input.isComposing, repeat: input.isAutoRepeat },
     applicationWorkspace.snapshot().settings.shortcuts, process.platform);
   if (!action) return false;
-  window?.webContents.send('blueprint:shortcut', action);
+  window?.webContents.send('projector:shortcut', action);
   return true;
 }
 async function selectWorkspaceTab(artifactId: string, tabId: string) {
@@ -254,7 +258,7 @@ async function selectWorkspaceTab(artifactId: string, tabId: string) {
 
 protocol.registerSchemesAsPrivileged([
   {
-    scheme: 'blueprint',
+    scheme: 'projector',
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
   },
 ]);
@@ -277,22 +281,22 @@ function failRpcRequests(): void {
     clearTimeout(pending.timer);
     pending.reject(
       new Error(
-        'UNKNOWN_RESULT: Blueprint runtime disconnected. An operation may have completed; reconcile before retrying. Restart Blueprint and reconnect MCP.',
+        'UNKNOWN_RESULT: Projector runtime disconnected. An operation may have completed; reconcile before retrying. Restart Projector and reconnect MCP.',
       ),
     );
   }
   requests.clear();
-  window?.webContents.send('blueprint:operation-status', { waiting: false });
+  window?.webContents.send('projector:operation-status', { waiting: false });
 }
 function rpc(name: string, args: unknown = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (!worker || !runtimeReady) {
-      reject(new Error('Blueprint runtime is unavailable'));
+      reject(new Error('Projector runtime is unavailable'));
       return;
     }
     const id = randomUUID();
     const timer = setTimeout(() => {
-      window?.webContents.send('blueprint:operation-status', { waiting: true, operation: name });
+      window?.webContents.send('projector:operation-status', { waiting: true, operation: name });
     }, 10000);
     requests.set(id, { resolve, reject, timer });
     try {
@@ -347,7 +351,7 @@ function createWindow(background = false) {
       height: 900,
       minWidth: 980,
       minHeight: 650,
-      title: 'Blueprint',
+      title: 'Projector',
       titleBarStyle: 'hiddenInset',
       trafficLightPosition: { x: 14, y: 13 },
       show: !background,
@@ -367,7 +371,7 @@ function createWindow(background = false) {
       if (!key || applicationWorkspace.snapshot().selectedSurface === 'project' || applicationWorkspace.workspace(key).activePaneId === viewId) return;
       // Native pages cannot run the shell's document-editor drain themselves.
       // Route their focus request through the same acknowledged transition as tabs.
-      window?.webContents.send('blueprint:focus-pane', { key, paneId: viewId });
+      window?.webContents.send('projector:focus-pane', { key, paneId: viewId });
     },
     overlayPreload: join(here, '../preload/browser-overlay.cjs'),
     onChange: () => {
@@ -447,7 +451,7 @@ function createWindow(background = false) {
       });
       return z.object({ id: z.string(), number: z.number().int().positive() }).parse(result);
     },
-  });
+  }, app.getPath('sessionData'));
   window.webContents.on('before-input-event', (event, input) => {
     if (applicationShortcut(input)) event.preventDefault();
   });
@@ -456,7 +460,7 @@ function createWindow(background = false) {
     if (!target || target.isDestroyed() || quitting || isBackgroundE2E()) return;
     const answer = await dialog.showMessageBox(target, {
       type: 'warning',
-      message: 'Blueprint view stopped responding',
+      message: 'Projector view stopped responding',
       detail: `${reason}. Reload restores confirmed local work. An interrupted Save must be reconciled before retrying.`,
       buttons: ['Cancel', 'Reload view'],
       defaultId: 0,
@@ -478,8 +482,8 @@ function createWindow(background = false) {
   });
   window.webContents.on('will-navigate', (event, url) => {
     if (
-      !url.startsWith('blueprint://app/') &&
-      !url.startsWith(developmentUrl ?? 'blueprint://app/')
+      !url.startsWith('projector://app/') &&
+      !url.startsWith(developmentUrl ?? 'projector://app/')
     )
       event.preventDefault();
   });
@@ -498,7 +502,7 @@ function createWindow(background = false) {
       if (!created.isDestroyed()) created.showInactive();
     });
   }
-  void window.loadURL('blueprint://app/index.html');
+  void window.loadURL('projector://app/index.html');
 }
 app.on('activate', () => {
   if (!window) createWindow();
@@ -567,13 +571,13 @@ void app
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
         {
-          label: 'Blueprint',
+          label: 'Projector',
           submenu: [
             { role: 'about' },
-            { label: 'Settings…', click: () => window?.webContents.send('blueprint:open-settings') },
-            { label: 'Closing a window keeps Blueprint runtime running', enabled: false },
+            { label: 'Settings…', click: () => window?.webContents.send('projector:open-settings') },
+            { label: 'Closing a window keeps Projector runtime running', enabled: false },
             { type: 'separator' },
-            { role: 'quit', label: 'Quit Blueprint' },
+            { role: 'quit', label: 'Quit Projector' },
           ],
         },
         { role: 'editMenu' },
@@ -582,7 +586,7 @@ void app
       ]),
     );
     const renderer = resolve(here, '../renderer');
-    protocol.handle('blueprint', async (request) => {
+    protocol.handle('projector', async (request) => {
       try {
         const url = new URL(request.url);
         if (!['app', 'document'].includes(url.hostname))
@@ -615,7 +619,7 @@ void app
           headers: {
             'Content-Type': contentType,
             'Content-Security-Policy':
-              "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; frame-src blueprint://document; base-uri 'none'; form-action 'none'",
+              "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; frame-src projector://document; base-uri 'none'; form-action 'none'",
             'X-Content-Type-Options': 'nosniff',
           },
         });
@@ -625,16 +629,16 @@ void app
     });
     const data = app.getPath('userData');
     await mkdir(join(data, 'runtime'), { recursive: true, mode: 0o700 });
-    if (process.env.BLUEPRINT_SOCKET)
-      throw new Error('BLUEPRINT_SOCKET is no longer supported. Use BLUEPRINT_RUNTIME_DESCRIPTOR.');
+    if (process.env.PROJECTOR_SOCKET)
+      throw new Error('PROJECTOR_SOCKET is no longer supported. Use PROJECTOR_RUNTIME_DESCRIPTOR.');
     const descriptorPath =
-      process.env.BLUEPRINT_RUNTIME_DESCRIPTOR ?? join(data, 'runtime', 'endpoint.json');
+      process.env.PROJECTOR_RUNTIME_DESCRIPTOR ?? join(data, 'runtime', 'endpoint.json');
     worker = utilityProcess.fork(join(here, '../runtime/service.cjs'), [], {
       env: {
         ...process.env,
-        BLUEPRINT_DATA: data,
-        BLUEPRINT_RUNTIME_DESCRIPTOR: descriptorPath,
-        BLUEPRINT_COMPILER: join(here, '../runtime/compiler.cjs'),
+        PROJECTOR_DATA: data,
+        PROJECTOR_RUNTIME_DESCRIPTOR: descriptorPath,
+        PROJECTOR_COMPILER: join(here, '../runtime/compiler.cjs'),
       },
       stdio: 'pipe',
     });
@@ -651,7 +655,7 @@ void app
           if (!pending) return;
           clearTimeout(pending.timer);
           requests.delete(response.id);
-          window?.webContents.send('blueprint:operation-status', { waiting: false });
+          window?.webContents.send('projector:operation-status', { waiting: false });
           if (response.error)
             pending.reject(
               Object.assign(new Error(response.error.code + ': ' + response.error.message), {
@@ -662,7 +666,7 @@ void app
           else pending.resolve(response.result);
         }
         else if (message.type === 'refresh') {
-          window?.webContents.send('blueprint:refresh');
+          window?.webContents.send('projector:refresh');
           void browser
             ?.refreshAnnotations()
             .catch((error) => console.error('Browser annotation refresh failed', error));
@@ -709,7 +713,7 @@ void app
     });
     mcpSetup = await getMcpSetup({ isPackaged: app.isPackaged, development: Boolean(developmentUrl),
       appPath: app.getAppPath(), resourcesPath: process.resourcesPath, descriptorPath,
-      nodeOverride: process.env.BLUEPRINT_NODE });
+      nodeOverride: process.env.PROJECTOR_NODE });
     await terminals.start(data, join(here, '../terminal/service.cjs'), {
       scrollback: applicationWorkspace.snapshot().settings.terminalScrollback,
     });
@@ -741,14 +745,14 @@ void app
       if (artifact) applicationWorkspace.select(artifact.projectId, null);
     }
     await applicationWorkspace.save();
-    ipcMain.handle('blueprint:invoke', async (event, name: string, args: unknown) => {
+    ipcMain.handle('projector:invoke', async (event, name: string, args: unknown) => {
       const source = new URL(event.senderFrame?.url ?? 'about:blank');
       const trusted =
-        (source.hostname === 'app' && source.protocol === 'blueprint:') ||
+        (source.hostname === 'app' && source.protocol === 'projector:') ||
         (Boolean(developmentUrl) && event.senderFrame?.url.startsWith(developmentUrl!));
       if (!trusted || event.senderFrame !== event.sender.mainFrame)
         throw new Error('Untrusted IPC sender');
-      if (quitting) throw new Error('Blueprint is shutting down.');
+      if (quitting) throw new Error('Projector is shutting down.');
       if (name === 'shortcutCapture') {
         const { active } = z.object({ active: z.boolean() }).strict().parse(args);
         shortcutCapture = active;
@@ -1451,7 +1455,7 @@ void app
           if (conflict.code !== 'PROJECT_ID_CONFLICT' || !conflict.details?.projectId) throw error;
           const answer = await dialog.showMessageBox(window!, {
             type: 'question',
-            message: 'This folder copies an existing Blueprint project',
+            message: 'This folder copies an existing Projector project',
             detail: `Registered original: ${conflict.details.originalPath}. A new empty project preserves copied history in a backup folder and imports no private work.`,
             buttons: ['Cancel', 'Open original', 'Create empty project'],
             defaultId: 0,
@@ -1521,7 +1525,7 @@ void app
           appPath: app.getAppPath(),
           resourcesPath: process.resourcesPath,
           descriptorPath,
-          nodeOverride: process.env.BLUEPRINT_NODE,
+          nodeOverride: process.env.PROJECTOR_NODE,
         });
       }
       if (name === 'discard') {
@@ -1555,7 +1559,7 @@ void app
         const target = value.sessionId ? codex.snapshot().sessions.find(session => session.id === value.sessionId && session.projectId === artifact.projectId) : null;
         const terminal = target?.terminalId ? (await terminals.snapshot()).find(record => record.id === target.terminalId && record.status === 'running') : null;
         if (value.sessionId && !terminal) throw new Error('CODEX_TERMINAL_NOT_RUNNING: Resume the selected session explicitly before copying to its terminal.');
-        const text = `Blueprint projectId="${artifact.projectId}", artifactId="${artifact.id}", savedStateId="${value.savedStateId}". Call read_artifact({artifactId:"${artifact.id}",part:"state",savedStateId:"${value.savedStateId}"}), follow every cursor, and read its attachments with read_attachment. This saved context does not authorize implementation.`;
+        const text = `Projector projectId="${artifact.projectId}", artifactId="${artifact.id}", savedStateId="${value.savedStateId}". Call read_artifact({artifactId:"${artifact.id}",part:"state",savedStateId:"${value.savedStateId}"}), follow every cursor, and read its attachments with read_attachment. This saved context does not authorize implementation.`;
         await clipboard.writeText(text);
         if (target && terminal) await applicationMutation(async () => {
           const key = applicationWorkspace.select(artifact.projectId, target.id);

@@ -4,14 +4,14 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 test('background startup and second-instance handling keep the native window hidden without disabling the renderer', async () => {
-  test.skip(process.env.BLUEPRINT_E2E_BACKGROUND !== '1', 'Background-mode guarantee only.');
+  test.skip(process.env.PROJECTOR_E2E_BACKGROUND !== '1', 'Background-mode guarantee only.');
   const root = await mkdtemp(join(tmpdir(), 'bp-background-'));
   const app = await electron.launch({
     args: [resolve('.')],
     env: {
       ...process.env,
-      BLUEPRINT_DATA: join(root, 'data'),
-      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
+      PROJECTOR_DATA: join(root, 'data'),
+      PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
     },
   });
   try {

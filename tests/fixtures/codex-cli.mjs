@@ -232,7 +232,7 @@ if (args.includes('--remote')) {
       send({
         method: 'mcpServer/startupStatus/updated',
         params: {
-          name: 'blueprint',
+          name: 'projector',
           status: process.env.CODEX_FIXTURE_MCP_STARTUP_STATUS,
           threadId: result.thread.id,
           ...(process.env.CODEX_FIXTURE_MCP_STARTUP_ERROR

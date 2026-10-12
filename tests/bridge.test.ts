@@ -49,7 +49,12 @@ async function bridgePath(): Promise<string> {
 }
 
 async function endpoint(
-  options: { stale?: boolean; disconnect?: boolean; incompleteStream?: boolean } = {},
+  options: {
+    stale?: boolean;
+    disconnect?: boolean;
+    incompleteStream?: boolean;
+    legacy?: boolean;
+  } = {},
 ) {
   const instanceId = randomUUID();
   const token = randomUUID();
@@ -58,13 +63,13 @@ async function endpoint(
   const handler = createMcpHandler(
     () => {
       const server = new Server(
-        { name: 'blueprint', version: '0.1.0-alpha.1' },
+        { name: 'projector', version: '0.1.0-alpha.1' },
         { instructions: SERVER_INSTRUCTIONS, capabilities: { tools: {} } },
       );
       server.setRequestHandler('tools/list', async () => ({
         tools: [
           {
-            name: 'get_blueprint_guide',
+            name: options.legacy ? 'get_blueprint_guide' : 'get_projector_guide',
             description: 'Get bundled guide',
             inputSchema: { type: 'object' },
           },
@@ -94,9 +99,13 @@ async function endpoint(
   runtime = createServer((request, response) => {
     if (
       request.headers.authorization !== `Bearer ${token}` ||
-      request.headers['x-blueprint-instance'] !== instanceId
+      request.headers['x-projector-instance'] !== instanceId
     ) {
       response.writeHead(403).end();
+      return;
+    }
+    if (options.legacy && request.headers['x-blueprint-instance'] !== instanceId) {
+      response.writeHead(409).end();
       return;
     }
     if (request.url === '/runtime') {
@@ -141,13 +150,15 @@ async function endpoint(
   return { descriptorPath, descriptor, toolCalls, mcpRequests: () => mcpRequests };
 }
 
-function launch(outfile: string, descriptorPath: string) {
+function launch(outfile: string, descriptorPath: string, legacy = false) {
   child = spawn(process.execPath, [outfile], {
     env: {
       ...process.env,
       HOME: directory,
+      PROJECTOR_SOCKET: undefined,
+      PROJECTOR_RUNTIME_DESCRIPTOR: legacy ? undefined : descriptorPath,
+      BLUEPRINT_RUNTIME_DESCRIPTOR: legacy ? descriptorPath : undefined,
       BLUEPRINT_SOCKET: undefined,
-      BLUEPRINT_RUNTIME_DESCRIPTOR: descriptorPath,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -189,19 +200,33 @@ function launch(outfile: string, descriptorPath: string) {
 }
 
 describe('MCP stdio bridge over HTTP', () => {
+  it('keeps legacy-runtime advertised names callable through the renamed stdio bridge', async () => {
+    const outfile = await bridgePath();
+    const peer = await endpoint({ legacy: true });
+    const io = launch(outfile, peer.descriptorPath, true);
+    await io.initialize();
+    expect((await io.call(2, 'tools/list', {})).result).toMatchObject({
+      tools: [{ name: 'get_blueprint_guide' }],
+    });
+    const response = await io.call(3, 'tools/call', { name: 'get_blueprint_guide', arguments: {} });
+    expect(response.result).toMatchObject({
+      content: [{ text: JSON.stringify({ topic: 'overview', content: 'Local bundled content' }) }],
+    });
+    expect(peer.toolCalls).toEqual(['get_blueprint_guide']);
+  });
   it('serves legacy tools and instructions from SSE responses; EOF leaves the runtime running', async () => {
     const outfile = await bridgePath();
     const peer = await endpoint();
     const io = launch(outfile, peer.descriptorPath);
     expect((await io.initialize()).result).toMatchObject({
       instructions: SERVER_INSTRUCTIONS,
-      serverInfo: { name: 'blueprint', version: '0.1.0-alpha.1' },
+      serverInfo: { name: 'projector', version: '0.1.0-alpha.1' },
     });
     expect((await io.call(2, 'tools/list', {})).result).toMatchObject({
-      tools: [{ name: 'get_blueprint_guide' }],
+      tools: [{ name: 'get_projector_guide' }],
     });
     expect(
-      (await io.call(3, 'tools/call', { name: 'get_blueprint_guide', arguments: {} })).result,
+      (await io.call(3, 'tools/call', { name: 'get_projector_guide', arguments: {} })).result,
     ).toMatchObject({
       content: [
         {
@@ -213,7 +238,7 @@ describe('MCP stdio bridge over HTTP', () => {
     expect(
       (await io.call(4, 'tools/call', { name: 'approve', arguments: {} })).result,
     ).toMatchObject({ isError: true });
-    expect(peer.toolCalls).toEqual(['get_blueprint_guide']);
+    expect(peer.toolCalls).toEqual(['get_projector_guide']);
     expect(
       io
         .stdout()
@@ -250,12 +275,12 @@ describe('MCP stdio bridge over HTTP', () => {
     const peer = await endpoint({ disconnect: true });
     const io = launch(outfile, peer.descriptorPath);
     await io.initialize();
-    const response = await io.call(2, 'tools/call', { name: 'get_blueprint_guide', arguments: {} });
+    const response = await io.call(2, 'tools/call', { name: 'get_projector_guide', arguments: {} });
     expect(response.result).toMatchObject({
       isError: true,
       content: [{ type: 'text', text: expect.stringContaining('UNKNOWN_RESULT') }],
     });
-    expect(peer.toolCalls).toEqual(['get_blueprint_guide']);
+    expect(peer.toolCalls).toEqual(['get_projector_guide']);
   });
 
   it('reports clean SSE EOF without a result as unknown instead of waiting or replaying', async () => {
@@ -264,20 +289,20 @@ describe('MCP stdio bridge over HTTP', () => {
     const io = launch(outfile, peer.descriptorPath);
     await io.initialize();
     const response = await io.call(2, 'tools/call', {
-      name: 'get_blueprint_guide',
+      name: 'get_projector_guide',
       arguments: {},
     });
     expect(response.result).toMatchObject({
       isError: true,
       content: [{ type: 'text', text: expect.stringContaining('UNKNOWN_RESULT') }],
     });
-    expect(peer.toolCalls).toEqual(['get_blueprint_guide']);
+    expect(peer.toolCalls).toEqual(['get_projector_guide']);
   });
 
   it('rejects legacy Unix configuration with migration instructions', async () => {
     const outfile = await bridgePath();
     child = spawn(process.execPath, [outfile], {
-      env: { ...process.env, HOME: directory, BLUEPRINT_SOCKET: join(directory, 'unused.sock') },
+      env: { ...process.env, HOME: directory, PROJECTOR_SOCKET: join(directory, 'unused.sock') },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stderr = '';
@@ -286,7 +311,7 @@ describe('MCP stdio bridge over HTTP', () => {
     child.stdout.on('data', (chunk) => (stdout += String(chunk)));
     expect((await once(child, 'exit'))[0]).toBe(1);
     expect(stdout).toBe('');
-    expect(stderr).toContain('BLUEPRINT_SOCKET is no longer supported');
-    expect(stderr).toContain('BLUEPRINT_RUNTIME_DESCRIPTOR');
+    expect(stderr).toContain('PROJECTOR_SOCKET is no longer supported');
+    expect(stderr).toContain('PROJECTOR_RUNTIME_DESCRIPTOR');
   });
 });

@@ -13,7 +13,7 @@ test.afterEach(async () => {
 });
 type Application = ApplicationWorkspaceSnapshot & { terminals: TerminalRecord[] };
 const invoke = <T>(page: Page, name: string, args: Record<string, unknown> = {}) => page.evaluate(
-  ({ name, args }) => (window as unknown as { blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).blueprint.invoke(name, args), { name, args },
+  ({ name, args }) => (window as unknown as { projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).projector.invoke(name, args), { name, args },
 ) as Promise<T>;
 const snapshot = (page: Page) => invoke<Application>(page, 'applicationSnapshot');
 
@@ -22,7 +22,7 @@ test('removing a project deselects its workspace while preserving layouts and li
   const data = join(root, 'data'), project = join(root, 'project');
   await Promise.all([data, project].map(path => mkdir(path)));
   const launch = () => electron.launch({ args: [resolve('.')], env: { ...process.env,
-    BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json') } });
+    PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json') } });
   app = await launch(); let page = await app.firstWindow();
   const register = async () => {
     await app!.evaluate(({ dialog }, path) => {

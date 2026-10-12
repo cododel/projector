@@ -13,7 +13,7 @@ share OS focus.
 With dependencies already installed, the hidden gate needs no external network:
 packaging uses the pinned local Electron distribution rather than downloading
 another copy. Its E2E forbids network access in the packaging process even with
-a warm download cache and sets `BLUEPRINT_PACKAGE_OUTPUT` to its disposable
+a warm download cache and sets `PROJECTOR_PACKAGE_OUTPUT` to its disposable
 directory so the developer's `dist` package is preserved. Missing or mismatched local Electron fails explicitly;
 there is no download fallback. The empty dependency fixture for hook tests uses
 pnpm offline mode. Dependency installation and the opt-in/full Codex model test
@@ -52,7 +52,7 @@ New stage tests cover relocated/copied projects, private answer retention, offli
 
 ## Session workspace qualification
 
-The Codex prerequisite gate uses installed CLI 0.162.1, an isolated HOME/CODEX_HOME, task-owned backend/TUI and a local Responses provider without credentials or authenticated model calls. Evidence lives in `.tmp/tasks/harness-workspaces-20261011/codex-gate/result.json` and `manager-product/result.json`. The prerequisite checked actual Blueprint MCP; the implementation manager probe separately used a controlled MCP peer. Fresh `actual-http-UcdsCY/qualification.json` and `actual-http-CEgIxw/result.json` additionally qualify the actual product manager/PTy/TUI with the current authenticated HTTP runtime in production preview and a relocated packaged `.app`, respectively: exact New/Resume identity, observed MCP ready, real guide tool output and persisted metadata. Exact identities come from real TUI protocol requests/responses, independently of timestamps, latest files or arbitrary broadcasts. Native Codex added its own UX bookkeeping to the disposable config; model/provider/trust/approval/sandbox and preexisting MCP settings remained, and the launch-only Blueprint overrides did not persist. Authenticated model Save/attachment reading remains a separate full E2E boundary.
+The Codex prerequisite gate uses installed CLI 0.162.1, an isolated HOME/CODEX_HOME, task-owned backend/TUI and a local Responses provider without credentials or authenticated model calls. Evidence lives in `.tmp/tasks/harness-workspaces-20261011/codex-gate/result.json` and `manager-product/result.json`. The prerequisite checked actual Projector MCP; the implementation manager probe separately used a controlled MCP peer. Fresh `actual-http-UcdsCY/qualification.json` and `actual-http-CEgIxw/result.json` additionally qualify the actual product manager/PTy/TUI with the current authenticated HTTP runtime in production preview and a relocated packaged `.app`, respectively: exact New/Resume identity, observed MCP ready, real guide tool output and persisted metadata. Exact identities come from real TUI protocol requests/responses, independently of timestamps, latest files or arbitrary broadcasts. Native Codex added its own UX bookkeeping to the disposable config; model/provider/trust/approval/sandbox and preexisting MCP settings remained, and the launch-only Projector overrides did not persist. Authenticated model Save/attachment reading remains a separate full E2E boundary.
 
 `tests/codex.test.ts` checks paginated metadata across all providers and archived/non-archived sessions with `useStateDbOnly:true`, exact new/fork Resume identity, auth/Origin rejection, ownership, launch cancellation, and Quit while a backend starts. It uses a local protocol fixture and does not modify user profiles. Automatic app discovery in ordinary E2E also uses an empty controlled CLI peer; the harness scenario supplies its own changing catalog, so polling never reads the operator's real session history. The opt-in/full model client remains a separate real Codex check. `tests/terminal-electron.test.ts` qualifies the real Electron utility-process/node-pty boundary on a disposable target; synthetic Unicode and PTY input do not prove physical keyboard/IME behavior. Browser-pane boundary tests establish native attachment/geometry ownership and failed-write guards through controlled Electron doubles; integrated real Electron workspace tests separately establish pane composition and input routing.
 
@@ -79,3 +79,10 @@ PTY events and sequence numbers are retained. Regression tests exercise fragment
 Unicode/CSI, batch bounds, replay/generation reconciliation, stop during parsing,
 PTY pause/resume under pressure and parser errors. An unknown partial parser result
 is surfaced and is never automatically replayed; process cleanup remains available.
+
+Rename qualification adds `brand-compat.test.ts` and `rebrand.spec.ts`: Projector
+uses current names while legacy app/project storage, environment variables, artifact
+kinds and read-only MCP names remain compatible. The isolated Electron test checks
+private answers, byte-identical revision manifests and real legacy localStorage /
+cookies through the renamed app. No personal app data, client config or repository
+remote is migrated by tests. Existing persisted roots are reused in place, not moved.

@@ -17,7 +17,7 @@ class BrowserMcp {
   >();
   constructor(socket: string) {
     this.child = spawn(process.execPath, [resolve('out/bridge.cjs')], {
-      env: { ...process.env, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+      env: { ...process.env, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
     });
     const lines = createInterface({ input: this.child.stdout });
     lines.on('line', (line) => {
@@ -96,7 +96,7 @@ test('application browser composer survives restart, remains private, and Save e
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+      env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   let page = await app.firstWindow();
@@ -106,10 +106,10 @@ test('application browser composer survives restart, remains private, and Save e
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   mcp = new BrowserMcp(socket);
   await mcp.initialize();
-  const context = await mcp.tool('get_blueprint_context', {});
+  const context = await mcp.tool('get_projector_context', {});
   const artifact = await mcp.tool('create_artifact', {
     projectId: (context.project as { id: string }).id,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'Browser planning scenario',
     originSession: { harness: 'codex', sessionId: 'browser-scenario-session' },
     operationId: randomUUID(),
@@ -243,8 +243,8 @@ test('application browser composer survives restart, remains private, and Save e
   await expect.poll(() => app.context().pages().filter((p) => p.url() === url).length).toBe(1);
   const restoredOwnership = await page.evaluate(async () => {
     const bridge = (window as unknown as {
-      blueprint: { invoke(name: string): Promise<unknown> };
-    }).blueprint;
+      projector: { invoke(name: string): Promise<unknown> };
+    }).projector;
     return {
       application: await bridge.invoke('applicationSnapshot'),
       browser: await bridge.invoke('browserSnapshot'),

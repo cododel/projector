@@ -35,9 +35,9 @@ async function applicationSnapshot(page: Page): Promise<ApplicationWorkspaceSnap
   return page.evaluate(() =>
     (
       window as unknown as {
-        blueprint: { invoke(name: string): Promise<ApplicationWorkspaceSnapshot> };
+        projector: { invoke(name: string): Promise<ApplicationWorkspaceSnapshot> };
       }
-    ).blueprint.invoke('applicationSnapshot'),
+    ).projector.invoke('applicationSnapshot'),
   );
 }
 const tabs = (page: Page) => page.getByRole('tablist', { name: 'Workspace tabs' }).getByRole('tab');
@@ -91,8 +91,8 @@ test('project Plans workspaces, local comments, browser close and restart preser
       args: [resolve('.')],
       env: {
         ...process.env,
-        BLUEPRINT_DATA: data,
-        BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
+        PROJECTOR_DATA: data,
+        PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
       },
     });
   app = await launch();
@@ -101,10 +101,10 @@ test('project Plans workspaces, local comments, browser close and restart preser
   mcp = new Mcp(join(root, 's.sock'));
   await mcp.initialize();
   async function create(title: string, session: string) {
-    const context = await mcp!.tool('get_blueprint_context', {});
+    const context = await mcp!.tool('get_projector_context', {});
     const artifact = await mcp!.tool('create_artifact', {
       projectId: (context.project as { id: string }).id,
-      kind: 'blueprint',
+      kind: 'projector',
       title,
       originSession: { harness: 'codex', sessionId: session },
       operationId: randomUUID(),
@@ -235,7 +235,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
     const branding = page.locator('.titlebar-brand');
     await expect(branding).toHaveCount(left ? 1 : 0);
     if (left) {
-      await expect(branding).toHaveText('BBlueprint');
+      await expect(branding).toHaveText('PProjector');
       const brand = (await branding.boundingBox())!;
       const toggle = (await page.getByRole('button', { name: 'Hide projects sidebar' }).boundingBox())!;
       expect(brand.x).toBeGreaterThanOrEqual(82);

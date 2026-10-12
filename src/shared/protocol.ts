@@ -4,13 +4,13 @@ export interface McpSetup {
   mode: 'development' | 'production-preview' | 'packaged';
   executable: string;
   args: string[];
-  env: { BLUEPRINT_RUNTIME_DESCRIPTOR: string };
+  env: { PROJECTOR_RUNTIME_DESCRIPTOR: string };
   descriptorPath: string;
   command: string;
   config: string;
   prompt: string;
 }
-export class BlueprintError extends Error {
+export class ProjectorError extends Error {
   constructor(
     public code: string,
     message: string,

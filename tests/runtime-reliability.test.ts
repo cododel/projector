@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runtimeLimits } from '../src/shared/runtime-limits';
-import { BlueprintError } from '../src/shared/protocol';
+import { ProjectorError } from '../src/shared/protocol';
 import { compileDocument } from '../src/runtime/compile';
 import { atomicText, commitDirectory, storageError } from '../src/runtime/files';
 
@@ -75,7 +75,7 @@ describe('compiler lifecycle', () => {
   it('rejects a successful worker exit that produced no result', async () => {
     const script = join(await root(), 'empty.cjs');
     await writeFile(script, 'process.exit(0)');
-    vi.stubEnv('BLUEPRINT_COMPILER', script);
+    vi.stubEnv('PROJECTOR_COMPILER', script);
     await expect(compileDocument('hello')).rejects.toMatchObject({ code: 'BUILD_FAILED' });
   }, 500);
 });
@@ -92,11 +92,11 @@ describe('effective runtime boundaries', () => {
       listPageItems: 20,
     });
     expect(
-      runtimeLimits({ BLUEPRINT_COMPILE_TIMEOUT_MS: '150', BLUEPRINT_CAPTURE_TIMEOUT_MS: '200' }),
+      runtimeLimits({ PROJECTOR_COMPILE_TIMEOUT_MS: '150', PROJECTOR_CAPTURE_TIMEOUT_MS: '200' }),
     ).toMatchObject({ compileTimeoutMs: 150, captureTimeoutMs: 200 });
     for (const value of ['NaN', '-1', '0', '99', '300001', '100.5', ''])
-      expect(() => runtimeLimits({ BLUEPRINT_COMPILE_TIMEOUT_MS: value })).toThrow(
-        /BLUEPRINT_COMPILE_TIMEOUT_MS/,
+      expect(() => runtimeLimits({ PROJECTOR_COMPILE_TIMEOUT_MS: value })).toThrow(
+        /PROJECTOR_COMPILE_TIMEOUT_MS/,
       );
   });
   it.each(['ENOSPC', 'EROFS', 'EACCES', 'EPERM', 'ENOENT'])(
@@ -111,15 +111,15 @@ describe('effective runtime boundaries', () => {
     },
   );
   it('preserves explicit publication uncertainty and does not invent storage diagnoses', () => {
-    const error = new BlueprintError('UNKNOWN_RESULT', 'Reconcile first');
+    const error = new ProjectorError('UNKNOWN_RESULT', 'Reconcile first');
     expect(storageError(error)).toBe(error);
     expect(storageError(new Error('unclassified'))).toBeUndefined();
   });
   it('terminates a nonresponsive compiler at the configured deadline', async () => {
     const script = join(await root(), 'hung.cjs');
     await writeFile(script, 'setInterval(() => {}, 1000)');
-    vi.stubEnv('BLUEPRINT_COMPILER', script);
-    vi.stubEnv('BLUEPRINT_COMPILE_TIMEOUT_MS', '100');
+    vi.stubEnv('PROJECTOR_COMPILER', script);
+    vi.stubEnv('PROJECTOR_COMPILE_TIMEOUT_MS', '100');
     await expect(compileDocument('hello')).rejects.toMatchObject({ code: 'BUILD_TIMEOUT' });
   });
 });

@@ -23,7 +23,7 @@ async function setup() {
   const create = async (sessionId: string) => {
     const a = await store.create({
       projectId: p.id,
-      kind: 'blueprint',
+      kind: 'projector',
       title: 'Plan',
       originSession: { harness: 'codex', sessionId },
       operationId: randomUUID(),
@@ -141,7 +141,7 @@ it('previews missing, valid and invalid unpublished source without publishing', 
   const { p, ops } = await setup();
   const a = await store.create({
     projectId: p.id,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'Draft',
     originSession: { harness: 'codex', sessionId: 's' },
     operationId: randomUUID(),
@@ -179,7 +179,7 @@ it('rejects Save while unfinished annotation exists and does not leave partial c
       operationId: randomUUID(),
     }),
   ).rejects.toMatchObject({ code: 'UNFINISHED_ANNOTATION' });
-  expect(await readdir(join(p.path, '.blueprint', 'artifacts', a.artifactId))).not.toContain(
+  expect(await readdir(join(p.path, '.projector', 'artifacts', a.artifactId))).not.toContain(
     'states',
   );
 });
@@ -284,7 +284,7 @@ it('keeps draft captures private and freezes image numbering with a saved state'
   const savedRoot = join(
     root,
     'project',
-    '.blueprint',
+    '.projector',
     'artifacts',
     a.artifactId,
     'states',
@@ -364,7 +364,7 @@ it('does not expose a partial Save if an attachment fails before checkpoint comm
     }),
   ).rejects.toMatchObject({ code: 'ENOENT' });
   expect(await store.states.list(a.artifactId)).toEqual([]);
-  const dirs = await readdir(join(p.path, '.blueprint', 'artifacts', a.artifactId, 'states'));
+  const dirs = await readdir(join(p.path, '.projector', 'artifacts', a.artifactId, 'states'));
   expect(dirs.every((n) => n.startsWith('.stage-'))).toBe(true);
   store.close();
   store = await openStore(join(root, 'data'));

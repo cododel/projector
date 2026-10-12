@@ -14,7 +14,7 @@ test.afterEach(async () => {
   if (root) await rm(root, {recursive: true, force: true});
 });
 const invoke = <T>(page: Page, name: string, args: Record<string, unknown> = {}) => page.evaluate(
-  ({name,args}) => (window as unknown as {blueprint: {invoke(name: string,args: Record<string,unknown>): Promise<unknown>}}).blueprint.invoke(name,args), {name,args},
+  ({name,args}) => (window as unknown as {projector: {invoke(name: string,args: Record<string,unknown>): Promise<unknown>}}).projector.invoke(name,args), {name,args},
 ) as Promise<T>;
 
 test('project overview owns plans and archives without changing history; project plus starts exactly one Codex session', async () => {
@@ -25,16 +25,16 @@ test('project overview owns plans and archives without changing history; project
   const sessionId='overview-codex-session';
   await writeFile(metadata,JSON.stringify({[sessionId]:{name:'Project agent',source:'cli'}}));
   const launch=()=>electron.launch({args:[resolve('.')],env:{...process.env,
-    BLUEPRINT_DATA:data,BLUEPRINT_RUNTIME_DESCRIPTOR:descriptor,CODEX_HOME:home,
-    BLUEPRINT_E2E_CODEX_EXECUTABLE:resolve('tests/fixtures/codex-cli.mjs'),
+    PROJECTOR_DATA:data,PROJECTOR_RUNTIME_DESCRIPTOR:descriptor,CODEX_HOME:home,
+    PROJECTOR_E2E_CODEX_EXECUTABLE:resolve('tests/fixtures/codex-cli.mjs'),
     CODEX_FIXTURE_PROJECT:project,CODEX_FIXTURE_EMPTY:'0',CODEX_FIXTURE_ID:sessionId,
-    CODEX_FIXTURE_METADATA_FILE:metadata,CODEX_FIXTURE_AUDIT:audit,BLUEPRINT_E2E_HARNESS_INTERVAL_MS:'200',
+    CODEX_FIXTURE_METADATA_FILE:metadata,CODEX_FIXTURE_AUDIT:audit,PROJECTOR_E2E_HARNESS_INTERVAL_MS:'200',
   }});
   app=await launch(); let page=await app.firstWindow();
   await app.evaluate(({dialog},path)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path]});},project);
   await page.getByRole('button',{name:'+ Open project folder',exact:true}).click();
   mcp=new Mcp(descriptor);await mcp.initialize();
-  const context=await mcp.tool('get_blueprint_context',{});
+  const context=await mcp.tool('get_projector_context',{});
   const projectId=(context.project as {id:string}).id;
   const sidebar=page.locator('.sidebar');
   await expect(sidebar.getByRole('button',{name:'Project agent',exact:true})).toBeVisible();
@@ -51,7 +51,7 @@ test('project overview owns plans and archives without changing history; project
   await expect(invoke(page,'createEmptyPlan',{projectId,operationId:randomUUID()})).rejects.toThrow('Unsupported operator command');
 
   const originSession={harness:'codex',sessionId:'explicit-plan-author'};
-  const plan=await mcp.tool('create_artifact',{projectId,kind:'blueprint',title:'Project decision',originSession,operationId:randomUUID()});
+  const plan=await mcp.tool('create_artifact',{projectId,kind:'projector',title:'Project decision',originSession,operationId:randomUUID()});
   await writeFile(join(String(plan.sourcePath),'plan.mdx'),'# Project decision\n\n<TextAnswer id="choice" meaning="Decision" semanticsVersion="1" defaultValue="" />');
   const revision=await mcp.tool('publish_artifact',{artifactId:plan.artifactId,expectedLatestRevision:null,operationId:randomUUID()});
   await expect(page.getByRole('region',{name:'Project plans'}).getByRole('button',{name:'Project decision',exact:true})).toBeVisible();
@@ -64,7 +64,7 @@ test('project overview owns plans and archives without changing history; project
   await page.getByRole('button',{name:'Project overview',exact:true}).click();
   await page.getByRole('button',{name:'Archive plan Project decision',exact:true}).click();
   await expect(page.getByRole('button',{name:'Project decision',exact:true})).toHaveCount(0);
-  const manifestPath=join(project,'.blueprint','artifacts',String(plan.artifactId),'artifact.json');
+  const manifestPath=join(project,'.projector','artifacts',String(plan.artifactId),'artifact.json');
   expect(JSON.parse(await readFile(manifestPath,'utf8'))).toMatchObject({archived:true,originSession});
   expect(await mcp.tool('read_artifact',{artifactId:plan.artifactId,part:'manifest'})).toMatchObject({revisionId:revision.revisionId,originSession});
   await page.getByLabel('Show archived plans',{exact:true}).check();

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { RuntimeOperationQueue, startRuntimeHttp } from '../src/runtime/service';
-import { BlueprintError } from '../src/shared/protocol';
+import { ProjectorError } from '../src/shared/protocol';
 import {
   defaultRuntimeDescriptorPath,
   parseRuntimeDescriptor,
@@ -131,7 +131,7 @@ describe('runtime HTTP boundary', () => {
       [{ Origin: 'null' }, 403],
       [{ Host: 'example.com' }, 403],
       [{ Host: '127.0.0.1:1' }, 403],
-      [{ 'x-blueprint-instance': randomUUID() }, 409],
+      [{ 'x-projector-instance': randomUUID() }, 409],
     ] as const) {
       expect(
         (await post(runtime.descriptor.url, { ...headers, ...extra }, payload)).status,
@@ -168,7 +168,7 @@ describe('runtime HTTP boundary', () => {
     const { runtime, calls, connect } = await endpoint({
       requestBytes: 1024,
       call: async () => {
-        throw new BlueprintError('UNKNOWN_RESULT', 'Reconcile before retrying.', {
+        throw new ProjectorError('UNKNOWN_RESULT', 'Reconcile before retrying.', {
           phase: 'after-rename',
         });
       },
@@ -233,13 +233,13 @@ describe('descriptor validation and common writer queue', () => {
       expect(String(error)).not.toContain(base.token);
     }
     expect(defaultRuntimeDescriptorPath({}, 'darwin', '/test')).toBe(
-      '/test/Library/Application Support/Blueprint/runtime/endpoint.json',
+      '/test/Library/Application Support/Projector/runtime/endpoint.json',
     );
     expect(defaultRuntimeDescriptorPath({ XDG_CONFIG_HOME: '/config' }, 'linux', '/test')).toBe(
-      '/config/Blueprint/runtime/endpoint.json',
+      '/config/Projector/runtime/endpoint.json',
     );
     expect(defaultRuntimeDescriptorPath({ APPDATA: '/roaming' }, 'win32', '/test')).toBe(
-      '/roaming/Blueprint/runtime/endpoint.json',
+      '/roaming/Projector/runtime/endpoint.json',
     );
   });
 
@@ -270,4 +270,45 @@ describe('descriptor validation and common writer queue', () => {
     await Promise.all([publicWrite, operatorWrite, stopped]);
     expect(events).toEqual(['public-start', 'public-committed', 'operator-committed']);
   });
+});
+
+it('accepts authenticated legacy headers and guide names, rejecting conflicting instance headers', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'projector-legacy-http-'));
+  roots.push(root);
+  const calls: string[] = [];
+  const runtime = await startRuntimeHttp({
+    descriptorPath: join(root, 'endpoint.json'),
+    hello: {
+      version: '1',
+      instructions: 'Projector',
+      tools: [
+        { name: 'get_projector_guide', description: 'Guide', inputSchema: { type: 'object' } },
+      ],
+    },
+    call: async (name) => {
+      calls.push(name);
+      return { guide: 'compat' };
+    },
+  });
+  resources.push(runtime);
+  const client = new Client({ name: 'legacy-client', version: '1' });
+  resources.push(client);
+  const headers = {
+    Authorization: `Bearer ${runtime.descriptor.token}`,
+    'x-blueprint-instance': runtime.descriptor.instanceId,
+  };
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(runtime.descriptor.url), {
+      requestInit: { headers },
+    }),
+  );
+  expect(await client.callTool({ name: 'get_blueprint_guide', arguments: {} })).toMatchObject({
+    content: [{ text: '{"guide":"compat"}' }],
+  });
+  expect(calls).toEqual(['get_projector_guide']);
+  const conflict = await fetch(new URL('/runtime', runtime.descriptor.url), {
+    headers: { ...headers, 'x-projector-instance': randomUUID() },
+  });
+  expect(conflict.status).toBe(409);
+  expect(calls).toEqual(['get_projector_guide']);
 });

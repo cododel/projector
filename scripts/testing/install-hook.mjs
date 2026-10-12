@@ -18,5 +18,5 @@ if (hooks.length)
   throw new Error(`Existing hooks: ${hooks.join(', ')}; explicit reconciliation required`);
 git('config', '--local', 'core.hooksPath', '.githooks');
 console.log(
-  'Installed Blueprint pre-push. Commits remain ungated; pushes run focused full checks.',
+  'Installed Projector pre-push. Commits remain ungated; pushes run focused full checks.',
 );

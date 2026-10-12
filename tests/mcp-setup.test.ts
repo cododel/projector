@@ -27,16 +27,23 @@ it('source production preview follows appPath, resolves symlinks and preserves t
   await symlink(process.execPath, alias);
   const setup = await getMcpSetup({ ...options, nodeOverride: alias });
   expect(setup.mode).toBe('production-preview');
+  expect(setup.prompt).toContain('migrate that entry to projector instead of adding a duplicate');
+  expect(setup.prompt).toContain(
+    'Preserve its approval policies, timeouts, enabled state and tool filters',
+  );
+  expect(setup.prompt).toContain('do not merge or delete entries automatically');
   expect(setup.executable).not.toBe(alias);
   expect(setup.args).toEqual([join(directory, 'out', 'bridge.cjs')]);
-  expect(setup.env.BLUEPRINT_RUNTIME_DESCRIPTOR).toBe(options.descriptorPath);
-  expect(setup.config).toContain(`BLUEPRINT_RUNTIME_DESCRIPTOR = ${JSON.stringify(options.descriptorPath)}`);
+  expect(setup.env.PROJECTOR_RUNTIME_DESCRIPTOR).toBe(options.descriptorPath);
+  expect(setup.config).toContain(
+    `PROJECTOR_RUNTIME_DESCRIPTOR = ${JSON.stringify(options.descriptorPath)}`,
+  );
 });
 it('packaged builds use only their actual bundled resources, ignoring source Node overrides', async () => {
   const options = await paths();
   const helper = join(options.resourcesPath, 'mcp');
   await mkdir(helper, { recursive: true });
-  for (const name of ['node', 'bridge.cjs', 'blueprint-mcp']) {
+  for (const name of ['node', 'bridge.cjs', 'projector-mcp']) {
     await writeFile(join(helper, name), '');
     await chmod(join(helper, name), 0o755);
   }
@@ -47,7 +54,7 @@ it('packaged builds use only their actual bundled resources, ignoring source Nod
     nodeOverride: '/missing/node',
   });
   expect(setup.mode).toBe('packaged');
-  expect(setup.executable).toBe(join(helper, 'blueprint-mcp'));
+  expect(setup.executable).toBe(join(helper, 'projector-mcp'));
   expect(setup.args).toEqual([]);
   expect(setup.config).not.toContain('/missing/node');
   expect(setup.command).toContain(`'${setup.executable}'`);

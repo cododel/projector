@@ -20,7 +20,7 @@ import {
   atomicText,
   commitDirectory,
 } from './files';
-import { BlueprintError, VERSION } from '../shared/protocol';
+import { ProjectorError, VERSION } from '../shared/protocol';
 import { revisionSummary } from './revision-summary';
 import { ArtifactStates, type TextAnchor, type Capture } from './artifact-state';
 import {
@@ -42,7 +42,7 @@ export interface Artifact {
   id: string;
   projectId: string;
   title: string;
-  kind: 'blueprint';
+  kind: 'projector' | 'blueprint';
   archived?: boolean;
   originSession: SessionRef | null;
   latestRevision: string | null;
@@ -158,23 +158,42 @@ export class Store {
   }
   project(id: string) {
     const p = this.projects(true).find((p) => p.id === id);
-    if (!p) throw new BlueprintError('UNKNOWN_PROJECT', 'Select a registered project');
+    if (!p) throw new ProjectorError('UNKNOWN_PROJECT', 'Select a registered project');
     return p;
+  }
+  private async projectDirectory(path: string): Promise<string> {
+    const directories: string[] = [];
+    for (const name of ['.projector', '.blueprint']) {
+      const candidate = join(path, name);
+      try {
+        const canonical = await inside(path, candidate);
+        if ((await readdir(canonical)).length) directories.push(canonical);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    if (directories.length > 1)
+      throw new ProjectorError(
+        'PROJECT_DATA_CONFLICT',
+        'Both .projector and legacy .blueprint contain data. Choose the intended identity; directories will not be merged.',
+        { path },
+      );
+    return directories[0] ?? join(path, '.projector');
   }
   async register(path: string) {
     const canonical = await realpath(path);
     const old = this.projects(true).find((p) => p.path === canonical);
     if (old) {
       const metadata = await json<{ id: string }>(
-        await inside(canonical, join(canonical, '.blueprint', 'project.json')),
+        await inside(canonical, join(await this.projectDirectory(canonical), 'project.json')),
       );
       if (metadata.id !== old.id)
-        throw new BlueprintError('PROJECT_ID_MISMATCH', 'Folder identity changed');
+        throw new ProjectorError('PROJECT_ID_MISMATCH', 'Folder identity changed');
       this.db.prepare('UPDATE projects SET removed=0 WHERE id=?').run(old.id);
       return old;
     }
     let id: string = randomUUID();
-    const base = await writableInside(canonical, join(canonical, '.blueprint'));
+    const base = await writableInside(canonical, await this.projectDirectory(canonical));
     await mkdir(base, { recursive: true });
     await inside(canonical, base);
     try {
@@ -182,7 +201,7 @@ export class Store {
         await inside(canonical, join(base, 'project.json')),
       );
       if (meta.formatVersion !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(meta.id))
-        throw new BlueprintError('UNSUPPORTED_FORMAT', 'Unsupported project metadata');
+        throw new ProjectorError('UNSUPPORTED_FORMAT', 'Unsupported project metadata');
       id = meta.id;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -190,7 +209,7 @@ export class Store {
     }
     const conflict = this.projects(true).find((p) => p.id === id);
     if (conflict)
-      throw new BlueprintError(
+      throw new ProjectorError(
         'PROJECT_ID_CONFLICT',
         'This folder copies an existing project identity',
         { projectId: id, originalPath: conflict.path },
@@ -203,7 +222,10 @@ export class Store {
       this.projects(includeRemoved).map(async (project) => {
         try {
           const meta = await json<{ id: string }>(
-            await inside(project.path, join(project.path, '.blueprint', 'project.json')),
+            await inside(
+              project.path,
+              join(await this.projectDirectory(project.path), 'project.json'),
+            ),
           );
           return { ...project, available: meta.id === project.id };
         } catch (error) {
@@ -219,25 +241,27 @@ export class Store {
     const canonical = await realpath(path);
     const current = (await this.projectAvailability(true)).find((p) => p.id === projectId);
     if (current?.available && current.path !== canonical)
-      throw new BlueprintError(
+      throw new ProjectorError(
         'PROJECT_ID_CONFLICT',
         'The original folder still exists. Open the original or register a new empty copy.',
       );
     const other = this.projects(true).find((p) => p.path === canonical && p.id !== projectId);
     if (other)
-      throw new BlueprintError('PROJECT_ID_CONFLICT', 'Folder already belongs to another project');
+      throw new ProjectorError('PROJECT_ID_CONFLICT', 'Folder already belongs to another project');
     let meta: { id: string; formatVersion: number };
     try {
-      meta = await json(await inside(canonical, join(canonical, '.blueprint', 'project.json')));
+      meta = await json(
+        await inside(canonical, join(await this.projectDirectory(canonical), 'project.json')),
+      );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      throw new BlueprintError(
+      throw new ProjectorError(
         'PROJECT_ID_MISMATCH',
         'Choose the folder containing the original project identity',
       );
     }
     if (meta.id !== projectId || meta.formatVersion !== 1)
-      throw new BlueprintError(
+      throw new ProjectorError(
         'PROJECT_ID_MISMATCH',
         'The selected folder has a different project identity',
       );
@@ -253,25 +277,25 @@ export class Store {
     const canonical = await realpath(path);
     const original = this.project(expectedProjectId);
     if (canonical === original.path || this.projects(true).some((p) => p.path === canonical))
-      throw new BlueprintError(
+      throw new ProjectorError(
         'PROJECT_ID_CONFLICT',
         'The registered original cannot be reset as a copy',
       );
-    const base = await inside(canonical, join(canonical, '.blueprint'));
+    const base = await inside(canonical, await this.projectDirectory(canonical));
     const meta = await json<{ id: string; formatVersion: number }>(
       await inside(canonical, join(base, 'project.json')),
     );
     if (meta.id !== expectedProjectId || meta.formatVersion !== 1)
-      throw new BlueprintError(
+      throw new ProjectorError(
         'PROJECT_ID_MISMATCH',
         'The copied identity changed; select the folder again',
       );
-    const backupPath = join(canonical, '.blueprint-backup-' + randomUUID());
+    const backupPath = join(canonical, '.projector-backup-' + randomUUID());
     await rename(base, backupPath);
     try {
       return { ...(await this.register(canonical)), backupPath };
     } catch (error) {
-      throw new BlueprintError(
+      throw new ProjectorError(
         'PROJECT_COPY_FAILED',
         'Copied history is preserved in the backup folder. Registration did not complete.',
         { backupPath, cause: (error as NodeJS.ErrnoException).code },
@@ -285,14 +309,14 @@ export class Store {
       for (const a of (await this.artifacts()).filter((a) => a.projectId === projectId)) {
         for (const r of a.revisions) {
           if (await this.editor(a.id, r.id))
-            throw new BlueprintError(
+            throw new ProjectorError(
               'UNSUBMITTED_FEEDBACK',
               'Finish or cancel the pending annotation before changing recipient',
             );
         }
       }
       if (draft.annotations.length || Object.keys(draft.answers).length)
-        throw new BlueprintError(
+        throw new ProjectorError(
           'UNSUBMITTED_FEEDBACK',
           'Submit pending feedback before changing its recipient',
         );
@@ -304,7 +328,7 @@ export class Store {
     return this.project(projectId);
   }
   async base(project: Project) {
-    const path = join(project.path, '.blueprint');
+    const path = await this.projectDirectory(project.path);
     await inside(project.path, path);
     return path;
   }
@@ -326,9 +350,9 @@ export class Store {
         const dir = await inside(p.path, join(root, id));
         const a = await json<Artifact>(await inside(p.path, join(dir, 'artifact.json')));
         if (a.formatVersion !== 1)
-          throw new BlueprintError('UNSUPPORTED_FORMAT', 'Unsupported artifact metadata format');
-        if (a.id !== id || a.projectId !== p.id || a.kind !== 'blueprint')
-          throw new BlueprintError('CORRUPT_DATA', 'Artifact identity is inconsistent');
+          throw new ProjectorError('UNSUPPORTED_FORMAT', 'Unsupported artifact metadata format');
+        if (a.id !== id || a.projectId !== p.id || !['projector', 'blueprint'].includes(a.kind))
+          throw new ProjectorError('CORRUPT_DATA', 'Artifact identity is inconsistent');
         a.revisions = [];
         let revisions: string[] = [];
         try {
@@ -341,7 +365,7 @@ export class Store {
             await inside(p.path, join(dir, 'revisions', rev, 'manifest.json')),
           );
           if (r.formatVersion !== 1)
-            throw new BlueprintError('UNSUPPORTED_FORMAT', 'Unsupported artifact revision format', {
+            throw new ProjectorError('UNSUPPORTED_FORMAT', 'Unsupported artifact revision format', {
               expected: 1,
               actual: r.formatVersion,
             });
@@ -355,7 +379,7 @@ export class Store {
   }
   async artifact(id: string) {
     const a = (await this.artifacts()).find((a) => a.id === id);
-    if (!a) throw new BlueprintError('UNKNOWN_ARTIFACT', 'Unknown artifact');
+    if (!a) throw new ProjectorError('UNKNOWN_ARTIFACT', 'Unknown artifact');
     return a;
   }
   async artifactRoot(a: Artifact) {
@@ -366,7 +390,7 @@ export class Store {
     const row = this.db.prepare('SELECT * FROM operations WHERE key=?').get(key);
     if (!row) return;
     if (row.hash !== hash)
-      throw new BlueprintError(
+      throw new ProjectorError(
         'OPERATION_CONFLICT',
         'Operation ID was used with different content',
       );
@@ -377,7 +401,7 @@ export class Store {
   }
   async create(args: {
     projectId: string;
-    kind: 'blueprint';
+    kind: 'projector' | 'blueprint';
     title: string;
     originSession: SessionRef | null;
     operationId: string;
@@ -393,7 +417,7 @@ export class Store {
       );
       if (meta.operationKey === key) {
         if (meta.operationHash !== hash)
-          throw new BlueprintError('OPERATION_CONFLICT', 'Operation content changed');
+          throw new ProjectorError('OPERATION_CONFLICT', 'Operation content changed');
         const result = {
           artifactId: meta.id,
           sourcePath: join(await this.artifactRoot(meta), 'source'),
@@ -454,7 +478,7 @@ export class Store {
       const recovered = metadata.metadataOperations?.find((entry) => entry.key === key);
       if (recovered) {
         if (recovered.hash !== hash)
-          throw new BlueprintError('OPERATION_CONFLICT', 'Operation content changed');
+          throw new ProjectorError('OPERATION_CONFLICT', 'Operation content changed');
         this.record(key, hash, recovered.result);
         return recovered.result;
       }
@@ -485,7 +509,7 @@ export class Store {
           artifact.originSession &&
           !isDeepStrictEqual(artifact.originSession, args.originSession)
         )
-          throw new BlueprintError(
+          throw new ProjectorError(
             'SESSION_CONFLICT',
             'Artifact already belongs to another session',
           );
@@ -517,7 +541,7 @@ export class Store {
     await this.recoverChanges();
     const a = await this.artifact(args.artifactId);
     if (!a.originSession)
-      throw new BlueprintError(
+      throw new ProjectorError(
         'ORIGIN_SESSION_REQUIRED',
         'Attach an explicit agent session before publishing',
       );
@@ -536,14 +560,14 @@ export class Store {
       );
       if (manifest.operationKey === key) {
         if (manifest.operationHash !== hash)
-          throw new BlueprintError('OPERATION_CONFLICT', 'Operation content changed');
+          throw new ProjectorError('OPERATION_CONFLICT', 'Operation content changed');
         const result = { revisionId: manifest.id };
         this.record(key, hash, result);
         return result;
       }
     }
     if (a.latestRevision !== args.expectedLatestRevision)
-      throw new BlueprintError('REVISION_CONFLICT', 'Latest revision changed', {
+      throw new ProjectorError('REVISION_CONFLICT', 'Latest revision changed', {
         expected: a.latestRevision,
         actual: args.expectedLatestRevision,
       });
@@ -626,7 +650,7 @@ export class Store {
   private async readRevision(artifactId: string, revisionId: string) {
     const a = await this.artifact(artifactId);
     if (!a.revisions.some((r) => r.id === revisionId))
-      throw new BlueprintError('UNKNOWN_REVISION', 'Unknown published revision');
+      throw new ProjectorError('UNKNOWN_REVISION', 'Unknown published revision');
     const revision = await json<Revision>(
       await inside(
         await this.artifactRoot(a),
@@ -634,7 +658,7 @@ export class Store {
       ),
     );
     if (revision.formatVersion !== 1)
-      throw new BlueprintError('UNSUPPORTED_FORMAT', 'Unsupported artifact format', {
+      throw new ProjectorError('UNSUPPORTED_FORMAT', 'Unsupported artifact format', {
         expected: 1,
         actual: revision.formatVersion,
       });
@@ -645,7 +669,7 @@ export class Store {
       !Array.isArray(revision.blocks) ||
       !Array.isArray(revision.widgets)
     )
-      throw new BlueprintError('CORRUPT_DATA', 'Published artifact metadata is damaged');
+      throw new ProjectorError('CORRUPT_DATA', 'Published artifact metadata is damaged');
     return revision;
   }
   statePath(id: string, rev: string) {
@@ -666,7 +690,7 @@ export class Store {
           (key) => !revision.widgets.some((widget) => widget.id === key),
         )
       )
-        throw new BlueprintError(
+        throw new ProjectorError(
           'CORRUPT_DATA',
           'Working state does not satisfy its published definitions',
         );
@@ -678,7 +702,7 @@ export class Store {
   }
   draftPath(p: Project) {
     if (!p.recipient)
-      throw new BlueprintError('SESSION_BINDING_REQUIRED', 'Select a recipient session');
+      throw new ProjectorError('SESSION_BINDING_REQUIRED', 'Select a recipient session');
     return join(this.data, 'drafts', p.id, digest(p.recipient) + '.json');
   }
   async draft(p: Project): Promise<Draft> {
@@ -697,7 +721,7 @@ export class Store {
     const revision = await this.revision(artifactId, revisionId);
     const widget = revision.widgets.find((w) => w.id === widgetId);
     if (!widget || !isWidgetValueValid(widget, value))
-      throw new BlueprintError('INVALID_STATE', 'Value does not satisfy the widget definition');
+      throw new ProjectorError('INVALID_STATE', 'Value does not satisfy the widget definition');
     const state = await this.state(artifactId, revisionId);
     state.values[widgetId] = value;
     const draft = await this.draft(p);
@@ -824,7 +848,7 @@ export class Store {
   }
   async annotate(args: Omit<Annotation, 'id'>) {
     if (args.revisionId === null)
-      throw new BlueprintError('UNKNOWN_REVISION', 'Text annotations require a published revision');
+      throw new ProjectorError('UNKNOWN_REVISION', 'Text annotations require a published revision');
     const a = await this.artifact(args.artifactId);
     const revision = await this.revision(a.id, args.revisionId);
     const nodes = revision.blocks.flatMap(function flatten(n): typeof revision.blocks {
@@ -838,7 +862,7 @@ export class Store {
       n.value ?? (n.children ?? []).map(text).join(' ');
     const normalized = (s: string) => s.replace(/\s+/g, ' ').trim();
     if (!args.anchor && (!block || !normalized(text(block)).includes(normalized(args.quote))))
-      throw new BlueprintError(
+      throw new ProjectorError(
         'INVALID_ANCHOR',
         'Annotation must refer to selected published content',
       );
@@ -885,7 +909,7 @@ export class Store {
       anchor.end.offset > (leaves[end]?.value.length ?? 0) ||
       (start === end && anchor.start.offset >= anchor.end.offset)
     )
-      throw new BlueprintError('INVALID_ANCHOR', 'Selection endpoints are outside source text');
+      throw new ProjectorError('INVALID_ANCHOR', 'Selection endpoints are outside source text');
     const selected = leaves
       .slice(start, end + 1)
       .map((n, i) =>
@@ -896,7 +920,7 @@ export class Store {
       )
       .join('');
     if (selected.replace(/\s+/g, '') !== quote.replace(/\s+/g, ''))
-      throw new BlueprintError(
+      throw new ProjectorError(
         'INVALID_ANCHOR',
         'Selected text does not match exact source endpoints',
       );
@@ -914,7 +938,7 @@ export class Store {
       args.capture.source.kind !== args.kind ||
       (args.revisionId === null && (args.kind !== 'browser-area' || args.stateContext))
     )
-      throw new BlueprintError(
+      throw new ProjectorError(
         'INVALID_REFERENCE',
         'Only browser annotations can precede a document',
       );
@@ -931,7 +955,7 @@ export class Store {
         !isDeepStrictEqual(existing.stateContext, args.stateContext) ||
         !isDeepStrictEqual(existing.capture?.source, args.capture.source)
       )
-        throw new BlueprintError(
+        throw new ProjectorError(
           'OPERATION_CONFLICT',
           'Capture already belongs to a different annotation',
         );
@@ -977,7 +1001,7 @@ export class Store {
       }
       return;
     }
-    throw new BlueprintError('UNKNOWN_ANNOTATION', 'Unknown annotation');
+    throw new ProjectorError('UNKNOWN_ANNOTATION', 'Unknown annotation');
   }
   async packages(projectId: string): Promise<Feedback[]> {
     return this.memoRead(['packages', projectId], () => this.readPackages(projectId));
@@ -1000,7 +1024,7 @@ export class Store {
   }
   async submit(projectId: string, operationId: string) {
     const p = this.project(projectId);
-    if (!p.recipient) throw new BlueprintError('SESSION_BINDING_REQUIRED', 'Select a session');
+    if (!p.recipient) throw new ProjectorError('SESSION_BINDING_REQUIRED', 'Select a session');
     const key = 'submit:' + projectId + ':' + operationId;
     const previous = this.operation<Feedback>(key, digest({ projectId, operationId }));
     if (previous) {
@@ -1018,14 +1042,14 @@ export class Store {
       (other) => other.available && other.id !== p.id,
     )) {
       if ((await this.packages(other.id)).some((packet) => packet.id === operationId))
-        throw new BlueprintError(
+        throw new ProjectorError(
           'OPERATION_CONFLICT',
           'Package operation ID belongs to another project',
         );
     }
     const draft = await this.draft(p);
     if (!draft.annotations.length && !Object.keys(draft.answers).length)
-      throw new BlueprintError('EMPTY_FEEDBACK', 'There is no draft feedback to submit');
+      throw new ProjectorError('EMPTY_FEEDBACK', 'There is no draft feedback to submit');
     const packet: Feedback = {
       formatVersion: 1,
       id: operationId,
@@ -1034,7 +1058,7 @@ export class Store {
       createdAt: new Date().toISOString(),
       status: 'saved',
       ...draft,
-      notification: `Blueprint feedback ${operationId} is ready. Read it with read_feedback(packageId="${operationId}") and follow the bundled annotation guide. This does not authorize implementation.`,
+      notification: `Projector feedback ${operationId} is ready. Read it with read_feedback(packageId="${operationId}") and follow the bundled annotation guide. This does not authorize implementation.`,
     };
     const dir = join(await this.base(p), 'feedback');
     const stage = await writableInside(p.path, join(dir, '.stage-' + randomUUID()));
@@ -1074,14 +1098,14 @@ export class Store {
     }
   }
   context(p: Feedback) {
-    return `# Blueprint feedback ${p.id}\n\nRecipient: ${p.recipient.harness}/${p.recipient.sessionId}\n\nImplementation authorization: none\n\n## Answers\n\n${JSON.stringify(p.answers, null, 2)}\n\n## Annotations\n\n${p.annotations.map((a) => `### ${a.id}\nArtifact ${a.artifactId}, revision ${a.revisionId}, block ${a.blockId}\n\n> ${a.quote}\n\n${a.comment}`).join('\n\n')}`;
+    return `# Projector feedback ${p.id}\n\nRecipient: ${p.recipient.harness}/${p.recipient.sessionId}\n\nImplementation authorization: none\n\n## Answers\n\n${JSON.stringify(p.answers, null, 2)}\n\n## Annotations\n\n${p.annotations.map((a) => `### ${a.id}\nArtifact ${a.artifactId}, revision ${a.revisionId}, block ${a.blockId}\n\n> ${a.quote}\n\n${a.comment}`).join('\n\n')}`;
   }
   async feedback(id: string) {
     for (const p of (await this.projectAvailability()).filter((p) => p.available)) {
       const item = (await this.packages(p.id)).find((x) => x.id === id);
       if (item) return item;
     }
-    throw new BlueprintError('UNKNOWN_FEEDBACK', 'Unknown published feedback');
+    throw new ProjectorError('UNKNOWN_FEEDBACK', 'Unknown published feedback');
   }
   async approvalHistory(artifactId: string, revisionId: string) {
     const a = await this.artifact(artifactId);
@@ -1126,25 +1150,25 @@ export class Store {
     const a = await this.artifact(artifactId);
     const p = this.project(a.projectId);
     if (await this.editor(artifactId, null))
-      throw new BlueprintError(
+      throw new ProjectorError(
         'UNSUBMITTED_FEEDBACK',
         'Finish or cancel the pending browser annotation edit before approval',
       );
     for (const rev of a.revisions)
       if (await this.editor(artifactId, rev.id))
-        throw new BlueprintError(
+        throw new ProjectorError(
           'UNSUBMITTED_FEEDBACK',
           'Finish or cancel the pending annotation before approval',
         );
     if (await this.states.dirty(artifactId))
-      throw new BlueprintError(
+      throw new ProjectorError(
         'UNSUBMITTED_FEEDBACK',
         'Save or discard working changes before approval',
       );
     try {
       const browserEditor = await json(beneath(this.data, 'browser-editors', artifactId + '.json'));
       if (browserEditor)
-        throw new BlueprintError(
+        throw new ProjectorError(
           'UNSUBMITTED_FEEDBACK',
           'Finish or cancel the browser annotation before approval',
         );
@@ -1253,7 +1277,7 @@ export class Store {
           (item) => item.id === annotationId,
         );
         if (!annotation || annotation.kind !== 'browser-area' || annotation.revisionId !== null)
-          throw new BlueprintError(
+          throw new ProjectorError(
             'INVALID_REFERENCE',
             'Workspace editor requires an existing browser annotation',
           );
@@ -1262,7 +1286,7 @@ export class Store {
     const context = (editor as { selection?: { stateContext?: AnnotationStateContext } } | null)
       ?.selection?.stateContext;
     if (context && revisionId === null)
-      throw new BlueprintError('INVALID_REFERENCE', 'Workspace editor has no document state');
+      throw new ProjectorError('INVALID_REFERENCE', 'Workspace editor has no document state');
     if (context && revisionId !== null)
       await this.validateAnnotationState(artifactId, revisionId, context);
     await atomicJson(beneath(this.data, 'editors', artifactId, revisionId + '.json'), editor);
@@ -1285,7 +1309,7 @@ export class Store {
         ([id, open]) => !ids.includes(id) || typeof open !== 'boolean',
       )
     )
-      throw new BlueprintError(
+      throw new ProjectorError(
         'INVALID_VIEW_STATE',
         'Disclosure state must refer to published Details blocks',
       );
@@ -1344,7 +1368,7 @@ export class Store {
         )
         .digest('hex') !== context.stateHash
     )
-      throw new BlueprintError(
+      throw new ProjectorError(
         'INVALID_ANNOTATION_STATE',
         'Annotation state must match its original revision definitions and canonical hash',
       );

@@ -201,8 +201,9 @@ export class BrowserManager {
   constructor(
     private window: BrowserWindow,
     private hooks: BrowserHooks,
+    private profileData?: string,
   ) {
-    ipcMain.handle('blueprint:browser-overlay', (event, action: unknown, value: unknown) => {
+    ipcMain.handle('projector:browser-overlay', (event, action: unknown, value: unknown) => {
       const marker = [...this.markerViews.values()].find((m) => m.contents === event.sender);
       if (marker && event.senderFrame === event.sender.mainFrame) {
         if (action !== 'marker') throw new Error('Unsupported marker operation');
@@ -262,7 +263,7 @@ export class BrowserManager {
       this.select(existing.state.id);
       return { ...existing.state };
     }
-    const partition = browserPartition(args.projectId);
+    const partition = browserPartition(args.projectId, this.profileData);
     const projectSession = session.fromPartition(partition);
     this.configureSession(partition, projectSession);
     const view = new WebContentsView({
@@ -568,7 +569,7 @@ export class BrowserManager {
     for (const tab of tabs) {
       if (await this.closeTab(tab)) return { cancelled: true, tabs: saved };
     }
-    const profile = session.fromPartition(browserPartition(projectId));
+    const profile = session.fromPartition(browserPartition(projectId, this.profileData));
     for (const [item, owner] of this.downloadItems) if (owner === projectId) item.cancel();
     await profile.clearStorageData();
     await profile.clearCache();
@@ -658,7 +659,7 @@ export class BrowserManager {
     if (this.capture && !this.capture.readonly) {
       const contents = this.overlayContents;
       if (!contents || contents.isDestroyed()) throw new Error('COMMENT_EDITOR_UNAVAILABLE');
-      await contents.executeJavaScript('window.blueprintFinishComment()');
+      await contents.executeJavaScript('window.projectorFinishComment()');
       await this.operationChain;
     } else if (this.tool || this.capture?.readonly) {
       this.hideOverlay();
@@ -1084,7 +1085,7 @@ export class BrowserManager {
     overlay.setBackgroundColor('#00000000');
     overlay.setBounds(this.bounds);
     this.window.contentView.addChildView(overlay);
-    this.overlayContents!.send('blueprint:browser-overlay-load', {
+    this.overlayContents!.send('projector:browser-overlay-load', {
       mode: 'live',
       viewport: { width: this.bounds.width, height: this.bounds.height },
     });
@@ -1428,7 +1429,7 @@ export class BrowserManager {
         const width = Math.ceil(Math.max(pointer.x, cx + 14) - left),
           height = Math.ceil(Math.max(pointer.y, cy + 14) - top);
         marker.view.setBounds({ x: this.bounds.x + left, y: this.bounds.y + top, width, height });
-        marker.contents.send('blueprint:browser-overlay-load', {
+        marker.contents.send('projector:browser-overlay-load', {
           number: annotation.number,
           pointer: { x: pointer.x - left, y: pointer.y - top },
           center: { x: cx - left, y: cy - top },
@@ -1468,7 +1469,7 @@ export class BrowserManager {
     if (!this.capture || this.closed) return;
     overlay.setBounds(this.bounds);
     this.window.contentView.addChildView(overlay);
-    this.overlayContents!.send('blueprint:browser-overlay-load', {
+    this.overlayContents!.send('projector:browser-overlay-load', {
       ...this.capture.capture,
       comment: this.capture.comment,
       readonly: Boolean(this.capture.readonly),
@@ -1576,7 +1577,7 @@ export class BrowserManager {
       throw new Error('INVALID_CAPTURE');
     await this.ensureOverlay();
     return (await this.overlayContents!.executeJavaScript(
-      'window.blueprintDraw(' +
+      'window.projectorDraw(' +
         [png, rect, number, viewport, pointer ?? null]
           .map((value) => JSON.stringify(value))
           .join(',') +
@@ -1590,7 +1591,7 @@ export class BrowserManager {
     clearInterval(this.markerTimer);
     this.clearMarkers();
     ++this.captureGeneration;
-    ipcMain.removeHandler('blueprint:browser-overlay');
+    ipcMain.removeHandler('projector:browser-overlay');
     for (const { contents } of [...this.tabs.values()])
       if (!contents.isDestroyed()) contents.close();
     this.tabs.clear();

@@ -9,8 +9,8 @@ test('a background refresh during a pending sidebar write does not drop the next
     args: [resolve('.')],
     env: {
       ...process.env,
-      BLUEPRINT_DATA: data,
-      BLUEPRINT_RUNTIME_DESCRIPTOR: join(data, 'runtime.json'),
+      PROJECTOR_DATA: data,
+      PROJECTOR_RUNTIME_DESCRIPTOR: join(data, 'runtime.json'),
     },
   });
   try {
@@ -40,7 +40,7 @@ test('a background refresh during a pending sidebar write does not drop the next
       )
       .toBe(true);
     await app.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].webContents.send('blueprint:refresh'),
+      BrowserWindow.getAllWindows()[0].webContents.send('projector:refresh'),
     );
     await expect(resize).toHaveAttribute('aria-valuenow', '250');
     await resize.press('ArrowLeft');
@@ -51,9 +51,9 @@ test('a background refresh during a pending sidebar write does not drop the next
     const layout = await page.evaluate(() =>
       (
         window as unknown as {
-          blueprint: { invoke(method: string): Promise<{ layout: { rightSidebarWidth: number } }> };
+          projector: { invoke(method: string): Promise<{ layout: { rightSidebarWidth: number } }> };
         }
-      ).blueprint.invoke('workspaceSnapshot'),
+      ).projector.invoke('workspaceSnapshot'),
     );
     expect(layout.layout.rightSidebarWidth).toBe(260);
   } finally {

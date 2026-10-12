@@ -40,7 +40,7 @@ async function invoke<T>(
 ): Promise<T> {
   return page.evaluate(
     ({ method, args }) =>
-      (window as unknown as { blueprint: Bridge }).blueprint.invoke(method, args),
+      (window as unknown as { projector: Bridge }).projector.invoke(method, args),
     { method, args },
   ) as Promise<T>;
 }
@@ -119,8 +119,8 @@ async function setup(development = false) {
       args: [resolve('.')],
       env: {
         ...process.env,
-        BLUEPRINT_DATA: data,
-        BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'runtime.json'),
+        PROJECTOR_DATA: data,
+        PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'runtime.json'),
         ...(rendererUrl ? { ELECTRON_RENDERER_URL: rendererUrl } : {}),
       },
     });
@@ -435,7 +435,7 @@ test('utility crash removes ended processes and an explicit new terminal receive
   await input(page, terminal.id, pane.id, 'printf "\\nUNCONFIRMED_UI_OUTPUT\\n"\r');
   await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('UNCONFIRMED_UI_OUTPUT');
   await app!.evaluate(({ app }) => {
-    const helper = app.getAppMetrics().find((entry) => entry.name === 'Blueprint Terminals');
+    const helper = app.getAppMetrics().find((entry) => entry.name === 'Projector Terminals');
     if (!helper) throw new Error('Missing dedicated terminal utility service');
     process.kill(helper.pid, 'SIGKILL');
   });
@@ -645,7 +645,7 @@ test('control input survives a pending real PTY resize acknowledgement without r
   const keyboard = page.locator('.terminal-pane .xterm-helper-textarea');
   await keyboard.focus();
   const servicePid = await app!.evaluate(({ app }) => {
-    const service = app.getAppMetrics().find((entry) => entry.name === 'Blueprint Terminals');
+    const service = app.getAppMetrics().find((entry) => entry.name === 'Projector Terminals');
     if (!service) throw new Error('Missing owned terminal service');
     return service.pid;
   });
@@ -730,7 +730,7 @@ test('native-backed files drop into an inactive terminal as quoted paths without
   await expect(first.locator('.xterm-helper-textarea')).toBeFocused();
   const second = page.locator('.terminal-pane').nth(1);
   await expect(second.locator('.xterm-rows')).not.toContainText('KEY:');
-  expect(await page.url()).toContain('blueprint://');
+  expect(await page.url()).toContain('projector://');
 });
 
 for (const mode of ['mouse', 'arrows'])
@@ -867,9 +867,9 @@ test('warmed wheel input is batched and measured through real PTY and DOM paint;
           let outputAt = start;
           const stopOutput = (
             window as unknown as {
-              blueprint: { onTerminalOutput(callback: () => void): () => void };
+              projector: { onTerminalOutput(callback: () => void): () => void };
             }
-          ).blueprint.onTerminalOutput(() => {
+          ).projector.onTerminalOutput(() => {
             outputAt = performance.now();
           });
           const observer = new MutationObserver(() => {

@@ -12,7 +12,7 @@ type Application = ApplicationWorkspaceSnapshot & { terminals: TerminalRecord[];
 let app: ElectronApplication | undefined, root: string, mcp: Mcp | undefined;
 test.afterEach(async () => { mcp?.close(); mcp = undefined; await app?.close(); app = undefined; if (root) await rm(root, { recursive: true, force: true }); });
 const invoke = <T>(page: Page, name: string, args?: Record<string, unknown>) => page.evaluate(
-  ({ name, args }) => (window as unknown as { blueprint: { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> } }).blueprint.invoke(name, args), { name, args },
+  ({ name, args }) => (window as unknown as { projector: { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> } }).projector.invoke(name, args), { name, args },
 ) as Promise<T>;
 const snapshot = (page: Page) => invoke<Application>(page, 'applicationSnapshot');
 
@@ -33,9 +33,9 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   };
   await changeCatalog(false);
   const launch = () => electron.launch({ args: [resolve('.')], env: { ...process.env,
-    BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: descriptor, CODEX_HOME: home,
+    PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: descriptor, CODEX_HOME: home,
     CODEX_FIXTURE_PROJECT: project, CODEX_FIXTURE_OTHER_PROJECT: other, CODEX_FIXTURE_AUDIT: audit,
-    CODEX_FIXTURE_ID: exact, CODEX_FIXTURE_EMPTY: '0', BLUEPRINT_E2E_HARNESS_INTERVAL_MS: '200', CODEX_FIXTURE_MCP_STARTUP_STATUS: 'ready',
+    CODEX_FIXTURE_ID: exact, CODEX_FIXTURE_EMPTY: '0', PROJECTOR_E2E_HARNESS_INTERVAL_MS: '200', CODEX_FIXTURE_MCP_STARTUP_STATUS: 'ready',
     CODEX_FIXTURE_METADATA_FILE: metadataPath } });
   app = await launch();
   let launchErrors = '';
@@ -92,14 +92,14 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   const settingsDialog = page.getByRole('dialog', { name: 'Settings' });
   await expect(settingsDialog).toBeVisible();
   await settingsDialog.getByRole('button', { name: 'Harnesses', exact: true }).click();
-  await expect(settingsDialog.getByRole('list', { name: 'Blueprint MCP startup status' })).toContainText(exact);
-  await expect(settingsDialog.getByRole('list', { name: 'Blueprint MCP startup status' })).toContainText('MCP startup: ready');
+  await expect(settingsDialog.getByRole('list', { name: 'Projector MCP startup status' })).toContainText(exact);
+  await expect(settingsDialog.getByRole('list', { name: 'Projector MCP startup status' })).toContainText('MCP startup: ready');
   await page.keyboard.press('Escape');
   await expect(settingsDialog).toHaveCount(0);
 
   mcp = new Mcp(descriptor); await mcp.initialize();
   const author = randomUUID();
-  const artifact = await mcp.tool('create_artifact', { projectId, kind: 'blueprint', title: 'Shared authored plan', originSession: { harness: 'codex', sessionId: author }, operationId: randomUUID() });
+  const artifact = await mcp.tool('create_artifact', { projectId, kind: 'projector', title: 'Shared authored plan', originSession: { harness: 'codex', sessionId: author }, operationId: randomUUID() });
   await writeFile(join(String(artifact.sourcePath), 'plan.mdx'), '# Shared authored plan\n\n<TextAnswer id="choice" meaning="Decision" semanticsVersion="1" defaultValue="" />');
   const revision = await mcp.tool('publish_artifact', { artifactId: artifact.artifactId, expectedLatestRevision: null, operationId: randomUUID() });
   // Open in the explicit live session to protect side-by-side plan/terminal behavior.
@@ -249,8 +249,8 @@ test('Resume reports an active writer without starting a terminal or taking over
   await Promise.all([project, data, home].map(path => mkdir(path)));
   const audit = join(root, 'audit.jsonl'), sessionId = 'busy-session';
   app = await electron.launch({ args: [resolve('.')], env: { ...process.env,
-    BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'), CODEX_HOME: home,
-    BLUEPRINT_E2E_CODEX_EXECUTABLE: resolve('tests/fixtures/codex-cli.mjs'),
+    PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'), CODEX_HOME: home,
+    PROJECTOR_E2E_CODEX_EXECUTABLE: resolve('tests/fixtures/codex-cli.mjs'),
     CODEX_FIXTURE_EMPTY: '0', CODEX_FIXTURE_PROJECT: project, CODEX_FIXTURE_ID: sessionId,
     CODEX_FIXTURE_NAME: 'In use session', CODEX_FIXTURE_ACTIVE_WRITER: sessionId, CODEX_FIXTURE_AUDIT: audit,
   } });
@@ -258,12 +258,12 @@ test('Resume reports an active writer without starting a terminal or taking over
   await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, project);
   await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();
   await page.locator('.sidebar').getByRole('button', { name: 'In use session', exact: true }).click();
+  const tab = page.getByRole('tab', { name: 'Codex', exact: true });
+  await expect(tab).toBeVisible();
   const before = await snapshot(page);
   const key = before.selectedWorkspace!;
   const pinned = before.workspaces[key].tabs[0];
   expect(paneLeaves(pinned.root)[0].content).toEqual({ kind: 'session', sessionId });
-  const tab = page.getByRole('tab', { name: 'Codex', exact: true });
-  await expect(tab).toBeVisible();
   await expect(page.getByRole('button', { name: 'Close codex tab', exact: true })).toHaveCount(0);
   await tab.click({ button: 'middle' });
   await page.keyboard.press('Meta+w');

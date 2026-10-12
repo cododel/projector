@@ -43,7 +43,7 @@ interface EmptyPlan {
 }
 // Seed only the historical format: the operator creation route is deliberately absent.
 async function seedLegacyEmptyPlan(input: { projectId: string; operationId: string }) {
-  const plan = await store.create({ ...input, title: 'Untitled plan', kind: 'blueprint', originSession: null });
+  const plan = await store.create({ ...input, title: 'Untitled plan', kind: 'projector', originSession: null });
   return {...plan, sourceFile: 'plan.mdx'};
 }
 async function setup() {
@@ -83,7 +83,7 @@ it('keeps historical unbound workspaces readable without allowing operator creat
     ops.tool('create_artifact', {
       projectId: input.projectId,
       title: 'Agent draft',
-      kind: 'blueprint',
+      kind: 'projector',
       operationId: randomUUID(),
     }),
   ).rejects.toThrow();
@@ -259,7 +259,7 @@ it('preserves pre-document browser annotations privately through restart, first 
     await readFile(
       join(
         project.path,
-        '.blueprint',
+        '.projector',
         'artifacts',
         plan.artifactId,
         'states',
@@ -269,7 +269,7 @@ it('preserves pre-document browser annotations privately through restart, first 
       'utf8',
     ),
   ).toContain('"formatVersion": 2');
-  expect(await resumed.tool('get_blueprint_context', { projectPath: project.path })).toMatchObject({
+  expect(await resumed.tool('get_projector_context', { projectPath: project.path })).toMatchObject({
     capabilities: { supportedSavedStateVersions: [1, 2] },
   });
   const savedBeforeArchive = await store.states.read(plan.artifactId, saved.id);

@@ -86,7 +86,7 @@ export function ProjectDashboard(props: Props) {
             </button>
           </div>
         ))}
-        <p className="dashboard-hint">Plans are created by agents through Blueprint MCP.</p>
+        <p className="dashboard-hint">Plans are created by agents through Projector MCP.</p>
       </section>
       <section aria-label="Project sessions">
         <h2>Sessions</h2>

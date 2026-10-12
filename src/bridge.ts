@@ -1,3 +1,4 @@
+import { normalizeLegacyEnvironment } from './shared/brand-compat';
 import {
   Client,
   StreamableHTTPClientTransport,
@@ -5,7 +6,7 @@ import {
 } from '@modelcontextprotocol/client';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
-import { BlueprintError } from './shared/protocol';
+import { ProjectorError } from './shared/protocol';
 import {
   defaultRuntimeDescriptorPath,
   readRuntimeDescriptor,
@@ -13,16 +14,17 @@ import {
   runtimeHeaders,
   verifyRuntimeDescriptor,
 } from './shared/runtime-endpoint';
-import { createBlueprintMcpServer } from './runtime/mcp-server';
+import { createProjectorMcpServer } from './runtime/mcp-server';
 
 /** Never launches a runtime or repeats a tool invocation after an uncertain response. */
 export async function runBridge(): Promise<void> {
+  normalizeLegacyEnvironment();
   rejectLegacySocket();
   const descriptor = await readRuntimeDescriptor(
-    process.env.BLUEPRINT_RUNTIME_DESCRIPTOR ?? defaultRuntimeDescriptorPath(),
+    process.env.PROJECTOR_RUNTIME_DESCRIPTOR ?? defaultRuntimeDescriptorPath(),
   );
   await verifyRuntimeDescriptor(descriptor);
-  const client = new Client({ name: 'blueprint-stdio-bridge', version: '1' });
+  const client = new Client({ name: 'projector-stdio-bridge', version: '1' });
   const receivedResults = new Set<string | number>();
   let detectIncomplete = false;
   let available = true;
@@ -94,9 +96,9 @@ export async function runBridge(): Promise<void> {
     await client.connect(transport, { timeout: 5000 });
   } catch {
     await client.close().catch(() => {});
-    throw new BlueprintError(
+    throw new ProjectorError(
       'RUNTIME_UNAVAILABLE',
-      'Blueprint runtime instance is unavailable. Start the application manually and reconnect MCP.',
+      'Projector runtime instance is unavailable. Start the application manually and reconnect MCP.',
     );
   }
   const receive = transport.onmessage;
@@ -111,9 +113,9 @@ export async function runBridge(): Promise<void> {
     tools = (await client.listTools()).tools;
   } catch {
     await client.close().catch(() => {});
-    throw new BlueprintError(
+    throw new ProjectorError(
       'RUNTIME_UNAVAILABLE',
-      'Blueprint runtime tool list is unavailable. Start the application manually and reconnect MCP.',
+      'Projector runtime tool list is unavailable. Start the application manually and reconnect MCP.',
     );
   }
   const hello = {
@@ -123,11 +125,11 @@ export async function runBridge(): Promise<void> {
   };
   const handle = serveStdio(
     () =>
-      createBlueprintMcpServer(hello, async (name, args) => {
+      createProjectorMcpServer(hello, async (name, args) => {
         if (!available)
-          throw new BlueprintError(
+          throw new ProjectorError(
             'RUNTIME_UNAVAILABLE',
-            'Blueprint runtime is unavailable. Reconnect MCP before retrying.',
+            'Projector runtime is unavailable. Reconnect MCP before retrying.',
           );
         try {
           return await client.callTool(
@@ -135,9 +137,9 @@ export async function runBridge(): Promise<void> {
             { timeout: 30_000 },
           );
         } catch {
-          throw new BlueprintError(
+          throw new ProjectorError(
             'UNKNOWN_RESULT',
-            'Blueprint runtime disconnected or timed out. The operation may have completed; reconcile by operationId before retrying.',
+            'Projector runtime disconnected or timed out. The operation may have completed; reconcile by operationId before retrying.',
           );
         }
       }),

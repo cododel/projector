@@ -34,9 +34,9 @@ async function invoke<T>(page: Page, name: string, args: Record<string, unknown>
     ({ name, args }) =>
       (
         window as unknown as {
-          blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> };
+          projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> };
         }
-      ).blueprint.invoke(name, args),
+      ).projector.invoke(name, args),
     { name, args },
   ) as Promise<T>;
 }
@@ -49,7 +49,7 @@ async function setup() {
   await Promise.all([data, project].map((path) => mkdir(path)));
   app = await electron.launch({
     args: [resolve('.')],
-    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: descriptor },
+    env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: descriptor },
   });
   const page = await app.firstWindow();
   await app.evaluate(({ dialog }, path) => {
@@ -58,7 +58,7 @@ async function setup() {
   await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();
   mcp = new Mcp(descriptor);
   await mcp.initialize();
-  const context = await mcp.tool('get_blueprint_context', {});
+  const context = await mcp.tool('get_projector_context', {});
   const projectId = (context.project as { id: string }).id;
   async function command(action: string, args: Record<string, unknown> = {}) {
     const current = await snapshot(page);
@@ -74,7 +74,7 @@ async function setup() {
 async function publish(projectId: string) {
   const artifact = await mcp!.tool('create_artifact', {
     projectId,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'Shared review',
     originSession: { harness: 'codex', sessionId: 'author-exact-session' },
     operationId: randomUUID(),
@@ -357,8 +357,8 @@ test('settings record shortcuts, protect edits and preserve plan workspaces and 
     args: [resolve('.')],
     env: {
       ...process.env,
-      BLUEPRINT_DATA: join(root, 'data'),
-      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'runtime.json'),
+      PROJECTOR_DATA: join(root, 'data'),
+      PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'runtime.json'),
     },
   });
   const restoredPage = await app.firstWindow();
@@ -502,7 +502,7 @@ test('trusted document editor scopes keep public navigation deferred until every
         window.addEventListener('message', response);
         window.parent.postMessage(
           {
-            type: 'blueprint-request',
+            type: 'projector-request',
             id,
             method: 'editing',
             params: { active, scope: 'operator' },

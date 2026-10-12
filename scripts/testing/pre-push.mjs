@@ -17,7 +17,7 @@ export function pushedCommits(input) {
 
 export async function validatePush(root, input) {
   for (const commit of pushedCommits(input)) {
-    const directory = await mkdtemp(join(tmpdir(), 'blueprint-pre-push-'));
+    const directory = await mkdtemp(join(tmpdir(), 'projector-pre-push-'));
     try {
       // Export the immutable pushed object, without .git or personal worktree data.
       const archive = execFileSync('git', ['-C', root, 'archive', commit], {

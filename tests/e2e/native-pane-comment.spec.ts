@@ -34,8 +34,8 @@ async function invoke<T>(page: Page, name: string, args: Record<string, unknown>
   return page.evaluate(
     ({ name, args }) =>
       (window as unknown as {
-        blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> };
-      }).blueprint.invoke(name, args),
+        projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> };
+      }).projector.invoke(name, args),
     { name, args },
   ) as Promise<T>;
 }
@@ -76,7 +76,7 @@ test('native pane first click drains the sibling comment without acting on the s
   const url = `http://127.0.0.1:${address.port}/`;
   app = await electron.launch({
     args: [resolve('.')],
-    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: descriptor },
+    env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: descriptor },
   });
   const page = await app.firstWindow();
   await app.evaluate(({ dialog }, path) => {
@@ -85,11 +85,11 @@ test('native pane first click drains the sibling comment without acting on the s
   await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();
   mcp = new Mcp(descriptor);
   await mcp.initialize();
-  const context = await mcp.tool('get_blueprint_context', {});
+  const context = await mcp.tool('get_projector_context', {});
   const projectId = (context.project as { id: string }).id;
   const artifact = await mcp.tool('create_artifact', {
     projectId,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'Neighbor comment',
     originSession: { harness: 'codex', sessionId: 'native-comment-author' },
     operationId: randomUUID(),

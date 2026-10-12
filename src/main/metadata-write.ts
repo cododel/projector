@@ -1,12 +1,12 @@
 import { open, readFile, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { atomicJson } from '../runtime/files';
-import { BlueprintError } from '../shared/protocol';
+import { ProjectorError } from '../shared/protocol';
 
 /** One metadata owner; an unknown rename is confirmed without replaying its caller's action. */
 export class MetadataWriter {
   private writes: Promise<void> = Promise.resolve();
-  private pending: { text: string; error: BlueprintError } | null = null;
+  private pending: { text: string; error: ProjectorError } | null = null;
   constructor(private readonly path: string) {}
 
   hasPendingConfirmation(): boolean { return this.pending !== null; }
@@ -19,7 +19,7 @@ export class MetadataWriter {
       this.assertConfirmed();
       try { await atomicJson(this.path, JSON.parse(text)); }
       catch (error) {
-        if (!(error instanceof BlueprintError) || error.code !== 'UNKNOWN_RESULT' ||
+        if (!(error instanceof ProjectorError) || error.code !== 'UNKNOWN_RESULT' ||
             error.details?.phase !== 'after-rename') throw error;
         this.pending = { text, error };
         await this.reconcile();
@@ -54,7 +54,7 @@ export class MetadataWriter {
       this.pending = null;
     } catch {
       // Retain the attempted outcome; later mutations cannot overwrite an unknown commit.
-      pending.error = new BlueprintError('UNKNOWN_RESULT',
+      pending.error = new ProjectorError('UNKNOWN_RESULT',
         'Workspace metadata may already be saved. Retry confirmation before making another change.',
         { phase: 'after-rename', reconcileBeforeRetry: true, metadataConfirmation: true });
       throw pending.error;

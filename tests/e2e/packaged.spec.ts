@@ -25,45 +25,60 @@ test('relocated packaged app uses its own stdio helper without system Node and p
         timeout: 90000,
         env: {
           ...process.env,
-          BLUEPRINT_NODE: process.execPath,
-          BLUEPRINT_PACKAGE_OUTPUT: join(root, 'package'),
+          PROJECTOR_NODE: process.execPath,
+          PROJECTOR_PACKAGE_OUTPUT: join(root, 'package'),
         },
       },
     );
     const source = stdout.trim().split('\n').at(-1)!;
-    expect(source).toBe(join(root, 'package', `Blueprint-darwin-${process.arch}`, 'Blueprint.app'));
-    const relocated = join(root, 'Moved app with spaces', 'Blueprint.app');
+    expect(source).toBe(join(root, 'package', `Projector-darwin-${process.arch}`, 'Projector.app'));
+    const plist = await promisify(execFile)('/usr/bin/plutil', [
+      '-convert',
+      'json',
+      '-o',
+      '-',
+      join(source, 'Contents', 'Info.plist'),
+    ]);
+    expect(JSON.parse(plist.stdout)).toMatchObject({
+      CFBundleName: 'Projector',
+      CFBundleIdentifier: 'dev.cododel.projector',
+    });
+    const relocated = join(root, 'Moved app with spaces', 'Projector.app');
     await mkdir(join(root, 'Moved app with spaces'));
     // Framework symlinks must stay relative when an application bundle is relocated.
     await cp(source, relocated, { recursive: true, verbatimSymlinks: true });
     const socket = join(root, 'service.sock');
-    const executable = join(relocated, 'Contents', 'MacOS', 'Blueprint');
+    const executable = join(relocated, 'Contents', 'MacOS', 'Projector');
     app = await electron.launch({
       executablePath: executable,
       args: [],
       env: {
         ...process.env,
         PATH: '/usr/bin:/bin',
-        BLUEPRINT_NODE: '/missing/system/node',
-        BLUEPRINT_DATA: join(root, 'data'),
-        BLUEPRINT_RUNTIME_DESCRIPTOR: socket,
+        PROJECTOR_NODE: '/missing/system/node',
+        PROJECTOR_DATA: join(root, 'data'),
+        PROJECTOR_RUNTIME_DESCRIPTOR: socket,
       },
     });
     let applicationStderr = '';
-    app.process().stderr?.on('data', chunk => { applicationStderr += String(chunk); });
+    app.process().stderr?.on('data', (chunk) => {
+      applicationStderr += String(chunk);
+    });
     await app.evaluate(({ session }) => {
       session.defaultSession.webRequest.onBeforeRequest(
         { urls: ['http://*/*', 'https://*/*'] },
         (_details, callback) => callback({ cancel: true }),
       );
     });
-    const page = await app.firstWindow().catch(error => { throw new Error(`${String(error)}\n${applicationStderr}`); });
-    await page.getByRole('button', { name: 'Blueprint guide', exact: true }).click();
-    await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toContainText(
+    const page = await app.firstWindow().catch((error) => {
+      throw new Error(`${String(error)}\n${applicationStderr}`);
+    });
+    await page.getByRole('button', { name: 'Projector guide', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Projector guide' })).toContainText(
       'Available offline',
     );
     await page
-      .getByRole('dialog', { name: 'Blueprint guide' })
+      .getByRole('dialog', { name: 'Projector guide' })
       .getByRole('button', { name: 'Close', exact: true })
       .click();
 
@@ -73,16 +88,16 @@ test('relocated packaged app uses its own stdio helper without system Node and p
     expect(await app.evaluate(({ app }) => app.isPackaged)).toBe(true);
     const setup: McpSetup = await page.evaluate(async () => {
       const bridge = (
-        window as unknown as { blueprint: { invoke: (name: string) => Promise<McpSetup> } }
-      ).blueprint;
+        window as unknown as { projector: { invoke: (name: string) => Promise<McpSetup> } }
+      ).projector;
       return bridge.invoke('setup');
     });
     expect(setup.mode).toBe('packaged');
     expect(setup.executable).toContain(
-      'Moved app with spaces/Blueprint.app/Contents/Resources/mcp/blueprint-mcp',
+      'Moved app with spaces/Projector.app/Contents/Resources/mcp/projector-mcp',
     );
     expect(setup.args).toEqual([]);
-    expect(setup.env.BLUEPRINT_RUNTIME_DESCRIPTOR).toBe(socket);
+    expect(setup.env.PROJECTOR_RUNTIME_DESCRIPTOR).toBe(socket);
     await page.getByRole('button', { name: 'MCP connection', exact: true }).click();
     await expect(page.getByRole('dialog')).toContainText('Packaged application');
     await expect(page.getByRole('dialog')).toContainText(setup.executable);
@@ -126,7 +141,7 @@ test('relocated packaged app uses its own stdio helper without system Node and p
       capabilities: {},
       clientInfo: { name: 'packaged-test', version: '1' },
     });
-    expect(initialized.result).toMatchObject({ serverInfo: { name: 'blueprint' } });
+    expect(initialized.result).toMatchObject({ serverInfo: { name: 'projector' } });
     child.stdin.write(
       JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n',
     );
@@ -146,10 +161,10 @@ test('relocated packaged app uses its own stdio helper without system Node and p
       if (result.isError) throw new Error(result.content[0].text);
       return JSON.parse(result.content[0].text) as Record<string, unknown>;
     };
-    const context = await tool('get_blueprint_context', {});
+    const context = await tool('get_projector_context', {});
     const a = await tool('create_artifact', {
       projectId: (context.project as { id: string }).id,
-      kind: 'blueprint',
+      kind: 'projector',
       title: 'Packaged plan',
       originSession: { harness: 'codex', sessionId: 'packaged-test' },
       operationId: randomUUID(),
@@ -174,36 +189,69 @@ test('relocated packaged app uses its own stdio helper without system Node and p
     ).toContain('Saved through the bundled helper');
     // Exercise the relocated native PTY payload and real renderer input as well
     // as the bundled bridge/compiler. No system Node or external network is available.
-    const invoke = <T>(name: string, args?: Record<string, unknown>) => page.evaluate(
-      ({ name, args }) => (window as unknown as { blueprint: { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> } }).blueprint.invoke(name, args),
-      { name, args },
-    ) as Promise<T>;
+    const invoke = <T>(name: string, args?: Record<string, unknown>) =>
+      page.evaluate(
+        ({ name, args }) =>
+          (
+            window as unknown as {
+              projector: { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> };
+            }
+          ).projector.invoke(name, args),
+        { name, args },
+      ) as Promise<T>;
     type Application = ApplicationWorkspaceSnapshot & { terminals: TerminalRecord[] };
     const application = await invoke<Application>('applicationSnapshot');
-    await invoke('applicationSettings', { ...application.settings, shell: '/bin/sh', shellArgs: ['-i'] });
+    await invoke('applicationSettings', {
+      ...application.settings,
+      shell: '/bin/sh',
+      shellArgs: ['-i'],
+    });
     await page.getByRole('button', { name: 'New terminal', exact: true }).first().click();
-    await expect.poll(async () => (await invoke<Application>('applicationSnapshot')).terminals.length).toBe(1);
+    await expect
+      .poll(async () => (await invoke<Application>('applicationSnapshot')).terminals.length)
+      .toBe(1);
     const terminal = (await invoke<Application>('applicationSnapshot')).terminals[0];
     await page.locator('.terminal-pane .xterm-helper-textarea').focus();
     await page.keyboard.insertText('stty -echo; printf "\\nPACKAGED_NATIVE_輸入🙂\\n"');
     await page.keyboard.press('Enter');
-    await expect.poll(async () => (await invoke<TerminalScreen>('terminalScreen', { id: terminal.id })).content)
+    await expect
+      .poll(
+        async () => (await invoke<TerminalScreen>('terminalScreen', { id: terminal.id })).content,
+      )
       .toContain('\r\nPACKAGED_NATIVE_輸入🙂\r\n');
-    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('PACKAGED_NATIVE_輸入🙂');
+    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText(
+      'PACKAGED_NATIVE_輸入🙂',
+    );
     await page.getByRole('button', { name: 'Close shell tab', exact: true }).click();
     expect((await invoke<Application>('applicationSnapshot')).terminals[0].pid).toBe(terminal.pid);
-    await invoke('applicationCommand', { action: 'showTerminal', projectId: terminal.projectId,
-      key: application.selectedWorkspace, terminalId: terminal.id });
-    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('PACKAGED_NATIVE_輸入🙂');
+    await invoke('applicationCommand', {
+      action: 'showTerminal',
+      projectId: terminal.projectId,
+      key: application.selectedWorkspace,
+      terminalId: terminal.id,
+    });
+    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText(
+      'PACKAGED_NATIVE_輸入🙂',
+    );
     expect((await invoke<Application>('applicationSnapshot')).terminals[0].pid).toBe(terminal.pid);
     const terminalImage = test.info().outputPath('installed-production-terminal.png');
     await page.screenshot({ path: terminalImage });
     await test.info().attach('installed-production-terminal', {
-      path: terminalImage, contentType: 'image/png',
+      path: terminalImage,
+      contentType: 'image/png',
     });
     await page.close();
-    expect(await app.evaluate((_, pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }, terminal.pid!)).toBe(true);
-    const guide = await request('tools/call', { name: 'get_blueprint_guide', arguments: {} });
+    expect(
+      await app.evaluate((_, pid) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      }, terminal.pid!),
+    ).toBe(true);
+    const guide = await request('tools/call', { name: 'get_projector_guide', arguments: {} });
     expect(JSON.stringify(guide.result)).toContain('guideVersion');
     const exit = once(child, 'exit');
     child.stdin.end();

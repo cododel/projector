@@ -16,23 +16,23 @@ const p95 = (values: number[]) =>
 // Standalone, explicitly selected by scripts/testing/stage-performance.mjs.
 // UI operations cross the production preload/runtime boundary and use real writes.
 test('qualifies the current-stage dataset at production boundaries', async () => {
-  const root = process.env.BLUEPRINT_PERFORMANCE_ROOT;
-  const reportPath = process.env.BLUEPRINT_PERFORMANCE_REPORT;
+  const root = process.env.PROJECTOR_PERFORMANCE_ROOT;
+  const reportPath = process.env.PROJECTOR_PERFORMANCE_REPORT;
   if (!root || !reportPath)
     throw Error('Run pnpm test:performance; this qualification needs its isolated dataset');
   const fixture = JSON.parse(await readFile(join(root, 'fixture.json'), 'utf8')) as {
     artifacts: { id: string; revisionId: string; title: string }[];
     projectId: string;
   };
-  const diagnostic = process.env.BLUEPRINT_PERFORMANCE_DIAGNOSE_TABS === '1';
+  const diagnostic = process.env.PROJECTOR_PERFORMANCE_DIAGNOSE_TABS === '1';
   const socket = join(root, 'service.sock');
   const app = await electron.launch({
     args: [resolve('.')],
     env: {
       ...process.env,
-      BLUEPRINT_DATA: join(root, 'data'),
-      BLUEPRINT_RUNTIME_DESCRIPTOR: socket,
-      BLUEPRINT_E2E_BACKGROUND: '1',
+      PROJECTOR_DATA: join(root, 'data'),
+      PROJECTOR_RUNTIME_DESCRIPTOR: socket,
+      PROJECTOR_E2E_BACKGROUND: '1',
     },
   });
   let mcp: Mcp | undefined;

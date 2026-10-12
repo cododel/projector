@@ -24,7 +24,7 @@ async function setup() {
   const create = async (sessionId: string) => {
     const artifact = await store.create({
       projectId: project.id,
-      kind: 'blueprint',
+      kind: 'projector',
       title: 'Plan',
       originSession: { harness: 'codex', sessionId },
       operationId: randomUUID(),
@@ -95,7 +95,7 @@ it('migrates all legacy recipient namespaces to their artifacts without publicat
     },
     notification: 'Legacy notification',
   };
-  const packetDir = join(project.path, '.blueprint', 'feedback', feedback.id);
+  const packetDir = join(project.path, '.projector', 'feedback', feedback.id);
   await mkdir(packetDir, { recursive: true });
   const packetPath = join(packetDir, 'package.json');
   await writeFile(packetPath, JSON.stringify(feedback));
@@ -108,7 +108,7 @@ it('migrates all legacy recipient namespaces to their artifacts without publicat
     stateHash: hash(approvalState),
     implementationAuthorized: false,
   };
-  const approvalDir = join(project.path, '.blueprint', 'approvals');
+  const approvalDir = join(project.path, '.projector', 'approvals');
   await mkdir(approvalDir, { recursive: true });
   const approvalPath = join(
     approvalDir,
@@ -262,7 +262,7 @@ it('preserves a recoverable private legacy answer when its redundant state file 
 it('retains a legacy approval record when the same document revision receives a new approval', async () => {
   const { project, create } = await setup();
   const { artifact, revision } = await create('one');
-  const approvalDir = join(project.path, '.blueprint', 'approvals');
+  const approvalDir = join(project.path, '.projector', 'approvals');
   await mkdir(approvalDir, { recursive: true });
   const approvalPath = join(
     approvalDir,

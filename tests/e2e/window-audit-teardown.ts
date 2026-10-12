@@ -4,7 +4,7 @@ import { z } from 'zod';
 const event = z.object({ event: z.string(), pid: z.number(), windowId: z.number().optional() });
 
 export default async function teardown() {
-  const path = process.env.BLUEPRINT_E2E_WINDOW_AUDIT;
+  const path = process.env.PROJECTOR_E2E_WINDOW_AUDIT;
   if (!path) return;
   const contents = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return ''; // A selection consisting only of skipped tests.

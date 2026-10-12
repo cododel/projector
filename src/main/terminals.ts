@@ -78,11 +78,11 @@ export class TerminalManager {
       const worker = utilityProcess.fork(servicePath, [], {
         env: {
           ...process.env,
-          BLUEPRINT_DATA: data,
-          BLUEPRINT_TERMINAL_OPTIONS: JSON.stringify(initialOptions),
+          PROJECTOR_DATA: data,
+          PROJECTOR_TERMINAL_OPTIONS: JSON.stringify(initialOptions),
         },
         stdio: 'pipe',
-        serviceName: 'Blueprint Terminals',
+        serviceName: 'Projector Terminals',
       });
       this.worker = worker;
       const timeout = setTimeout(() => {

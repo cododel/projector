@@ -18,7 +18,7 @@ for (const args of [
 ]) {
   const result = spawnSync('pnpm', args, {
     stdio: 'inherit',
-    env: { ...process.env, BLUEPRINT_E2E_VISIBLE: '0', BLUEPRINT_E2E_BACKGROUND: '1' },
+    env: { ...process.env, PROJECTOR_E2E_VISIBLE: '0', PROJECTOR_E2E_BACKGROUND: '1' },
   });
   if (result.error) console.error(result.error.message);
   if (result.status !== 0) process.exit(result.status ?? 1);

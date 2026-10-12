@@ -70,7 +70,7 @@ test('agent-created unpublished plan has native project actions and retains priv
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+      env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   let page = await app.firstWindow();
@@ -98,15 +98,15 @@ test('agent-created unpublished plan has native project actions and retains priv
   await expect(page.getByRole('button', { name: 'Remove from list', exact: true })).toHaveCount(0);
   mcp = new Mcp(socket);
   await mcp.initialize();
-  const context = await mcp.tool('get_blueprint_context', {});
+  const context = await mcp.tool('get_projector_context', {});
   const projectId = (context.project as {id: string}).id;
   const originSession = {harness: 'codex', sessionId: 'actual-empty-plan-agent'};
   await expect(page.evaluate(async projectId => {
-    const bridge = (window as unknown as {blueprint: {invoke(name: string,args: Record<string,unknown>):Promise<unknown>}}).blueprint;
+    const bridge = (window as unknown as {projector: {invoke(name: string,args: Record<string,unknown>):Promise<unknown>}}).projector;
     await bridge.invoke('createEmptyPlan', {projectId, operationId: crypto.randomUUID()});
   }, projectId)).rejects.toThrow('Unsupported operator command');
   await expect(page.getByRole('button', { name: 'New plan in project', exact: true })).toHaveCount(0);
-  const plan = await mcp.tool('create_artifact', {projectId, title: 'Untitled plan', kind: 'blueprint', originSession, operationId: randomUUID()});
+  const plan = await mcp.tool('create_artifact', {projectId, title: 'Untitled plan', kind: 'projector', originSession, operationId: randomUUID()});
   const artifactId = String(plan.artifactId);
   await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Untitled plan', exact: true }).click();
@@ -278,9 +278,9 @@ test('agent-created unpublished plan has native project actions and retains priv
   await page.evaluate(async () => {
     const bridge = (
       window as unknown as {
-        blueprint: { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> };
+        projector: { invoke(name: string, args?: Record<string, unknown>): Promise<unknown> };
       }
-    ).blueprint;
+    ).projector;
     const snapshot = (await bridge.invoke('snapshot')) as {
       projects: { id: string; available?: boolean }[];
     };

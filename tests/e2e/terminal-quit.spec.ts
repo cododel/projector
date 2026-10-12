@@ -19,14 +19,14 @@ test('Quit cleans owned PTYs when an alive runtime cannot answer a workspace mut
   const data = join(root, 'data'), project = join(root, 'project');
   await Promise.all([data, project].map(path => mkdir(path)));
   const app = await playwright._electron.launch({ args: [resolve('.')], env: { ...process.env,
-    BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
+    PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
   const main = app.process().pid!;
   let child: number | undefined, parent: number | undefined, runtime: number | undefined;
   let stopped = false;
   try {
     const page = await app.firstWindow();
     const invoke = <T>(name: string, args: Record<string, unknown> = {}) => page.evaluate(
-      ({ name, args }) => (window as unknown as { blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).blueprint.invoke(name, args), { name, args },
+      ({ name, args }) => (window as unknown as { projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).projector.invoke(name, args), { name, args },
     ) as Promise<T>;
     await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, project);
     await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();
@@ -73,14 +73,14 @@ test('Quit cleans owned PTYs when an alive runtime cannot answer a workspace mut
     expect(runtime).not.toBe(main);
     expect(runtime).not.toBe(parent);
     expect(before.metrics.some(metric => metric.pid === runtime && metric.type === 'Utility')).toBe(true);
-    expect(before.metrics.find(metric => metric.pid === runtime)?.name).not.toBe('Blueprint Terminals');
+    expect(before.metrics.find(metric => metric.pid === runtime)?.name).not.toBe('Projector Terminals');
     process.kill(runtime, 'SIGSTOP');
     stopped = true;
     await page.evaluate(({ projectId, operationId }) => {
       const state = { result: 'pending' };
       Object.assign(window, { quitMutationProbe: state });
-      void (window as unknown as { blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } })
-        .blueprint.invoke('applicationCommand', { action: 'bottomToggle', projectId, operationId })
+      void (window as unknown as { projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } })
+        .projector.invoke('applicationCommand', { action: 'bottomToggle', projectId, operationId })
         .then(() => { state.result = 'resolved'; }, () => { state.result = 'rejected'; });
     }, { projectId, operationId: randomUUID() });
     await expect.poll(() => app.evaluate(() =>
@@ -119,12 +119,12 @@ test('Quit drains a normally delayed workspace mutation before exiting', async (
   const data = join(root, 'data'), project = join(root, 'project');
   await Promise.all([data, project].map(path => mkdir(path)));
   const app = await electron.launch({ args: [resolve('.')], env: { ...process.env,
-    BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
+    PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
   const main = app.process().pid!;
   try {
     const page = await app.firstWindow();
     const invoke = <T>(name: string, args: Record<string, unknown> = {}) => page.evaluate(
-      ({ name, args }) => (window as unknown as { blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).blueprint.invoke(name, args), { name, args },
+      ({ name, args }) => (window as unknown as { projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).projector.invoke(name, args), { name, args },
     ) as Promise<T>;
     await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, project);
     await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();
@@ -158,8 +158,8 @@ test('Quit drains a normally delayed workspace mutation before exiting', async (
       };
     }, probe);
     await page.evaluate(({ projectId, operationId }) => {
-      void (window as unknown as { blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } })
-        .blueprint.invoke('applicationCommand', { action: 'bottomToggle', projectId, operationId }).catch(() => {});
+      void (window as unknown as { projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } })
+        .projector.invoke('applicationCommand', { action: 'bottomToggle', projectId, operationId }).catch(() => {});
     }, { projectId, operationId: randomUUID() });
     await expect.poll(() => app.evaluate(() =>
       (globalThis as unknown as { quitWriteProbe: { held: boolean } }).quitWriteProbe.held)).toBe(true);
@@ -181,12 +181,12 @@ test('runtime quit deadline cannot interrupt owned PTY descendant cleanup', asyn
   const data = join(root, 'data'), project = join(root, 'project');
   await Promise.all([data, project].map(path => mkdir(path)));
   const app = await electron.launch({ args: [resolve('.')], env: { ...process.env,
-    BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
+    PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
   let child: number | undefined, parent: number | undefined;
   try {
     const page = await app.firstWindow();
     const invoke = <T>(name: string, args: Record<string, unknown> = {}) => page.evaluate(
-      ({ name, args }) => (window as unknown as { blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).blueprint.invoke(name, args), { name, args },
+      ({ name, args }) => (window as unknown as { projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).projector.invoke(name, args), { name, args },
     ) as Promise<T>;
     await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, project);
     await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();

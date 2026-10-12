@@ -30,7 +30,7 @@ export interface HarnessSnapshot {
   error: string | null;
   mcpStartup: HarnessMcpStartup[];
 }
-/** Observed startup of Blueprint MCP in one app-owned Codex backend.
+/** Observed startup of Projector MCP in one app-owned Codex backend.
  * `ready` records a startup notification, not continuous transport health.
  */
 export interface HarnessMcpStartup {

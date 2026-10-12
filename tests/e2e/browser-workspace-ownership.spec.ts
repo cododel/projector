@@ -16,7 +16,7 @@ test.afterEach(async () => {
   if (root) await rm(root, { recursive: true, force: true });
 });
 const invoke = <T>(page: Page, name: string, args: Record<string, unknown> = {}) => page.evaluate(
-  ({ name, args }) => (window as unknown as { blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).blueprint.invoke(name, args), { name, args },
+  ({ name, args }) => (window as unknown as { projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).projector.invoke(name, args), { name, args },
 ) as Promise<T>;
 const snapshot = (page: Page) => invoke<ApplicationWorkspaceSnapshot>(page, 'applicationSnapshot');
 function browserPanes(value: ApplicationWorkspaceSnapshot, key: string) {
@@ -39,14 +39,14 @@ test('public show_content reuses only its session page and closing another sessi
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Missing fixture address');
   const url = `http://127.0.0.1:${address.port}/`;
-  app = await electron.launch({ args: [resolve('.')], env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: descriptor } });
+  app = await electron.launch({ args: [resolve('.')], env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: descriptor } });
   const shell = await app.firstWindow();
   await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, project);
   await shell.getByRole('button', { name: '+ Open project folder', exact: true }).click();
   const state = await invoke<{ projects: { id: string }[] }>(shell, 'snapshot');
   const projectId = state.projects[0].id;
   mcp = new Mcp(descriptor); await mcp.initialize();
-  const artifact = await mcp.tool('create_artifact', {projectId, kind: 'blueprint', title: 'Agent browser workspace', originSession: {harness: 'codex', sessionId: 'ownership-author'}, operationId: randomUUID()});
+  const artifact = await mcp.tool('create_artifact', {projectId, kind: 'projector', title: 'Agent browser workspace', originSession: {harness: 'codex', sessionId: 'ownership-author'}, operationId: randomUUID()});
   const artifactId = String(artifact.artifactId);
   const select = (sessionId: string) => invoke(shell, 'applicationCommand', { action: 'select', projectId, sessionId });
   const show = () => mcp!.tool('show_content', { artifactId, url });

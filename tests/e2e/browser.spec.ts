@@ -58,7 +58,7 @@ test.beforeEach(async () => {
   });
   app = await electron.launch({
     args: [join(root, 'main.cjs')],
-    env: { ...process.env, BLUEPRINT_BROWSER_TEST_DATA: root },
+    env: { ...process.env, PROJECTOR_BROWSER_TEST_DATA: root },
   });
   await app.firstWindow();
 });
@@ -90,10 +90,10 @@ test('native external views isolate project profiles and reject privileged navig
   expect(
     await external.evaluate(() => ({
       process: typeof (window as unknown as { process?: unknown }).process,
-      blueprint: typeof (window as unknown as { blueprint?: unknown }).blueprint,
-      capture: typeof (window as unknown as { blueprintCapture?: unknown }).blueprintCapture,
+      projector: typeof (window as unknown as { projector?: unknown }).projector,
+      capture: typeof (window as unknown as { projectorCapture?: unknown }).projectorCapture,
     })),
-  ).toEqual({ process: 'undefined', blueprint: 'undefined', capture: 'undefined' });
+  ).toEqual({ process: 'undefined', projector: 'undefined', capture: 'undefined' });
   await external.evaluate(() => {
     document.cookie = 'privateproject=one;path=/';
   });
@@ -119,7 +119,7 @@ test('native external views isolate project profiles and reject privileged navig
       await globalThis.browserTest.manager.command({
         tabId: id,
         action: 'navigate',
-        url: 'blueprint://app/index.html',
+        url: 'projector://app/index.html',
       });
       return 'allowed';
     } catch (error) {
@@ -796,7 +796,7 @@ test('continuous selected-content changes stay recoverable and do not reject the
   await expect(overlay.getByLabel('Area annotation comment')).toBeVisible();
   expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(1);
   expect(stderr.join('')).not.toContain(
-    "Error occurred in handler for 'blueprint:browser-overlay'",
+    "Error occurred in handler for 'projector:browser-overlay'",
   );
 });
 

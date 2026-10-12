@@ -1,12 +1,12 @@
 import { defineConfig } from '@playwright/test';
 import { resolve } from 'node:path';
 
-process.env.BLUEPRINT_E2E_VISIBLE = '1';
-process.env.BLUEPRINT_E2E_BACKGROUND = '0';
-process.env.BLUEPRINT_CODEX_TEST = '1';
+process.env.PROJECTOR_E2E_VISIBLE = '1';
+process.env.PROJECTOR_E2E_BACKGROUND = '0';
+process.env.PROJECTOR_CODEX_TEST = '1';
 
 // Automatic discovery uses an isolated protocol peer, never the operator profile.
-process.env.BLUEPRINT_E2E_CODEX_EXECUTABLE = resolve('tests/fixtures/codex-cli.mjs');
+process.env.PROJECTOR_E2E_CODEX_EXECUTABLE = resolve('tests/fixtures/codex-cli.mjs');
 process.env.CODEX_FIXTURE_EMPTY = '1';
 
 export default defineConfig({

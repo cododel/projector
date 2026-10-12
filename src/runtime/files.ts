@@ -1,7 +1,7 @@
 import { mkdir, open, rename, readFile, realpath, unlink } from 'node:fs/promises';
 import { dirname, resolve, relative, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { BlueprintError } from '../shared/protocol';
+import { ProjectorError } from '../shared/protocol';
 export async function atomicJson(path: string, value: unknown) {
   return atomicText(path, JSON.stringify(value, null, 2));
 }
@@ -35,14 +35,14 @@ export async function inside(root: string, path: string): Promise<string> {
   const canonical = await realpath(path);
   const rel = relative(canonicalRoot, canonical);
   if (rel === '..' || rel.startsWith('../') || isAbsolute(rel))
-    throw new BlueprintError('PATH_OUTSIDE_PROJECT', 'Path leaves the registered directory');
+    throw new ProjectorError('PATH_OUTSIDE_PROJECT', 'Path leaves the registered directory');
   return canonical;
 }
 export function beneath(root: string, ...parts: string[]) {
   const path = resolve(root, ...parts);
   const rel = relative(resolve(root), path);
   if (rel === '..' || rel.startsWith('../') || isAbsolute(rel))
-    throw new BlueprintError('INVALID_PATH', 'Invalid path');
+    throw new ProjectorError('INVALID_PATH', 'Invalid path');
   return path;
 }
 /** Validate the nearest existing ancestor before creating any project-owned path. */
@@ -83,7 +83,7 @@ async function syncDirectory(path: string) {
   }
 }
 function unknownResult(error: unknown) {
-  return new BlueprintError(
+  return new ProjectorError(
     'UNKNOWN_RESULT',
     'The data was renamed into place but durability acknowledgement failed. Reconcile the operation before retrying.',
     { phase: 'after-rename', causeCode: errno(error), reconcileBeforeRetry: true },
@@ -95,8 +95,8 @@ function errno(error: unknown): string | undefined {
     : undefined;
 }
 /** Keep actionable filesystem causes at the RPC boundary without exposing arbitrary internals. */
-export function storageError(error: unknown): BlueprintError | undefined {
-  if (error instanceof BlueprintError) return error;
+export function storageError(error: unknown): ProjectorError | undefined {
+  if (error instanceof ProjectorError) return error;
   const code = errno(error);
   const messages: Record<string, string> = {
     ENOSPC: 'Local storage is full. Free space and retry; private work is retained.',
@@ -107,6 +107,6 @@ export function storageError(error: unknown): BlueprintError | undefined {
       'The storage location is unavailable. Locate the project folder or restore it before retrying.',
   };
   return code && messages[code]
-    ? new BlueprintError(code, messages[code], { storage: true })
+    ? new ProjectorError(code, messages[code], { storage: true })
     : undefined;
 }

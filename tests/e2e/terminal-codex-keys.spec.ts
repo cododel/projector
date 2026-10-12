@@ -35,13 +35,13 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
         CODEX_HOME: home,
         TMPDIR: root,
         LANG: 'en_US.UTF-8',
-        BLUEPRINT_DATA: data,
-        BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'),
-        BLUEPRINT_E2E_BACKGROUND: process.env.BLUEPRINT_E2E_BACKGROUND ?? '1',
-        ...(process.env.BLUEPRINT_E2E_WINDOW_AUDIT
-          ? { BLUEPRINT_E2E_WINDOW_AUDIT: process.env.BLUEPRINT_E2E_WINDOW_AUDIT }
+        PROJECTOR_DATA: data,
+        PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'),
+        PROJECTOR_E2E_BACKGROUND: process.env.PROJECTOR_E2E_BACKGROUND ?? '1',
+        ...(process.env.PROJECTOR_E2E_WINDOW_AUDIT
+          ? { PROJECTOR_E2E_WINDOW_AUDIT: process.env.PROJECTOR_E2E_WINDOW_AUDIT }
           : {}),
-        BLUEPRINT_E2E_CODEX_EXECUTABLE: executable,
+        PROJECTOR_E2E_CODEX_EXECUTABLE: executable,
       },
     });
     const page = await app.firstWindow();
@@ -50,9 +50,9 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
         ({ name, args }) =>
           (
             window as unknown as {
-              blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<T> };
+              projector: { invoke(name: string, args: Record<string, unknown>): Promise<T> };
             }
-          ).blueprint.invoke(name, args),
+          ).projector.invoke(name, args),
         { name, args },
       );
     const snapshot = () => invoke<Snapshot>('applicationSnapshot');

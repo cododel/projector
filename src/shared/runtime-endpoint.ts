@@ -1,11 +1,12 @@
+import { resolveApplicationData } from './brand-compat';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { BlueprintError } from './protocol';
+import { ProjectorError } from './protocol';
 
 export const RUNTIME_PROTOCOL_VERSION = 1;
-export const RUNTIME_INSTANCE_HEADER = 'x-blueprint-instance';
+export const RUNTIME_INSTANCE_HEADER = 'x-projector-instance';
 const descriptorSchema = z
   .object({
     protocolVersion: z.literal(RUNTIME_PROTOCOL_VERSION),
@@ -37,10 +38,10 @@ const descriptorSchema = z
 export type RuntimeDescriptor = z.infer<typeof descriptorSchema>;
 
 export function rejectLegacySocket(env: NodeJS.ProcessEnv = process.env): void {
-  if (env.BLUEPRINT_SOCKET !== undefined)
-    throw new BlueprintError(
+  if (env.PROJECTOR_SOCKET !== undefined || env.BLUEPRINT_SOCKET !== undefined)
+    throw new ProjectorError(
       'LEGACY_TRANSPORT',
-      'BLUEPRINT_SOCKET is no longer supported. Reconnect MCP using the Blueprint setup command and BLUEPRINT_RUNTIME_DESCRIPTOR.',
+      'PROJECTOR_SOCKET is no longer supported (including legacy BLUEPRINT_SOCKET). Reconnect MCP using the Projector setup command and PROJECTOR_RUNTIME_DESCRIPTOR.',
     );
 }
 
@@ -49,26 +50,31 @@ export function defaultRuntimeDescriptorPath(
   platform: NodeJS.Platform = process.platform,
   home = homedir(),
 ): string {
-  const data =
+  const appData =
     platform === 'darwin'
-      ? join(home, 'Library', 'Application Support', 'Blueprint')
+      ? join(home, 'Library', 'Application Support')
       : platform === 'win32'
-        ? join(env.APPDATA ?? join(home, 'AppData', 'Roaming'), 'Blueprint')
-        : join(env.XDG_CONFIG_HOME ?? join(home, '.config'), 'Blueprint');
+        ? (env.APPDATA ?? join(home, 'AppData', 'Roaming'))
+        : (env.XDG_CONFIG_HOME ?? join(home, '.config'));
+  const data = resolveApplicationData(appData, env);
   return join(data, 'runtime', 'endpoint.json');
 }
 
 export function runtimeDescriptorPath(data: string, env: NodeJS.ProcessEnv = process.env): string {
   rejectLegacySocket(env);
-  return env.BLUEPRINT_RUNTIME_DESCRIPTOR ?? join(data, 'runtime', 'endpoint.json');
+  return (
+    env.PROJECTOR_RUNTIME_DESCRIPTOR ??
+    env.BLUEPRINT_RUNTIME_DESCRIPTOR ??
+    join(data, 'runtime', 'endpoint.json')
+  );
 }
 
 export function parseRuntimeDescriptor(value: unknown): RuntimeDescriptor {
   const parsed = descriptorSchema.safeParse(value);
   if (!parsed.success)
-    throw new BlueprintError(
+    throw new ProjectorError(
       'INVALID_RUNTIME_DESCRIPTOR',
-      'Blueprint runtime descriptor is invalid. Reconnect MCP using the application setup command.',
+      'Projector runtime descriptor is invalid. Reconnect MCP using the application setup command.',
     );
   return parsed.data;
 }
@@ -78,18 +84,18 @@ export async function readRuntimeDescriptor(path: string): Promise<RuntimeDescri
   try {
     contents = await readFile(path, 'utf8');
   } catch {
-    throw new BlueprintError(
+    throw new ProjectorError(
       'RUNTIME_UNAVAILABLE',
-      'Blueprint runtime descriptor is unavailable. Start the application manually and reconnect MCP.',
+      'Projector runtime descriptor is unavailable. Start the application manually and reconnect MCP.',
     );
   }
   try {
     if (Buffer.byteLength(contents) > 16384) throw new Error('Descriptor too large');
     return parseRuntimeDescriptor(JSON.parse(contents));
   } catch {
-    throw new BlueprintError(
+    throw new ProjectorError(
       'INVALID_RUNTIME_DESCRIPTOR',
-      'Blueprint runtime descriptor is invalid. Reconnect MCP using the application setup command.',
+      'Projector runtime descriptor is invalid. Reconnect MCP using the application setup command.',
     );
   }
 }
@@ -98,6 +104,8 @@ export function runtimeHeaders(descriptor: RuntimeDescriptor): Record<string, st
   return {
     Authorization: `Bearer ${descriptor.token}`,
     [RUNTIME_INSTANCE_HEADER]: descriptor.instanceId,
+    // An existing stdio bridge may still connect to a legacy running runtime.
+    'x-blueprint-instance': descriptor.instanceId,
   };
 }
 
@@ -111,9 +119,9 @@ export async function verifyRuntimeDescriptor(descriptor: RuntimeDescriptor): Pr
       signal: AbortSignal.timeout(5000),
     });
   } catch {
-    throw new BlueprintError(
+    throw new ProjectorError(
       'RUNTIME_UNAVAILABLE',
-      'Blueprint runtime instance is unavailable. Start the application manually and reconnect MCP.',
+      'Projector runtime instance is unavailable. Start the application manually and reconnect MCP.',
     );
   }
   const schema = z
@@ -142,9 +150,9 @@ export async function verifyRuntimeDescriptor(descriptor: RuntimeDescriptor): Pr
     if (!response.ok || value.instanceId !== descriptor.instanceId)
       throw new Error('Instance changed');
   } catch {
-    throw new BlueprintError(
+    throw new ProjectorError(
       'STALE_RUNTIME',
-      'Blueprint runtime instance changed. Reconnect MCP before retrying any operation.',
+      'Projector runtime instance changed. Reconnect MCP before retrying any operation.',
     );
   }
 }

@@ -26,7 +26,7 @@ async function setup() {
   const create = async (title: string) => {
     const artifact = await store.create({
       projectId: p.id,
-      kind: 'blueprint',
+      kind: 'projector',
       title,
       originSession: { harness: 'codex', sessionId: title },
       operationId: randomUUID(),

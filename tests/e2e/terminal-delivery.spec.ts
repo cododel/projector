@@ -11,11 +11,11 @@ test('lost renderer acknowledgements bound IPC output while PTY persists and sub
   const data = join(root, 'data'), project = join(root, 'project');
   await Promise.all([data, project].map(path => mkdir(path)));
   const app = await electron.launch({ args: [resolve('.')], env: { ...process.env,
-    BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
+    PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
   try {
     const page = await app.firstWindow();
     const invoke = <T>(name: string, args: Record<string, unknown> = {}) => page.evaluate(
-      ({ name, args }) => (window as unknown as { blueprint: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).blueprint.invoke(name, args), { name, args },
+      ({ name, args }) => (window as unknown as { projector: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> } }).projector.invoke(name, args), { name, args },
     ) as Promise<T>;
     await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, project);
     await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();
@@ -32,7 +32,7 @@ test('lost renderer acknowledgements bound IPC output while PTY persists and sub
       const contents = BrowserWindow.getAllWindows()[0].webContents;
       const send = contents.send.bind(contents), emit = ipcMain.emit.bind(ipcMain);
       contents.send = (channel, ...args) => {
-        if (channel === 'blueprint:terminal-output') {
+        if (channel === 'projector:terminal-output') {
           output.count++;
           const value = args[0] as { data?: string; output?: { data: string } };
           output.bytes += Buffer.byteLength(value.output?.data ?? value.data ?? '');
@@ -40,7 +40,7 @@ test('lost renderer acknowledgements bound IPC output while PTY persists and sub
         send(channel, ...args);
       };
       ipcMain.emit = (channel, ...args) => {
-        if (channel === 'blueprint:terminal-output-ack' && output.blocked) {
+        if (channel === 'projector:terminal-output-ack' && output.blocked) {
           output.held.push(args);
           return true;
         }
@@ -48,7 +48,7 @@ test('lost renderer acknowledgements bound IPC output while PTY persists and sub
       };
       Object.assign(globalThis, { terminalDeliveryProbe: output, releaseTerminalDelivery: () => {
         output.blocked = false;
-        for (const args of output.held.splice(0)) emit('blueprint:terminal-output-ack', ...args);
+        for (const args of output.held.splice(0)) emit('projector:terminal-output-ack', ...args);
       } });
     });
     await invoke('terminalInput', { id: terminal.id, viewId,

@@ -10,12 +10,12 @@ import { openStore } from './store';
 import { Operations } from './operations';
 import { atomicJson } from './files';
 import {
-  createBlueprintMcpServer,
+  createProjectorMcpServer,
   operationError,
-  parseBlueprintHello,
-  type BlueprintHello,
+  parseProjectorHello,
+  type ProjectorHello,
 } from './mcp-server';
-import { BlueprintError, type RpcResponse } from '../shared/protocol';
+import { ProjectorError, type RpcResponse } from '../shared/protocol';
 import { runtimeLimits } from '../shared/runtime-limits';
 import {
   RUNTIME_INSTANCE_HEADER,
@@ -31,7 +31,7 @@ export class RuntimeOperationQueue {
   private accepting = true;
   run<T>(operation: () => Promise<T> | T): Promise<T> {
     if (!this.accepting)
-      return Promise.reject(new BlueprintError('SHUTTING_DOWN', 'Blueprint is shutting down'));
+      return Promise.reject(new ProjectorError('SHUTTING_DOWN', 'Projector is shutting down'));
     const result = this.chain.then(operation);
     this.chain = result.then(
       () => {},
@@ -62,7 +62,7 @@ function oneHeader(request: IncomingMessage, name: string): string | undefined {
 /** Loopback MCP is public-tool-only. The parent process has a separate private IPC path. */
 export async function startRuntimeHttp(options: {
   descriptorPath: string;
-  hello: BlueprintHello;
+  hello: ProjectorHello;
   call: (name: string, args: unknown) => Promise<unknown>;
   requestBytes?: number;
 }) {
@@ -71,7 +71,7 @@ export async function startRuntimeHttp(options: {
   const requestBytes = options.requestBytes ?? runtimeLimits().requestBytes;
   const handler = createMcpHandler(
     () =>
-      createBlueprintMcpServer(options.hello, async (name, args) => {
+      createProjectorMcpServer(options.hello, async (name, args) => {
         const result = await options.call(name, args);
         return { content: [{ type: 'text', text: JSON.stringify(result ?? null) }] };
       }),
@@ -102,7 +102,9 @@ export async function startRuntimeHttp(options: {
       deny(response, 401);
       return;
     }
-    if (oneHeader(request, RUNTIME_INSTANCE_HEADER) !== instanceId) {
+    const currentInstance = oneHeader(request, RUNTIME_INSTANCE_HEADER);
+    const legacyInstance = oneHeader(request, 'x-blueprint-instance');
+    if ((currentInstance ?? legacyInstance) !== instanceId || (currentInstance !== undefined && legacyInstance !== undefined && currentInstance !== legacyInstance)) {
       deny(response, 409);
       return;
     }
@@ -176,8 +178,8 @@ const operatorSchema = z
   })
   .strict();
 async function main() {
-  const data = process.env.BLUEPRINT_DATA;
-  if (!data || !process.parentPort) throw new Error('Runtime must be launched by Blueprint');
+  const data = process.env.PROJECTOR_DATA;
+  if (!data || !process.parentPort) throw new Error('Runtime must be launched by Projector');
   const limits = runtimeLimits();
   const descriptorPath = runtimeDescriptorPath(data);
   const store = await openStore(data, compileDocument);
@@ -185,7 +187,7 @@ async function main() {
   const queue = new RuntimeOperationQueue();
   const endpoint = await startRuntimeHttp({
     descriptorPath,
-    hello: parseBlueprintHello(ops.hello()),
+    hello: parseProjectorHello(ops.hello()),
     call: (name, args) => queue.run(() => ops.tool(name, args)),
     requestBytes: limits.requestBytes,
   });
@@ -209,7 +211,7 @@ async function main() {
     void queue
       .run(async () => {
         if (Buffer.byteLength(JSON.stringify(request)) > limits.requestBytes)
-          throw new BlueprintError('INPUT_TOO_LARGE', 'Request too large');
+          throw new ProjectorError('INPUT_TOO_LARGE', 'Request too large');
         return ops.operator(request.name, request.args);
       })
       .then(
@@ -227,6 +229,6 @@ async function main() {
 }
 if (process.parentPort)
   void main().catch((error) => {
-    console.error(error instanceof Error ? error.message : 'Blueprint runtime failed.');
+    console.error(error instanceof Error ? error.message : 'Projector runtime failed.');
     process.exit(1);
   });

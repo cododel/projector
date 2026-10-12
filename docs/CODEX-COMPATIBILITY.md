@@ -1,6 +1,8 @@
 # Codex: совместимость и границы исследования Alpha 1
 
-Квалификация prerequisite адаптера: 2026-10-11. Текущая среда: Blueprint `0.1.0-alpha.1`, Electron `44.7.0`, bundled Node `24.20.0`, MCP SDK server `2.3.1`, guideVersion `0.1.0-alpha.1+guide.10`, macOS `27.0` (`26A428`), Codex CLI `0.162.1`. Исторические результаты ниже помечены отдельно.
+Квалификация prerequisite адаптера: 2026-10-11. Текущая среда: Projector `0.1.0-alpha.1`, Electron `44.7.0`, bundled Node `24.20.0`, MCP SDK server `2.3.1`, guideVersion `0.1.0-alpha.1+guide.11`, macOS `27.0` (`26A428`), Codex CLI `0.162.1`. Исторические результаты ниже помечены отдельно.
+
+Название приложения и текущие примеры MCP обновлены на Projector 2026-10-12. Результаты квалификации от 2026-10-11 получены под прежним брендом Blueprint; rename не заменяет отдельную проверку новой сборки.
 
 Этот документ различает возможности внешнего API и проверенную интеграцию. Текущий цикл Alpha 1 использует явный Save состояния артефакта; оператор выбирает исполнителя, копирует уведомление и сам вставляет/отправляет его в терминале; originSession остаётся авторской связью. Старые Submit-пакеты остаются читаемыми. Автоматическая доставка отключена. Проверки используют одноразовые проекты, данные приложения и task-owned loopback endpoints; пользовательская конфигурация, skills, hooks и существующие рабочие сессии не изменялись. Историческая проверка модели в конце документа относится к прежнему циклу Submit. Текущий Save-цикл и доставка instructions имеют отдельные проверки.
 
@@ -8,11 +10,11 @@
 
 Официальный App Server и сгенерированные схемы установленного `codex-cli 0.162.1` проверены до реализации. На отдельном HOME/CODEX_HOME и одноразовом проекте запущены собственный backend и настоящий remote CLI TUI в PTY; использован локальный Responses-провайдер без credentials, Authorization и внешнего вызова модели. Точный новый thread.id наблюдался в ответе на thread/start именно TUI, а Resume показал тот же persisted ID и предыдущий вывод. Автоматический title-thread и произвольный thread/started не используются как идентичность. Дополнительно checked structured list/read. [Codex App Server](https://learn.chatgpt.com/docs/app-server)
 
-В исходном prerequisite gate реальный изолированный Blueprint, его production stdio bridge и get_blueprint_guide были подключены параметрами конкретного запуска. Инструкция реально появилась в запросе к локальному провайдеру. Отдельный product-manager probe проверил собственный authenticated gateway, новый TUI, list/read после остановки backend и точный Resume на новом backend; MCP peer в этом probe был контролируемым fixture, не финальным HTTP runtime Blueprint. Эти результаты нельзя объединять в неподтверждённую сквозную приёмку нового приложения.
+В исходном prerequisite gate реальный изолированный Projector, его production stdio bridge и get_projector_guide были подключены параметрами конкретного запуска. Инструкция реально появилась в запросе к локальному провайдеру. Отдельный product-manager probe проверил собственный authenticated gateway, новый TUI, list/read после остановки backend и точный Resume на новом backend; MCP peer в этом probe был контролируемым fixture, не финальным HTTP runtime Projector. Эти результаты нельзя объединять в неподтверждённую сквозную приёмку нового приложения.
 
 Артефакты (checkout-local, не в Git):
 
-- `.tmp/tasks/harness-workspaces-20261011/codex-gate/result.json`, `report.md`, `wire.json`, `tui-new.txt`, `tui-resume.txt`: `passed:true`, настоящие New/Resume TUI и реальный прежний Blueprint MCP.
+- `.tmp/tasks/harness-workspaces-20261011/codex-gate/result.json`, `report.md`, `wire.json`, `tui-new.txt`, `tui-resume.txt`: `passed:true`, настоящие New/Resume TUI и реальный прежний Projector MCP.
 - `.tmp/tasks/harness-workspaces-20261011/codex-gate/manager-product/result.json`: `passed:true`, реальный CodexManager/gateway с controlled MCP/local provider.
 - `.tmp/tasks/harness-workspaces-20261011/codex-gate/schema/ClientRequest.json`: установленный контракт metadata параметров. thread/list поддерживает `useStateDbOnly:true`; archived=false/null и true — отдельные непересекающиеся фильтры. thread/read не имеет useStateDbOnly и вызывается с includeTurns=false.
 
@@ -22,11 +24,11 @@
 
 ## Текущий transport и сквозная приёмка
 
-Реализация переводит runtime на authenticated Streamable HTTP по динамическому порту `127.0.0.1`; stdio bridge сохраняется и проверяет descriptor protocolVersion/instanceId. Descriptor содержит URL/token, записывается атомарно в private runtime directory с mode 0600 на macOS. Host/Origin отклоняются до MCP; внешний browser не получает CORS. Operator actions и PTY используют private Electron IPC и отсутствуют в public MCP. BLUEPRINT_SOCKET отклоняется с инструкцией миграции на BLUEPRINT_RUNTIME_DESCRIPTOR.
+Реализация переводит runtime на authenticated Streamable HTTP по динамическому порту `127.0.0.1`; stdio bridge сохраняется и проверяет descriptor protocolVersion/instanceId. Descriptor содержит URL/token, записывается атомарно в private runtime directory с mode 0600 на macOS. Host/Origin отклоняются до MCP; внешний browser не получает CORS. Operator actions и PTY используют private Electron IPC и отсутствуют в public MCP. PROJECTOR_SOCKET отклоняется с инструкцией миграции на PROJECTOR_RUNTIME_DESCRIPTOR.
 
-Новый сквозной probe использовал настоящий Codex `0.162.1`, продуктовый `CodexManager`, PTY-сервис и текущий authenticated HTTP runtime. В production preview New/Resume подтвердили один ID `01a12cdb-60c5-74f3-bb5d-b1350ae54e5a`; в перемещённом установленном `.app` — `01a12cdc-460c-75a2-ab58-2fed682d8220`. В обоих случаях backend сообщил Blueprint MCP ready, настоящий `get_blueprint_guide` прошёл через поставляемый bridge и HTTP runtime, а `guide.4` появился в запросе локального Responses-провайдера и выводе TUI. Metadata read вернул сохранённый точный ID; Resume восстановил предыдущий вывод. Параметры approval/sandbox/provider/trust сохранились, launch-only MCP stanza не записалась. Credentials и внешняя модель в этих probes не использовались.
+Новый сквозной probe использовал настоящий Codex `0.162.1`, продуктовый `CodexManager`, PTY-сервис и текущий authenticated HTTP runtime. В production preview New/Resume подтвердили один ID `01a12cdb-60c5-74f3-bb5d-b1350ae54e5a`; в перемещённом установленном `.app` — `01a12cdc-460c-75a2-ab58-2fed682d8220`. В обоих случаях backend сообщил Projector MCP ready, настоящий `get_projector_guide` прошёл через поставляемый bridge и HTTP runtime, а `guide.4` появился в запросе локального Responses-провайдера и выводе TUI. Metadata read вернул сохранённый точный ID; Resume восстановил предыдущий вывод. Параметры approval/sandbox/provider/trust сохранились, launch-only MCP stanza не записалась. Credentials и внешняя модель в этих probes не использовались.
 
-Доказательства: `.tmp/tasks/harness-workspaces-20261011/codex-gate/actual-http-UcdsCY/qualification.json` и `actual-http-CEgIxw/result.json`. Первый результат отдельно сохраняет и сверяет ошибку диагностического host parser: системный Python 3.9 не имел tomllib; те же сохранённые TOML прочитаны установленным Python 3.14. Это не ошибка Codex/Blueprint. Пакет проверен после перемещения в путь с пробелами, без системного Node и без сети упаковки; временные HOME, данные, пакет и принадлежащие probe процессы удалены.
+Доказательства: `.tmp/tasks/harness-workspaces-20261011/codex-gate/actual-http-UcdsCY/qualification.json` и `actual-http-CEgIxw/result.json`. Первый результат отдельно сохраняет и сверяет ошибку диагностического host parser: системный Python 3.9 не имел tomllib; те же сохранённые TOML прочитаны установленным Python 3.14. Это не ошибка Codex/Projector. Пакет проверен после перемещения в путь с пробелами, без системного Node и без сети упаковки; временные HOME, данные, пакет и принадлежащие probe процессы удалены.
 
 Полные gates текущего снимка фиксируются в `docs/acceptance/CURRENT-STAGE.md`. Исторические Unix/Save результаты ниже не являются доказательством нового HTTP/runtime/TUI UI. Физические клавиатура, IME, focus routing и compositor остаются отдельными видимыми проверками. Поддержка Linux/Windows, VM и дополнительные системные разрешения не заявляются.
 
@@ -40,7 +42,7 @@
 
 ## Доставка instructions установленным Codex
 
-`tests/e2e/instructions.spec.ts` запускает реальный Codex CLI `0.162.1` и настоящий production stdio bridge с пустыми HOME/CODEX_HOME и без credentials. Локальный Responses-провайдер наблюдает в запросе вводную Blueprint, правила приватности, Save и границы полномочий. HTTP остаётся на loopback, внешняя модель не вызывается. Это воспроизводимая проверка попадания инструкции в запрос модели отдельно от MCP handshake; она не доказывает соблюдение правил моделью или поддержку другого клиента.
+`tests/e2e/instructions.spec.ts` запускает реальный Codex CLI `0.162.1` и настоящий production stdio bridge с пустыми HOME/CODEX_HOME и без credentials. Локальный Responses-провайдер наблюдает в запросе вводную Projector, правила приватности, Save и границы полномочий. HTTP остаётся на loopback, внешняя модель не вызывается. Это воспроизводимая проверка попадания инструкции в запрос модели отдельно от MCP handshake; она не доказывает соблюдение правил моделью или поддержку другого клиента.
 
 Матрица текущей приёмки и ограничения физического ввода находятся в `docs/acceptance/CURRENT-STAGE.md`. Камера/микрофон/геолокация проверяются на границе trusted Electron handlers; работоспособность устройств и системные TCC-разрешения не заявлены.
 
@@ -78,9 +80,9 @@
 
 ## Историческая проверка Codex CLI с моделью: цикл Submit
 
-`BLUEPRINT_CODEX_TEST=1 pnpm exec playwright test tests/e2e/codex.spec.ts` выполнен успешно. Electron использовал отдельные app data и временный проект; `codex exec --ephemeral --ignore-user-config` получил MCP-настройки только через `-c`. В тесте явно заданы per-tool `approval_mode="auto"` для девяти локальных Blueprint tools; пользовательский config не записывался. Без этих параметров неинтерактивный CLI отказал в вызовах из-за отсутствия доступного approval.
+`PROJECTOR_CODEX_TEST=1 pnpm exec playwright test tests/e2e/codex.spec.ts` выполнен успешно. Electron использовал отдельные app data и временный проект; `codex exec --ephemeral --ignore-user-config` получил MCP-настройки только через `-c`. В тесте явно заданы per-tool `approval_mode="auto"` для девяти локальных Projector tools; пользовательский config не записывался. Без этих параметров неинтерактивный CLI отказал в вызовах из-за отсутствия доступного approval.
 
-Модель вызвала обзор и тематические материалы, создала исходник, опубликовала первую версию и показала её. После ответа оператора через настоящий UI и Submit второй изолированный запуск вызвал `read_feedback`, обновил тот же артефакт и показал новую версию. Совместимое выбранное значение сохранилось. Это проверяет применение обычных MCP tools без установки Blueprint skills/hooks. Руководство было явно запрошено в тестовом задании; автоматическую инициативу модели по одной server instruction тест не доказывает.
+Модель вызвала обзор и тематические материалы, создала исходник, опубликовала первую версию и показала её. После ответа оператора через настоящий UI и Submit второй изолированный запуск вызвал `read_feedback`, обновил тот же артефакт и показал новую версию. Совместимое выбранное значение сохранилось. Это проверяет применение обычных MCP tools без установки Projector skills/hooks. Руководство было явно запрошено в тестовом задании; автоматическую инициативу модели по одной server instruction тест не доказывает.
 
 Синтетическая ручная привязка получателя не доказывает наличие живой CLI-сессии. Два ephemeral-запуска не являются steer в уже открытый ход. Сырые события теста сохраняются локально в `.tmp`; стандартная suite пропускает этот opt-in тест, чтобы не требовать авторизацию и сетевой вызов модели.
 

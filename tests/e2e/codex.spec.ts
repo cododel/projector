@@ -26,7 +26,7 @@ function completedTools(log: string): CompletedTool[] {
       };
       return event.type === 'item.completed' &&
         event.item?.type === 'mcp_tool_call' &&
-        event.item.server === 'blueprint'
+        event.item.server === 'projector'
         ? [event.item]
         : [];
     });
@@ -64,7 +64,7 @@ function modelRead(tools: CompletedTool[], name: string, args: Record<string, un
 }
 test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
   test.skip(
-    process.env.BLUEPRINT_CODEX_TEST !== '1',
+    process.env.PROJECTOR_CODEX_TEST !== '1',
     'Opt-in: uses authenticated Codex and a model; standard suite is offline.',
   );
   test.setTimeout(180000);
@@ -76,7 +76,7 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
   await mkdir(data);
   const app = await electron.launch({
     args: [resolve('.')],
-    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+    env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
   });
   let child: ReturnType<typeof spawn> | undefined;
   try {
@@ -86,7 +86,7 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
     }, project);
     await page.getByRole('button', { name: '+ Open project folder' }).click();
     const prompt =
-      'This is an isolated Blueprint integration test in a disposable folder. Use only the blueprint MCP server and local file writes under this folder. Call get_blueprint_guide overview and authoring and widgets, then get_blueprint_context. Create exactly one artifact of kind blueprint with title "Codex permission plan", using the returned project id and explicit originSession {harness:"codex",sessionId:"codex-isolated-test"}. This supplied session identity is test metadata, not a detected live session. Write plan.mdx with heading Codex permission plan, one Choice widget id invite meaning "Who may invite?" semanticsVersion "1", options Owner and Member, defaultValue Owner. Publish first revision with expectedLatestRevision null and a unique operationId. Call show_artifact. Do not change user config, skills, hooks or existing sessions. Do not implement the planned feature. Return artifactId and revisionId.';
+      'This is an isolated Projector integration test in a disposable folder. Use only the projector MCP server and local file writes under this folder. Call get_projector_guide overview and authoring and widgets, then get_projector_context. Create exactly one artifact of kind projector with title "Codex permission plan", using the returned project id and explicit originSession {harness:"codex",sessionId:"codex-isolated-test"}. This supplied session identity is test metadata, not a detected live session. Write plan.mdx with heading Codex permission plan, one Choice widget id invite meaning "Who may invite?" semanticsVersion "1", options Owner and Member, defaultValue Owner. Publish first revision with expectedLatestRevision null and a unique operationId. Call show_artifact. Do not change user config, skills, hooks or existing sessions. Do not implement the planned feature. Return artifactId and revisionId.';
     child = spawn(
       'codex',
       [
@@ -100,8 +100,8 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
         '-C',
         project,
         ...[
-          'get_blueprint_guide',
-          'get_blueprint_context',
+          'get_projector_guide',
+          'get_projector_context',
           'create_artifact',
           'publish_artifact',
           'read_artifact',
@@ -110,13 +110,13 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
           'list_feedback',
           'read_feedback',
           'report_feedback',
-        ].flatMap((name) => ['-c', `mcp_servers.blueprint.tools.${name}.approval_mode="auto"`]),
+        ].flatMap((name) => ['-c', `mcp_servers.projector.tools.${name}.approval_mode="auto"`]),
         '-c',
-        `mcp_servers.blueprint.command=${JSON.stringify(process.execPath)}`,
+        `mcp_servers.projector.command=${JSON.stringify(process.execPath)}`,
         '-c',
-        `mcp_servers.blueprint.args=[${JSON.stringify(resolve('out/bridge.cjs'))}]`,
+        `mcp_servers.projector.args=[${JSON.stringify(resolve('out/bridge.cjs'))}]`,
         '-c',
-        `mcp_servers.blueprint.env.BLUEPRINT_RUNTIME_DESCRIPTOR=${JSON.stringify(socket)}`,
+        `mcp_servers.projector.env.PROJECTOR_RUNTIME_DESCRIPTOR=${JSON.stringify(socket)}`,
         prompt,
       ],
       { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
@@ -140,7 +140,7 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
     const snapshot = await page.evaluate(async () => {
       return (
         window as unknown as {
-          blueprint: {
+          projector: {
             invoke: (
               name: string,
             ) => Promise<{
@@ -148,7 +148,7 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
             }>;
           };
         }
-      ).blueprint.invoke('snapshot');
+      ).projector.invoke('snapshot');
     });
     expect(snapshot.artifacts).toHaveLength(1);
     expect(snapshot.artifacts[0].latestRevision).toBeTruthy();
@@ -187,14 +187,14 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
     const published = await page.evaluate(async () => {
       return (
         window as unknown as {
-          blueprint: {
+          projector: {
             invoke: (name: string) => Promise<{
               savedStates: { id: string }[];
               artifacts: { id: string; latestRevision: string }[];
             }>;
           };
         }
-      ).blueprint.invoke('snapshot');
+      ).projector.invoke('snapshot');
     });
     const packet = published.savedStates[0].id;
     const artifact = published.artifacts[0];
@@ -236,18 +236,18 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
     await app.evaluate(({ clipboard }) => {
       // Keep the operator's clipboard intact; real desktop clipboard is a manual boundary.
       clipboard.writeText = async (text) => {
-        (globalThis as unknown as { blueprintTestCopied: string }).blueprintTestCopied = text;
+        (globalThis as unknown as { projectorTestCopied: string }).projectorTestCopied = text;
       };
     });
     await page.getByRole('button', { name: 'Copy update message', exact: true }).first().click();
     // Copy validates the immutable saved state before writing the clipboard.
     await expect(page.getByRole('button', { name: 'Copied', exact: true }).first()).toBeVisible();
     const update = await app.evaluate(
-      () => (globalThis as unknown as { blueprintTestCopied: string }).blueprintTestCopied,
+      () => (globalThis as unknown as { projectorTestCopied: string }).projectorTestCopied,
     );
     expect(update).toContain(artifact.id);
     expect(update).toContain(packet);
-    const second = `Continue only the Blueprint test. The operator manually supplies this copied message: ${update}. Call get_blueprint_guide annotations, then read_artifact(artifactId="${artifact.id}", part="state", savedStateId="${packet}"). Read the annotation screenshot with read_attachment using its returned attachmentId; follow all cursors until complete, and retain the separate annotation comment. Read the published artifact ${artifact.id} revision ${artifact.latestRevision}, source part if needed. Publish a second revision of the same artifact preserving its widget definition, with a new paragraph "Members may invite after explicit agreement." Set expectedLatestRevision to ${artifact.latestRevision}. Call show_artifact for the new revision. Do not implement anything or change configuration. Return only confirmation of the feedback decision and new revision.`;
+    const second = `Continue only the Projector test. The operator manually supplies this copied message: ${update}. Call get_projector_guide annotations, then read_artifact(artifactId="${artifact.id}", part="state", savedStateId="${packet}"). Read the annotation screenshot with read_attachment using its returned attachmentId; follow all cursors until complete, and retain the separate annotation comment. Read the published artifact ${artifact.id} revision ${artifact.latestRevision}, source part if needed. Publish a second revision of the same artifact preserving its widget definition, with a new paragraph "Members may invite after explicit agreement." Set expectedLatestRevision to ${artifact.latestRevision}. Call show_artifact for the new revision. Do not implement anything or change configuration. Return only confirmation of the feedback decision and new revision.`;
     child = spawn(
       'codex',
       [
@@ -261,8 +261,8 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
         '-C',
         project,
         ...[
-          'get_blueprint_guide',
-          'get_blueprint_context',
+          'get_projector_guide',
+          'get_projector_context',
           'create_artifact',
           'publish_artifact',
           'read_artifact',
@@ -271,13 +271,13 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
           'list_feedback',
           'read_feedback',
           'report_feedback',
-        ].flatMap((name) => ['-c', `mcp_servers.blueprint.tools.${name}.approval_mode="auto"`]),
+        ].flatMap((name) => ['-c', `mcp_servers.projector.tools.${name}.approval_mode="auto"`]),
         '-c',
-        `mcp_servers.blueprint.command=${JSON.stringify(process.execPath)}`,
+        `mcp_servers.projector.command=${JSON.stringify(process.execPath)}`,
         '-c',
-        `mcp_servers.blueprint.args=[${JSON.stringify(resolve('out/bridge.cjs'))}]`,
+        `mcp_servers.projector.args=[${JSON.stringify(resolve('out/bridge.cjs'))}]`,
         '-c',
-        `mcp_servers.blueprint.env.BLUEPRINT_RUNTIME_DESCRIPTOR=${JSON.stringify(socket)}`,
+        `mcp_servers.projector.env.PROJECTOR_RUNTIME_DESCRIPTOR=${JSON.stringify(socket)}`,
         second,
       ],
       { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
@@ -299,7 +299,7 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
     expect(nextCode, secondErrors).toBe(0);
     await expect(frame.getByText('Members may invite after explicit agreement.')).toBeVisible();
     await expect(frame.getByLabel('Member', { exact: true })).toBeChecked();
-    expect(log).toContain('get_blueprint_guide');
+    expect(log).toContain('get_projector_guide');
     expect(secondLog).toContain('read_artifact');
     expect(secondLog).toContain('read_attachment');
     expect(secondLog).toContain('Review the captured permission heading');

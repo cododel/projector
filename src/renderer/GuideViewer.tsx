@@ -64,10 +64,10 @@ export function GuideViewer({
         className="modal guide-viewer"
         role="dialog"
         aria-modal="true"
-        aria-label="Blueprint guide"
+        aria-label="Projector guide"
       >
         <div className="modal-heading">
-          <h2>Blueprint guide</h2>
+          <h2>Projector guide</h2>
           <button ref={heading} onClick={close}>
             Close
           </button>

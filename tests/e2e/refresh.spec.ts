@@ -109,7 +109,7 @@ async function start() {
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+      env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   const page = await app.firstWindow();
@@ -119,11 +119,11 @@ async function start() {
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   mcp = new Mcp(socket);
   await mcp.initialize();
-  const context = await mcp.tool('get_blueprint_context', {});
+  const context = await mcp.tool('get_projector_context', {});
   const create = async (title: string) => {
     const artifact = await mcp!.tool('create_artifact', {
       projectId: (context.project as { id: string }).id,
-      kind: 'blueprint',
+      kind: 'projector',
       title,
       originSession: { harness: 'codex', sessionId: randomUUID() },
       operationId: randomUUID(),
@@ -196,13 +196,13 @@ test('refreshes arriving during a plan load coalesce and retain a later MCP publ
   await mcp!.tool('show_artifact', { artifactId: b.artifactId, revisionId: next.revisionId });
   await app.evaluate(({ BrowserWindow }) => {
     const contents = BrowserWindow.getAllWindows()[0].webContents;
-    for (let index = 0; index < 5; index++) contents.send('blueprint:refresh');
+    for (let index = 0; index < 5; index++) contents.send('projector:refresh');
   });
   // IPC round-trip is a barrier after the delivered shell events, not a sleep.
   await page.evaluate(async () => {
     await (
-      window as unknown as { blueprint: { invoke(name: string): Promise<unknown> } }
-    ).blueprint.invoke('browserSnapshot');
+      window as unknown as { projector: { invoke(name: string): Promise<unknown> } }
+    ).projector.invoke('browserSnapshot');
   });
   expect(await requests('snapshot')).toHaveLength(1);
   await release();
@@ -235,8 +235,8 @@ test('switching drains pending answer and annotation acknowledgements before lea
   await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.evaluate(async () => {
     await (
-      window as unknown as { blueprint: { invoke(name: string): Promise<unknown> } }
-    ).blueprint.invoke('browserSnapshot');
+      window as unknown as { projector: { invoke(name: string): Promise<unknown> } }
+    ).projector.invoke('browserSnapshot');
   });
   expect(await requests('openArtifact')).toHaveLength(0);
   await release();

@@ -23,7 +23,7 @@ async function setup() {
   await store.bind(p.id, 'test-session');
   const input = {
     projectId: p.id,
-    kind: 'blueprint' as const,
+    kind: 'projector' as const,
     title: 'Policy',
     originSession: { harness: 'codex' as const, sessionId: 'test-session' },
     operationId: randomUUID(),
@@ -229,7 +229,7 @@ describe('crash, recipient and directory boundaries', () => {
     await fs.rm(a.sourcePath);
     await fs.mkdir(a.sourcePath);
     await fs.writeFile(join(a.sourcePath, 'plan.mdx'), source);
-    const artifactRoot = join(p.path, '.blueprint', 'artifacts', a.artifactId);
+    const artifactRoot = join(p.path, '.projector', 'artifacts', a.artifactId);
     await fs.rm(join(artifactRoot, 'revisions'), { recursive: true });
     await fs.symlink(outside, join(artifactRoot, 'revisions'));
     await expect(
@@ -241,8 +241,8 @@ describe('crash, recipient and directory boundaries', () => {
     ).rejects.toMatchObject({ code: 'PATH_OUTSIDE_PROJECT' });
     await fs.rm(join(artifactRoot, 'revisions'));
     await fs.mkdir(join(artifactRoot, 'revisions'));
-    await fs.symlink(outside, join(p.path, '.blueprint', 'feedback'));
-    await fs.symlink(outside, join(p.path, '.blueprint', 'approvals'));
+    await fs.symlink(outside, join(p.path, '.projector', 'feedback'));
+    await fs.symlink(outside, join(p.path, '.projector', 'approvals'));
     expect(await fs.readdir(outside)).toEqual(['plan.mdx']);
   });
   it('recovers create and registered project identity when operation/index rows are missing', async () => {
@@ -333,7 +333,7 @@ describe('private journal and version validation', () => {
     const fs = await import('node:fs/promises');
     const path = join(
       p.path,
-      '.blueprint',
+      '.projector',
       'artifacts',
       a.artifactId,
       'revisions',
@@ -381,13 +381,13 @@ it('rejects actual Submit and approval writes through outside directories', asyn
   const outside = join(root, 'outside-write');
   await fs.mkdir(outside);
   await store.setValue(a.artifactId, r.revisionId, 'invite', 'Member');
-  await fs.symlink(outside, join(p.path, '.blueprint', 'feedback'));
+  await fs.symlink(outside, join(p.path, '.projector', 'feedback'));
   await expect(store.submit(p.id, randomUUID())).rejects.toMatchObject({
     code: 'PATH_OUTSIDE_PROJECT',
   });
-  await fs.rm(join(p.path, '.blueprint', 'feedback'));
+  await fs.rm(join(p.path, '.projector', 'feedback'));
   await store.discard(p.id);
-  await fs.symlink(outside, join(p.path, '.blueprint', 'approvals'));
+  await fs.symlink(outside, join(p.path, '.projector', 'approvals'));
   await expect(store.approve(a.artifactId, r.revisionId)).rejects.toMatchObject({
     code: 'PATH_OUTSIDE_PROJECT',
   });

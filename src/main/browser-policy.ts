@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 export type AreaRect = { x: number; y: number; width: number; height: number };
@@ -27,8 +29,18 @@ export function browserUrl(value: string): string {
   return url.href;
 }
 
-export function browserPartition(projectId: string): string {
-  return 'persist:blueprint-browser-' + createHash('sha256').update(projectId).digest('hex');
+export function browserPartition(projectId: string, data?: string): string {
+  const hash = createHash('sha256').update(projectId).digest('hex');
+  const current = 'projector-browser-' + hash;
+  const legacy = 'blueprint-browser-' + hash;
+  if (data && existsSync(join(data, 'Partitions', legacy))) {
+    if (existsSync(join(data, 'Partitions', current)))
+      throw new Error(
+        'BROWSER_PROFILE_CONFLICT: Both Projector and legacy browser profiles exist for this project.',
+      );
+    return 'persist:' + legacy;
+  }
+  return 'persist:' + current;
 }
 
 export function validateArea(

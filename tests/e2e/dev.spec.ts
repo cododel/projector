@@ -26,8 +26,8 @@ test('development renderer proxy loads the isolated document without production 
     args: [resolve('.')],
     env: {
       ...process.env,
-      BLUEPRINT_DATA: data,
-      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
+      PROJECTOR_DATA: data,
+      PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
       ELECTRON_RENDERER_URL: url,
     },
   });
@@ -38,33 +38,33 @@ test('development renderer proxy loads the isolated document without production 
     ).toBeVisible();
     await page.getByRole('button', { name: 'MCP connection', exact: true }).click();
     const setup = page.getByRole('dialog', { name: 'MCP connection' });
-    await expect(setup).toContainText(`BLUEPRINT_RUNTIME_DESCRIPTOR = ${JSON.stringify(join(root, 's.sock'))}`);
+    await expect(setup).toContainText(`PROJECTOR_RUNTIME_DESCRIPTOR = ${JSON.stringify(join(root, 's.sock'))}`);
     await expect(setup).toContainText('Development');
     // Observe the IPC clipboard boundary without changing the operator's OS clipboard.
     await app.evaluate(({ clipboard }) => {
       clipboard.writeText = async (text: string) => {
-        Object.assign(globalThis, { blueprintCopiedText: text });
+        Object.assign(globalThis, { projectorCopiedText: text });
       };
     });
     await setup.getByRole('button', { name: 'Copy setup prompt', exact: true }).click();
     await expect(setup.getByRole('button', { name: 'Copied', exact: true })).toBeVisible();
     const prompt = await app.evaluate(
-      () => (globalThis as unknown as { blueprintCopiedText: string }).blueprintCopiedText,
+      () => (globalThis as unknown as { projectorCopiedText: string }).projectorCopiedText,
     );
-    expect(prompt).toContain('Configure the local Blueprint MCP server');
+    expect(prompt).toContain('Configure the local Projector MCP server');
     expect(prompt).toContain('user-level configuration only');
     expect(prompt).toContain('Do not create or modify project .codex/config.toml');
     expect(prompt).toContain('Do not stage or commit configuration');
-    expect(prompt).toContain(`BLUEPRINT_RUNTIME_DESCRIPTOR = ${JSON.stringify(join(root, 's.sock'))}`);
+    expect(prompt).toContain(`PROJECTOR_RUNTIME_DESCRIPTOR = ${JSON.stringify(join(root, 's.sock'))}`);
     expect(prompt).toContain('Do not change skills, hooks, AGENTS.md');
     expect(prompt).toContain('reconnect');
     await setup.getByText('Connection details and manual configuration', { exact: true }).click();
     await setup.getByRole('button', { name: 'Copy configuration', exact: true }).click();
     await expect(setup.getByRole('button', { name: 'Copied', exact: true })).toBeVisible();
     const config = await app.evaluate(
-      () => (globalThis as unknown as { blueprintCopiedText: string }).blueprintCopiedText,
+      () => (globalThis as unknown as { projectorCopiedText: string }).projectorCopiedText,
     );
-    expect(config.startsWith('[mcp_servers.blueprint]')).toBe(true);
+    expect(config.startsWith('[mcp_servers.projector]')).toBe(true);
     expect(prompt).toContain(config.trim());
     await setup.getByRole('button', { name: 'Close', exact: true }).click();
     await app.evaluate(({ dialog }, path) => {
@@ -77,10 +77,10 @@ test('development renderer proxy loads the isolated document without production 
     const mcp = new Mcp(join(root, 's.sock'));
     try {
       await mcp.initialize();
-      const context = await mcp.tool('get_blueprint_context', {});
+      const context = await mcp.tool('get_projector_context', {});
       const a = await mcp.tool('create_artifact', {
         projectId: (context.project as { id: string }).id,
-        kind: 'blueprint',
+        kind: 'projector',
         title: 'Development plan',
         originSession: { harness: 'codex', sessionId: 'dev-test' },
         operationId: randomUUID(),

@@ -30,14 +30,14 @@ test('session pin persists; archive and undo preserve workspaces and use exact p
       args: [resolve('.')],
       env: {
         ...process.env,
-        BLUEPRINT_DATA: data,
-        BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'),
+        PROJECTOR_DATA: data,
+        PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'),
         CODEX_HOME: home,
         CODEX_FIXTURE_PROJECT: project,
         CODEX_FIXTURE_EMPTY: '0',
         CODEX_FIXTURE_METADATA_FILE: metadata,
         CODEX_FIXTURE_AUDIT: audit,
-        BLUEPRINT_E2E_HARNESS_INTERVAL_MS: '200',
+        PROJECTOR_E2E_HARNESS_INTERVAL_MS: '200',
       },
     });
   app = await launch();
@@ -46,9 +46,9 @@ test('session pin persists; archive and undo preserve workspaces and use exact p
     page.evaluate(() =>
       (
         window as unknown as {
-          blueprint: { invoke(name: string): Promise<ApplicationWorkspaceSnapshot> };
+          projector: { invoke(name: string): Promise<ApplicationWorkspaceSnapshot> };
         }
-      ).blueprint.invoke('applicationSnapshot'),
+      ).projector.invoke('applicationSnapshot'),
     );
   await app.evaluate(({ dialog }, project) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] });

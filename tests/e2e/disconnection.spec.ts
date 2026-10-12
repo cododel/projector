@@ -9,8 +9,8 @@ test('operator IPC loss after send rejects without an uncaught exception or repl
   const probeFile = join(root, 'probe.cjs');
   await writeFile(probeFile, 'process.parentPort.on("message",()=>{});');
   const app = await electron.launch({ args: [resolve('.')], env: {
-    ...process.env, BLUEPRINT_DATA: join(root, 'data'),
-    BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'),
+    ...process.env, PROJECTOR_DATA: join(root, 'data'),
+    PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'),
   } });
   try {
     const page = await app.firstWindow();
@@ -21,7 +21,7 @@ test('operator IPC loss after send rejects without an uncaught exception or repl
       const prototype = Object.getPrototypeOf(probe);
       probe.kill();
       const observation = { errors: [] as string[], writes: 0 };
-      Object.assign(globalThis, { blueprintIpcTest: observation });
+      Object.assign(globalThis, { projectorIpcTest: observation });
       process.on('uncaughtExceptionMonitor', error => observation.errors.push(error.message));
       const original = prototype.postMessage;
       prototype.postMessage = function (value: { type?: string; name?: string }) {
@@ -36,12 +36,12 @@ test('operator IPC loss after send rejects without an uncaught exception or repl
       };
     }, probeFile);
     const result = await page.evaluate(async () => {
-      const bridge = (window as unknown as { blueprint: { invoke: (name: string) => Promise<unknown> } }).blueprint;
+      const bridge = (window as unknown as { projector: { invoke: (name: string) => Promise<unknown> } }).projector;
       try { await bridge.invoke('snapshot'); return 'resolved'; }
       catch (error) { return String(error); }
     });
     const observation = await app.evaluate(() =>
-      (globalThis as unknown as { blueprintIpcTest: { errors: string[]; writes: number } }).blueprintIpcTest);
+      (globalThis as unknown as { projectorIpcTest: { errors: string[]; writes: number } }).projectorIpcTest);
     expect(observation.errors).toEqual([]);
     expect(observation.writes).toBe(1);
     expect(result).toContain('UNKNOWN_RESULT');

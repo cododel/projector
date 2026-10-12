@@ -89,7 +89,7 @@ export async function packageMac({ output = resolve('dist'), node = process.exec
     await copyFile(join(dirname(node), '..', 'LICENSE'), join(helper, 'NODE-LICENSE'));
     await copyFile('out/bridge.cjs', join(helper, 'bridge.cjs'));
     await writeFile(
-      join(helper, 'blueprint-mcp'),
+      join(helper, 'projector-mcp'),
       `#!/bin/sh
 set -eu
 helper_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -100,8 +100,8 @@ exec "$helper_dir/node" "$helper_dir/bridge.cjs" "$@"
     );
     const apps = await packager({
       dir: source,
-      name: 'Blueprint',
-      appBundleId: 'dev.cododel.blueprint',
+      name: 'Projector',
+      appBundleId: 'dev.cododel.projector',
       appVersion: metadata.version,
       electronVersion: metadata.devDependencies.electron,
       electronZipDir: stage,
@@ -116,7 +116,7 @@ exec "$helper_dir/node" "$helper_dir/bridge.cjs" "$@"
       tmpdir: stage,
       quiet: true,
     });
-    return join(apps[0], 'Blueprint.app');
+    return join(apps[0], 'Projector.app');
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
@@ -125,8 +125,8 @@ exec "$helper_dir/node" "$helper_dir/bridge.cjs" "$@"
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   console.log(
     await packageMac({
-      node: process.env.BLUEPRINT_NODE ?? process.execPath,
-      output: process.env.BLUEPRINT_PACKAGE_OUTPUT,
+      node: process.env.PROJECTOR_NODE ?? process.env.BLUEPRINT_NODE ?? process.execPath,
+      output: process.env.PROJECTOR_PACKAGE_OUTPUT ?? process.env.BLUEPRINT_PACKAGE_OUTPUT,
     }),
   );
 }

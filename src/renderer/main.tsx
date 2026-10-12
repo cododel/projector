@@ -163,13 +163,13 @@ interface Bridge {
 const isSurface = new URLSearchParams(window.location.search).get('surface') === '1';
 function documentShellOrigin(): string {
   const requestedOrigin =
-    new URLSearchParams(window.location.search).get('shellOrigin') ?? 'blueprint://app';
+    new URLSearchParams(window.location.search).get('shellOrigin') ?? 'projector://app';
   const originUrl = new URL(requestedOrigin);
-  return requestedOrigin === 'blueprint://app' ||
+  return requestedOrigin === 'projector://app' ||
     (originUrl.protocol === 'http:' &&
       ['localhost', '127.0.0.1', '[::1]'].includes(originUrl.hostname))
     ? requestedOrigin
-    : 'blueprint://app';
+    : 'projector://app';
 }
 function documentBridge(): Bridge {
   const shellOrigin = documentShellOrigin();
@@ -198,7 +198,7 @@ function documentBridge(): Bridge {
       artifactId?: string;
       revisionId?: string | null;
     };
-    if (data.type === 'blueprint-refresh') {
+    if (data.type === 'projector-refresh') {
       const identity = new URLSearchParams(window.location.search);
       if (
         data.artifactId !== identity.get('artifactId') ||
@@ -208,7 +208,7 @@ function documentBridge(): Bridge {
       for (const listener of listeners) listener();
       return;
     }
-    if (data.type !== 'blueprint-response' || typeof data.id !== 'string') return;
+    if (data.type !== 'projector-response' || typeof data.id !== 'string') return;
     const request = pending.get(data.id);
     if (!request) return;
     clearTimeout(request.timeout);
@@ -225,7 +225,7 @@ function documentBridge(): Bridge {
           reject(new Error('Document request timed out.'));
         }, 15000);
         pending.set(id, { resolve, reject, timeout });
-        window.parent.postMessage({ type: 'blueprint-request', id, method, params }, shellOrigin);
+        window.parent.postMessage({ type: 'projector-request', id, method, params }, shellOrigin);
       });
     },
     onRefresh(callback) {
@@ -238,7 +238,7 @@ function documentBridge(): Bridge {
 }
 const bridge = isSurface
   ? documentBridge()
-  : (window as unknown as { blueprint: Bridge }).blueprint;
+  : (window as unknown as { projector: Bridge }).projector;
 async function invoke<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   return (await bridge.invoke(method, params)) as T;
 }
@@ -523,13 +523,13 @@ function App(): React.JSX.Element {
     for (const owner of documentFrames.current.values())
       if (owner.ready)
         owner.frame.contentWindow?.postMessage(
-          { type: 'blueprint-refresh', artifactId: owner.artifactId, revisionId: owner.revisionId },
-          'blueprint://document',
+          { type: 'projector-refresh', artifactId: owner.artifactId, revisionId: owner.revisionId },
+          'projector://document',
         );
     if (next.selected && surfaceReady.current && !nextApplication.selectedWorkspace)
       frame.current?.contentWindow?.postMessage(
-        { type: 'blueprint-refresh', ...next.selected },
-        'blueprint://document',
+        { type: 'projector-refresh', ...next.selected },
+        'projector://document',
       );
   }, []);
   const refreshQueue = useMemo(
@@ -661,8 +661,8 @@ function App(): React.JSX.Element {
     surfaceReady.current = owner?.ready ?? false;
     if (owner?.ready)
       owner.frame.contentWindow?.postMessage(
-        { type: 'blueprint-document-status-request' },
-        'blueprint://document',
+        { type: 'projector-document-status-request' },
+        'projector://document',
       );
   }, [appMode, activePane?.id, framesVersion]);
   useEffect(() => {
@@ -950,7 +950,7 @@ function App(): React.JSX.Element {
           reject(new Error('Comment editor did not respond. Retry before leaving.'));
         }, 10000);
         finishRequests.current.set(id, { resolve, reject, timer, target });
-        target.postMessage({ type: 'blueprint-finish', id, retry }, 'blueprint://document');
+        target.postMessage({ type: 'projector-finish', id, retry }, 'projector://document');
       });
     }
     await invoke('browserFinishComment');
@@ -1138,22 +1138,22 @@ function App(): React.JSX.Element {
       );
       const legacy = !appMode && event.source === frame.current?.contentWindow;
       if (
-        event.origin !== 'blueprint://document' ||
+        event.origin !== 'projector://document' ||
         (!owner && !legacy) ||
         !event.data ||
         typeof event.data !== 'object'
       )
         return;
-      if (event.data.type === 'blueprint-focus' && owner) {
+      if (event.data.type === 'projector-focus' && owner) {
         focusPane(owner.paneId);
         return;
       }
-      if (event.data.type === 'blueprint-shortcut' && typeof event.data.action === 'string') {
+      if (event.data.type === 'projector-shortcut' && typeof event.data.action === 'string') {
         if (Object.hasOwn(currentSettings.shortcuts, event.data.action))
           shortcut(event.data.action as ShortcutAction);
         return;
       }
-      if (event.data.type === 'blueprint-document-status') {
+      if (event.data.type === 'projector-document-status') {
         if (owner && owner.paneId !== activePane?.id) return;
         setDocumentToolbar({
           saveStatus: typeof event.data.saveStatus === 'string' ? event.data.saveStatus : '',
@@ -1162,7 +1162,7 @@ function App(): React.JSX.Element {
         });
         return;
       }
-      if (event.data.type === 'blueprint-finished' && typeof event.data.id === 'string') {
+      if (event.data.type === 'projector-finished' && typeof event.data.id === 'string') {
         const pending = finishRequests.current.get(event.data.id);
         if (pending && pending.target === event.source) {
           clearTimeout(pending.timer);
@@ -1179,7 +1179,7 @@ function App(): React.JSX.Element {
         params?: unknown;
       };
       if (
-        request.type !== 'blueprint-request' ||
+        request.type !== 'projector-request' ||
         typeof request.id !== 'string' ||
         typeof request.method !== 'string'
       )
@@ -1211,27 +1211,27 @@ function App(): React.JSX.Element {
       ) {
         target.postMessage(
           {
-            type: 'blueprint-response',
+            type: 'projector-response',
             id: request.id,
             error: 'Document operation is not allowed.',
           },
-          'blueprint://document',
+          'projector://document',
         );
         return;
       }
       if (request.method === 'previewing') {
         if (!owner || owner.paneId === activePane?.id) setDocumentPreview(params.active === true);
         target.postMessage(
-          { type: 'blueprint-response', id: request.id, result: {} },
-          'blueprint://document',
+          { type: 'projector-response', id: request.id, result: {} },
+          'projector://document',
         );
         return;
       }
       if (request.method === 'annotationNavigated') {
         setJump(null);
         target.postMessage(
-          { type: 'blueprint-response', id: request.id, result: {} },
-          'blueprint://document',
+          { type: 'projector-response', id: request.id, result: {} },
+          'projector://document',
         );
         return;
       }
@@ -1283,11 +1283,11 @@ function App(): React.JSX.Element {
             });
           target.postMessage(
             {
-              type: 'blueprint-response',
+              type: 'projector-response',
               id: request.id,
               result: method === 'paneView' ? { saved: true, view: result } : result,
             },
-            'blueprint://document',
+            'projector://document',
           );
           if (
             request.method === 'getDocument' &&
@@ -1296,8 +1296,8 @@ function App(): React.JSX.Element {
             jump.revisionId === params.revisionId
           )
             target.postMessage(
-              { type: 'blueprint-jump', annotation: jump },
-              'blueprint://document',
+              { type: 'projector-jump', annotation: jump },
+              'projector://document',
             );
           if (!['getDocument', 'editing'].includes(String(request.method)))
             void reload().catch((e) => setError(message(e)));
@@ -1306,8 +1306,8 @@ function App(): React.JSX.Element {
           if (['setValue', 'saveEditor', 'setViewState'].includes(String(request.method)))
             setFailedAutosaves((previous) => new Set(previous).add(saveKey));
           target.postMessage(
-            { type: 'blueprint-response', id: request.id, error: message(e) },
-            'blueprint://document',
+            { type: 'projector-response', id: request.id, error: message(e) },
+            'projector://document',
           );
         })
         .finally(() => {
@@ -1322,22 +1322,22 @@ function App(): React.JSX.Element {
     for (const owner of documentFrames.current.values())
       if (owner.ready)
         owner.frame.contentWindow?.postMessage(
-          { type: 'blueprint-shortcuts', shortcuts: currentSettings.shortcuts },
-          'blueprint://document',
+          { type: 'projector-shortcuts', shortcuts: currentSettings.shortcuts },
+          'projector://document',
         );
   }, [framesVersion, currentSettings.shortcuts]);
   function sendJump(): void {
     if (jump)
       frame.current?.contentWindow?.postMessage(
-        { type: 'blueprint-jump', annotation: jump },
-        'blueprint://document',
+        { type: 'projector-jump', annotation: jump },
+        'projector://document',
       );
   }
   useEffect(() => {
     sendJump();
   }, [jump, document]);
   const surfaceUrl = selected
-    ? `blueprint://document/index.html?surface=1&artifactId=${encodeURIComponent(selected.artifactId)}&revisionId=${encodeURIComponent(selected.revisionId ?? '')}&shellOrigin=${encodeURIComponent(window.location.origin)}`
+    ? `projector://document/index.html?surface=1&artifactId=${encodeURIComponent(selected.artifactId)}&revisionId=${encodeURIComponent(selected.revisionId ?? '')}&shellOrigin=${encodeURIComponent(window.location.origin)}`
     : '';
   function persistEdit(annotation: Annotation, value: string): void {
     setComment(value);
@@ -1524,7 +1524,7 @@ function App(): React.JSX.Element {
     }
   }
   function agentMessage(plan: Artifact): string {
-    return `Prepare the existing Blueprint plan. Project ID: ${plan.projectId}. Artifact ID: ${plan.id}. Read read_artifact with artifactId and part="manifest" for the sourcePath and sourceFile. Explicitly attach your known originSession with attach_artifact_session (artifactId, originSession, operationId); ask me if you do not know your session ID, never infer it. Write the MDX source into the returned sourceFile and publish the first revision of this same artifact. Keep its existing private workspace and annotations. Do not create a replacement artifact.`;
+    return `Prepare the existing Projector plan. Project ID: ${plan.projectId}. Artifact ID: ${plan.id}. Read read_artifact with artifactId and part="manifest" for the sourcePath and sourceFile. Explicitly attach your known originSession with attach_artifact_session (artifactId, originSession, operationId); ask me if you do not know your session ID, never infer it. Write the MDX source into the returned sourceFile and publish the first revision of this same artifact. Keep its existing private workspace and annotations. Do not create a replacement artifact.`;
   }
   function sidebarToggle(side: 'left' | 'right') {
     const visible = side === 'left' ? leftSidebarVisible : rightSidebarVisible;
@@ -1740,9 +1740,9 @@ function App(): React.JSX.Element {
       <header className="window-titlebar" role="toolbar" aria-label="Window toolbar">
         {leftSidebarVisible && (
           <div className="titlebar-section titlebar-left">
-            <div className="titlebar-brand" aria-label="Blueprint">
-              <span className="titlebar-brand-mark" aria-hidden="true">B</span>
-              <span className="titlebar-brand-name">Blueprint</span>
+            <div className="titlebar-brand" aria-label="Projector">
+              <span className="titlebar-brand-mark" aria-hidden="true">P</span>
+              <span className="titlebar-brand-name">Projector</span>
             </div>
             {sidebarToggle('left')}
           </div>
@@ -2089,7 +2089,7 @@ function App(): React.JSX.Element {
               }
             >
               <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M4 3h12a2 2 0 0 1 2 2v16H6a2 2 0 0 1-2-2V3Zm0 14h14M8 7h6M8 10h6" /></svg>
-              <span>Blueprint guide</span>
+              <span>Projector guide</span>
             </button>
             <button
               className="sidebar-utility"
@@ -2177,8 +2177,8 @@ function App(): React.JSX.Element {
                   onClick={() =>
                     void transition(async () => {
                       frame.current?.contentWindow?.postMessage(
-                        { type: 'blueprint-toggle-annotate' },
-                        'blueprint://document',
+                        { type: 'projector-toggle-annotate' },
+                        'projector://document',
                       );
                     })
                   }
@@ -2365,7 +2365,7 @@ function App(): React.JSX.Element {
         {runtimeNotice && (
           <div className="runtime-notice" role="status">
             <span>
-              Closing this window keeps the local runtime running. Use Quit Blueprint to stop it.
+              Closing this window keeps the local runtime running. Use Quit Projector to stop it.
             </span>
             <button
               onClick={() =>
@@ -2532,7 +2532,7 @@ function App(): React.JSX.Element {
                 ref={frame}
                 sandbox="allow-scripts allow-same-origin"
                 className="document-frame"
-                title="Blueprint document"
+                title="Projector document"
                 src={surfaceUrl}
                 onLoad={() => {
                   surfaceReady.current = true;
@@ -3174,7 +3174,7 @@ function App(): React.JSX.Element {
               </dd>
             </dl>
             <p className="muted">
-              Open this session's project folder in Blueprint to enable explicit Resume.
+              Open this session's project folder in Projector to enable explicit Resume.
             </p>
           </section>
         </div>
@@ -3195,12 +3195,12 @@ function App(): React.JSX.Element {
         >
           <section className="modal" role="dialog" aria-modal="true" aria-label="MCP connection">
             <div className="modal-heading">
-              <h2>Connect Blueprint through MCP</h2>
+              <h2>Connect Projector through MCP</h2>
               <button className="subtle" onClick={closeInformation}>
                 Close
               </button>
             </div>
-            <p>Copy the setup prompt and paste it into your agent. Keep Blueprint running.</p>
+            <p>Copy the setup prompt and paste it into your agent. Keep Projector running.</p>
             <button className="primary" onClick={() => void copy(setup.prompt)}>
               {copiedText === setup.prompt ? 'Copied' : 'Copy setup prompt'}
             </button>
@@ -3236,7 +3236,7 @@ function App(): React.JSX.Element {
               </button>
             </details>
             <p className="muted">
-              Blueprint does not edit your configuration. The prompt asks your agent to configure
+              Projector does not edit your configuration. The prompt asks your agent to configure
               only this MCP connection.
             </p>
           </section>
@@ -3395,7 +3395,7 @@ function DocumentSurface(): React.JSX.Element {
       if (
         event.source !== window.parent ||
         event.origin !== documentShellOrigin() ||
-        event.data?.type !== 'blueprint-shortcuts'
+        event.data?.type !== 'projector-shortcuts'
       )
         return;
       const candidate = event.data.shortcuts;
@@ -3408,10 +3408,10 @@ function DocumentSurface(): React.JSX.Element {
       const action = shortcutAction(event, shortcuts);
       if (!action) return;
       event.preventDefault();
-      window.parent.postMessage({ type: 'blueprint-shortcut', action }, documentShellOrigin());
+      window.parent.postMessage({ type: 'projector-shortcut', action }, documentShellOrigin());
     };
     const focus = () =>
-      window.parent.postMessage({ type: 'blueprint-focus' }, documentShellOrigin());
+      window.parent.postMessage({ type: 'projector-focus' }, documentShellOrigin());
     window.addEventListener('message', receive);
     window.addEventListener('keydown', keydown);
     window.addEventListener('pointerdown', focus, true);
@@ -3493,7 +3493,7 @@ function DocumentSurface(): React.JSX.Element {
     const status = () =>
       window.parent.postMessage(
         {
-          type: 'blueprint-document-status',
+          type: 'projector-document-status',
           saveStatus: data?.draft ? 'Read-only preview' : saveStatus,
           areaMode,
           canAnnotate: Boolean(
@@ -3505,9 +3505,9 @@ function DocumentSurface(): React.JSX.Element {
     status();
     const command = (event: MessageEvent) => {
       if (event.source !== window.parent || event.origin !== documentShellOrigin()) return;
-      if (event.data?.type === 'blueprint-document-status-request') status();
+      if (event.data?.type === 'projector-document-status-request') status();
       if (
-        event.data?.type === 'blueprint-toggle-annotate' &&
+        event.data?.type === 'projector-toggle-annotate' &&
         data &&
         !data.draft &&
         !previewState &&
@@ -3804,7 +3804,7 @@ function DocumentSurface(): React.JSX.Element {
       void invoke('annotationNavigated', { artifactId, revisionId, annotationId: a.id });
     }
     function jump(event: MessageEvent): void {
-      if (event.source !== window.parent || event.data?.type !== 'blueprint-jump') return;
+      if (event.source !== window.parent || event.data?.type !== 'projector-jump') return;
       pendingJump.current = event.data.annotation as Annotation;
       navigate(pendingJump.current);
     }
@@ -3913,7 +3913,7 @@ function DocumentSurface(): React.JSX.Element {
     function finish(event: MessageEvent): void {
       if (
         event.source !== window.parent ||
-        event.data?.type !== 'blueprint-finish' ||
+        event.data?.type !== 'projector-finish' ||
         typeof event.data.id !== 'string'
       )
         return;
@@ -3939,9 +3939,9 @@ function DocumentSurface(): React.JSX.Element {
         if (failedTasks.current.size)
           throw new Error('Local save failed. Retry or cancel before leaving.');
       })()
-        .then(() => target.postMessage({ type: 'blueprint-finished', id }, origin))
+        .then(() => target.postMessage({ type: 'projector-finished', id }, origin))
         .catch((error) =>
-          target.postMessage({ type: 'blueprint-finished', id, error: message(error) }, origin),
+          target.postMessage({ type: 'projector-finished', id, error: message(error) }, origin),
         );
     }
     window.addEventListener('message', finish);

@@ -47,7 +47,7 @@ function Fixture(){const [value,setValue]=useState(''),[open,setOpen]=useState(t
   app = await electron.launch({
     args: [join(root, 'main.cjs')],
     timeout: 15000,
-    env: { ...process.env, BLUEPRINT_COMPOSER_TEST_DATA: root },
+    env: { ...process.env, PROJECTOR_COMPOSER_TEST_DATA: root },
   });
   page = await app.firstWindow();
   await expect(page.getByLabel('Comment', { exact: true })).toBeVisible();

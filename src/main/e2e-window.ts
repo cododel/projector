@@ -3,7 +3,7 @@ import { appendFileSync } from 'node:fs';
 
 // Set by Playwright, never by the application's normal launch commands.
 export function isBackgroundE2E(): boolean {
-  return process.env.BLUEPRINT_E2E_BACKGROUND === '1';
+  return process.env.PROJECTOR_E2E_BACKGROUND === '1';
 }
 
 export function e2eWindowOptions(
@@ -22,7 +22,7 @@ export function e2eWindowOptions(
 // Observe native events from before window creation, including packaged launches.
 // Recording a violation must not turn it into a passing test by hiding the window.
 export function auditE2EWindows(app: App): void {
-  const path = process.env.BLUEPRINT_E2E_WINDOW_AUDIT;
+  const path = process.env.PROJECTOR_E2E_WINDOW_AUDIT;
   if (!isBackgroundE2E() || !path) return;
   const record = (event: string, windowId?: number) =>
     appendFileSync(path, JSON.stringify({ event, windowId, pid: process.pid }) + '\n');

@@ -27,7 +27,7 @@ try {
   const originSession = { harness: 'codex', sessionId: randomUUID() };
   const created = await store.create({
     projectId: registered.id,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'Performance plan 00',
     originSession,
     operationId: randomUUID(),
@@ -60,7 +60,7 @@ try {
         ? published.revisionId
         : `${String(r + 1).padStart(6, '0')}-${randomUUID()}`,
     );
-    const base = join(project, '.blueprint', 'artifacts', id);
+    const base = join(project, '.projector', 'artifacts', id);
     const values = Object.fromEntries(
       Array.from({ length: 20 }, (_, i) => [`answer${i}`, `Plan ${a} decision ${i}`]),
     );
@@ -91,7 +91,7 @@ try {
       id,
       projectId: registered.id,
       title: `Performance plan ${String(a).padStart(2, '0')}`,
-      kind: 'blueprint',
+      kind: 'projector',
       originSession,
     });
     await mkdir(join(base, 'source'), { recursive: true });
@@ -166,10 +166,10 @@ try {
     stdio: 'inherit',
     env: {
       ...process.env,
-      BLUEPRINT_E2E_BACKGROUND: '1',
-      BLUEPRINT_PERFORMANCE_ROOT: root,
-      BLUEPRINT_PERFORMANCE_DIAGNOSE_TABS: process.argv.includes('--diagnose-tabs') ? '1' : '0',
-      BLUEPRINT_PERFORMANCE_REPORT: join(
+      PROJECTOR_E2E_BACKGROUND: '1',
+      PROJECTOR_PERFORMANCE_ROOT: root,
+      PROJECTOR_PERFORMANCE_DIAGNOSE_TABS: process.argv.includes('--diagnose-tabs') ? '1' : '0',
+      PROJECTOR_PERFORMANCE_REPORT: join(
         task,
         process.argv.includes('--diagnose-tabs')
           ? 'performance-tab-diagnostic.json'

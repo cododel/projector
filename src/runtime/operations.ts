@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getGuide, SERVER_INSTRUCTIONS } from '../guide';
 import { Store, VERSION } from './store';
-import { BlueprintError } from '../shared/protocol';
+import { ProjectorError } from '../shared/protocol';
 const id = z
   .string()
   .min(1)
@@ -17,7 +17,7 @@ function parseRecipientInput(input: unknown): string {
   if (id.safeParse(value).success) return value;
   const link = /^codex:\/\/threads\/([A-Za-z0-9][A-Za-z0-9._-]{0,149})(?:[?#]\S*)?$/i.exec(value);
   if (!link)
-    throw new BlueprintError(
+    throw new ProjectorError(
       'INVALID_SESSION_LINK',
       'Enter a session ID or a codex://threads/<session-id> link.',
     );
@@ -114,7 +114,7 @@ const selection = z
   })
   .strict();
 const schemas = {
-  get_blueprint_guide: z
+  get_projector_guide: z
     .object({
       topic: z
         .enum(['overview', 'planning', 'authoring', 'widgets', 'annotations', 'all'])
@@ -122,11 +122,11 @@ const schemas = {
       reference: z.string().optional(),
     })
     .strict(),
-  get_blueprint_context: z.object({ projectPath: z.string().optional() }).strict(),
+  get_projector_context: z.object({ projectPath: z.string().optional() }).strict(),
   create_artifact: z
     .object({
       projectId: id,
-      kind: z.literal('blueprint'),
+      kind: z.enum(['projector', 'blueprint']),
       title: z.string().min(1).max(300),
       originSession: session,
       operationId: id,
@@ -179,11 +179,11 @@ const schemas = {
     .strict(),
 };
 const descriptions: Record<keyof typeof schemas, string> = {
-  get_blueprint_guide:
-    'Get the bundled versioned Blueprint guide. Topics: overview, planning, authoring, widgets, annotations, all; references load examples on demand.',
-  get_blueprint_context:
+  get_projector_guide:
+    'Get the bundled versioned Projector guide. Topics: overview, planning, authoring, widgets, annotations, all; references load examples on demand.',
+  get_projector_context:
     'Read explicitly selected project and capabilities. Artifact originSession must be supplied by the agent; never infer a session.',
-  create_artifact: 'Create a Blueprint source directory in a registered project.',
+  create_artifact: 'Create a Projector source directory in a registered project.',
   attach_artifact_session:
     'Explicitly attach a known agent session to an operator-created workspace. Idempotent; a different session cannot replace an existing binding.',
   publish_artifact: 'Validate and publish immutable plan.mdx with optimistic version checking.',
@@ -205,8 +205,8 @@ export const tools = Object.entries(schemas).map(([name, schema]) => ({
   inputSchema: z.toJSONSchema(schema),
   annotations: {
     readOnlyHint: [
-      'get_blueprint_guide',
-      'get_blueprint_context',
+      'get_projector_guide',
+      'get_projector_context',
       'read_artifact',
       'read_attachment',
       'list_feedback',
@@ -220,7 +220,7 @@ export const tools = Object.entries(schemas).map(([name, schema]) => ({
 function page(content: string, cursor?: string) {
   const offset = cursor ? Number(cursor) : 0;
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > content.length)
-    throw new BlueprintError('INVALID_CURSOR', 'Invalid cursor');
+    throw new ProjectorError('INVALID_CURSOR', 'Invalid cursor');
   const next = offset + 12000;
   return {
     content: content.slice(offset, next),
@@ -260,19 +260,25 @@ export class Operations {
     return { status: 'shown' };
   }
   async tool(name: string, input: unknown): Promise<unknown> {
-    if (!Object.hasOwn(schemas, name)) throw new BlueprintError('UNKNOWN_TOOL', 'Unsupported tool');
+    name =
+      name === 'get_blueprint_guide'
+        ? 'get_projector_guide'
+        : name === 'get_blueprint_context'
+          ? 'get_projector_context'
+          : name;
+    if (!Object.hasOwn(schemas, name)) throw new ProjectorError('UNKNOWN_TOOL', 'Unsupported tool');
     const parsed = schemas[name as keyof typeof schemas].parse(input);
     switch (name) {
-      case 'get_blueprint_guide':
-        return getGuide(schemas.get_blueprint_guide.parse(parsed));
-      case 'get_blueprint_context': {
-        const args = schemas.get_blueprint_context.parse(parsed);
+      case 'get_projector_guide':
+        return getGuide(schemas.get_projector_guide.parse(parsed));
+      case 'get_projector_context': {
+        const args = schemas.get_projector_context.parse(parsed);
         const canonicalPath = args.projectPath ? await realpath(args.projectPath) : undefined;
         const p = canonicalPath
           ? this.store.projects().find((p) => p.path === canonicalPath)
           : this.store.projects().find((p) => p.id === this.selectedProject);
         if (!p)
-          throw new BlueprintError('PROJECT_SELECTION_REQUIRED', 'Select the project in Blueprint');
+          throw new ProjectorError('PROJECT_SELECTION_REQUIRED', 'Select the project in Projector');
         return {
           project: { id: p.id, path: p.path },
           sessionBinding: 'artifact_origin_unverified',
@@ -329,11 +335,11 @@ export class Operations {
               };
         }
         if (a.savedStateId)
-          throw new BlueprintError('INVALID_INPUT', 'savedStateId applies only to part=state');
+          throw new ProjectorError('INVALID_INPUT', 'savedStateId applies only to part=state');
         const revisionId = a.revisionId ?? artifact.latestRevision;
         if (!revisionId) {
           if (a.part === 'source')
-            throw new BlueprintError(
+            throw new ProjectorError(
               'UNKNOWN_REVISION',
               'Artifact has no published document revision',
             );
@@ -381,7 +387,7 @@ export class Operations {
         const a = schemas.show_content.parse(parsed);
         const url = new URL(a.url);
         if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
-          throw new BlueprintError(
+          throw new ProjectorError(
             'INVALID_URL',
             'Only HTTP/HTTPS URLs without embedded credentials are allowed',
           );
@@ -421,7 +427,7 @@ export class Operations {
         );
         const offset = a.cursor ? Number(a.cursor) : 0;
         if (!Number.isSafeInteger(offset) || offset < 0)
-          throw new BlueprintError('INVALID_CURSOR', 'Invalid cursor');
+          throw new ProjectorError('INVALID_CURSOR', 'Invalid cursor');
         return {
           items: items
             .slice(offset, offset + 20)
@@ -451,7 +457,7 @@ export class Operations {
           ...Object.keys(packet.answers),
         ]);
         if (a.outcomes.some((o) => !items.has(o.itemId)))
-          throw new BlueprintError(
+          throw new ProjectorError(
             'INVALID_REFERENCE',
             'Outcome refers to an unknown feedback item',
           );
@@ -467,8 +473,7 @@ export class Operations {
             await writableInside(
               this.store.project(packet.projectId).path,
               join(
-                this.store.project(packet.projectId).path,
-                '.blueprint',
+                await this.store.base(this.store.project(packet.projectId)),
                 'feedback',
                 packet.id,
                 'receipts',
@@ -481,7 +486,7 @@ export class Operations {
         return receipt;
       }
     }
-    throw new BlueprintError('UNKNOWN_TOOL', 'Unsupported tool');
+    throw new ProjectorError('UNKNOWN_TOOL', 'Unsupported tool');
   }
   async operator(name: string, input: unknown): Promise<unknown> {
     if (name === 'snapshot' || name === 'getDocument')
@@ -639,7 +644,7 @@ export class Operations {
           editor &&
           (editor.artifactId !== artifactId || editor.capture.source.kind !== 'browser-area')
         )
-          throw new BlueprintError(
+          throw new ProjectorError(
             'INVALID_REFERENCE',
             'Browser composer belongs to a different artifact',
           );
@@ -746,12 +751,12 @@ export class Operations {
           .strict()
           .parse(args);
         if (a.revisionId === null)
-          throw new BlueprintError(
+          throw new ProjectorError(
             'NO_PUBLISHED_REVISION',
             'Publish the first document before Save',
           );
         if (this.editing)
-          throw new BlueprintError(
+          throw new ProjectorError(
             'UNFINISHED_ANNOTATION',
             'Save or cancel the unfinished annotation first',
           );
@@ -765,7 +770,7 @@ export class Operations {
           (x) => x.id === required('annotationId'),
         );
         if (!annotation?.capture)
-          throw new BlueprintError('UNKNOWN_ATTACHMENT', 'Unknown private capture');
+          throw new ProjectorError('UNKNOWN_ATTACHMENT', 'Unknown private capture');
         const file = await import('./files');
         const png = await import('node:fs/promises').then((f) =>
           f.readFile(
@@ -823,14 +828,14 @@ export class Operations {
       case 'demo': {
         const p = this.store.project(required('projectId'));
         if (args.originSession == null)
-          throw new BlueprintError(
+          throw new ProjectorError(
             'ORIGIN_SESSION_REQUIRED',
             'Supply originSession for the demo; a project recipient does not identify its origin.',
           );
         const originSession = session.parse(args.originSession);
         const a = await this.store.create({
           projectId: p.id,
-          kind: 'blueprint',
+          kind: 'projector',
           title: 'Access policy planning',
           originSession,
           operationId: randomUUID(),
@@ -844,7 +849,7 @@ export class Operations {
         return this.show(a.artifactId, r.revisionId);
       }
       default:
-        throw new BlueprintError('UNKNOWN_COMMAND', 'Unsupported operator command');
+        throw new ProjectorError('UNKNOWN_COMMAND', 'Unsupported operator command');
     }
     this.refresh();
     return { saved: true };

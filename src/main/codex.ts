@@ -57,7 +57,7 @@ const envelopeSchema = z
 type Envelope = z.infer<typeof envelopeSchema>;
 type Thread = z.infer<typeof threadSchema>;
 const mcpStartupSchema = z.object({
-  name: z.literal('blueprint'),
+  name: z.literal('projector'),
   status: z.enum(['starting', 'ready', 'failed', 'cancelled']),
   threadId: z.string().min(1).max(256).nullable().optional(),
   error: z.string().max(4096).nullable().optional(),
@@ -77,7 +77,7 @@ export interface CodexManagerOptions {
   getExecutable: () => string;
   getEnvironment?: () => Record<string, string | undefined>;
   getProfile?: () => string | undefined;
-  /** Dot-path TOML overrides for the app-owned Blueprint MCP bridge only. */
+  /** Dot-path TOML overrides for the app-owned Projector MCP bridge only. */
   getMcpOverrides: () => Record<string, unknown>;
   onIdentity?: (terminalId: string, sessionId: string) => void;
   onChange?: () => void;
@@ -219,7 +219,7 @@ class DiscoveryClient {
         const activeWriter = error.success && error.data.code === -32600 &&
           /^thread \S+ already has an active writer$/.test(error.data.message);
         pending.reject(new Error(activeWriter
-          ? 'CODEX_SESSION_IN_USE: This session is already in use by another Codex process. Return to the existing launch, or retry after it releases the session. Blueprint will not take it over.'
+          ? 'CODEX_SESSION_IN_USE: This session is already in use by another Codex process. Return to the existing launch, or retry after it releases the session. Projector will not take it over.'
           : 'CODEX_RPC_FAILED: ' + JSON.stringify(value.error)));
       } else pending.resolve(value.result);
     } catch {
@@ -252,7 +252,7 @@ class DiscoveryClient {
   }
   async initialize() {
     await this.call('initialize', {
-      clientInfo: { name: 'blueprint', title: 'Blueprint', version: '0.1.0-alpha.1' },
+      clientInfo: { name: 'projector', title: 'Projector', version: '0.1.0-alpha.1' },
       capabilities: { experimentalApi: true },
     });
     this.child.stdin.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
@@ -295,8 +295,8 @@ export class CodexManager {
   private mcpArguments() {
     const overrides = this.options.getMcpOverrides();
     for (const key of Object.keys(overrides)) {
-      if (!key.startsWith('mcp_servers.blueprint.'))
-        throw new Error('CODEX_OVERRIDE_NOT_BLUEPRINT_MCP');
+      if (!key.startsWith('mcp_servers.projector.'))
+        throw new Error('CODEX_OVERRIDE_NOT_PROJECTOR_MCP');
     }
     return Object.entries(overrides).flatMap(([key, value]) => [
       '-c',
@@ -588,7 +588,7 @@ export class CodexManager {
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
     const id = randomUUID();
-    const tokenVariable = 'BLUEPRINT_CODEX_REMOTE_TOKEN';
+    const tokenVariable = 'PROJECTOR_CODEX_REMOTE_TOKEN';
     const child = spawn(
       executable,
       [

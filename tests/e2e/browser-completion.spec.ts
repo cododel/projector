@@ -62,7 +62,7 @@ test.beforeEach(async () => {
   });
   app = await electron.launch({
     args: [join(root, 'main.cjs')],
-    env: { ...process.env, BLUEPRINT_BROWSER_TEST_DATA: root },
+    env: { ...process.env, PROJECTOR_BROWSER_TEST_DATA: root },
   });
   await app.firstWindow();
 });
@@ -238,7 +238,7 @@ test('capture deadline rejects a late frame before private draft or editor creat
   const page = await pageAt((p) => p.url() === url);
   await expect(page.getByRole('heading')).toBeVisible();
   await app.evaluate(({ webContents }, url) => {
-    process.env.BLUEPRINT_CAPTURE_TIMEOUT_MS = '100';
+    process.env.PROJECTOR_CAPTURE_TIMEOUT_MS = '100';
     const contents = webContents.getAllWebContents().find((value) => value.getURL() === url)!;
     const original = contents.capturePage.bind(contents);
     contents.capturePage = async () => {
@@ -305,7 +305,7 @@ test('trusted permission decisions expire on origin change and reject background
     {
       url,
       partition:
-        'persist:blueprint-browser-' + createHash('sha256').update('permissions').digest('hex'),
+        'persist:projector-browser-' + createHash('sha256').update('permissions').digest('hex'),
     },
   );
   const page = await pageAt((p) => p.url() === url);

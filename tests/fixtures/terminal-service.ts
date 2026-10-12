@@ -75,7 +75,7 @@ void app.whenReady().then(async () => {
       child = Number((await manager.screen(crash.id)).content.match(/CRASH_CHILD:(\d+)/)?.[1]);
       return child > 0;
     });
-    const helper = app.getAppMetrics().find((entry) => entry.name === 'Blueprint Terminals');
+    const helper = app.getAppMetrics().find((entry) => entry.name === 'Projector Terminals');
     if (!helper || !crash.pid) throw new Error('Missing owned process.');
     process.kill(helper.pid, 'SIGKILL');
     stage = 'confirmed crash cleanup';

@@ -10,7 +10,7 @@ import {
   commitDirectory,
   json,
 } from './files';
-import { BlueprintError } from '../shared/protocol';
+import { ProjectorError } from '../shared/protocol';
 import type { Annotation, Store, SessionRef } from './store';
 import { isWidgetValueValid, type WidgetValue } from '../document';
 import { markerGeometry } from '../shared/annotation-marker';
@@ -151,7 +151,7 @@ export class ArtifactStates {
             revision.widgets.some((w) => !isWidgetValueValid(w, legacyAnswer.values[w.id])) ||
             Object.keys(legacyAnswer.values).some((k) => !revision.widgets.some((w) => w.id === k))
           )
-            throw new BlueprintError(
+            throw new ProjectorError(
               'CORRUPT_DATA',
               'Legacy answer does not satisfy its published definitions',
             );
@@ -196,7 +196,7 @@ export class ArtifactStates {
         item.artifactId !== artifactId ||
         item.id !== name
       )
-        throw new BlueprintError('CORRUPT_DATA', 'Saved state identity is inconsistent');
+        throw new ProjectorError('CORRUPT_DATA', 'Saved state identity is inconsistent');
       items.push(item);
     }
     return items;
@@ -205,7 +205,7 @@ export class ArtifactStates {
     const items = await this.list(artifactId);
     const found = savedStateId ? items.find((item) => item.id === savedStateId) : items.at(-1);
     if (savedStateId && !found)
-      throw new BlueprintError('UNKNOWN_SAVED_STATE', 'Unknown saved state for this artifact');
+      throw new ProjectorError('UNKNOWN_SAVED_STATE', 'Unknown saved state for this artifact');
     return found ?? null;
   }
   async save(args: {
@@ -217,7 +217,7 @@ export class ArtifactStates {
     await this.store.recoverChanges();
     const artifact = await this.store.artifact(args.artifactId);
     if (!artifact.originSession)
-      throw new BlueprintError('ORIGIN_SESSION_REQUIRED', 'Attach an agent session before Save');
+      throw new ProjectorError('ORIGIN_SESSION_REQUIRED', 'Attach an agent session before Save');
     const project = this.store.project(artifact.projectId);
     const key = 'save:' + args.artifactId + ':' + args.operationId;
     // Intent identifies a retry. Mutable workspace is deliberately excluded from this hash.
@@ -231,20 +231,20 @@ export class ArtifactStates {
     })[]) {
       if (item.operationKey === key) {
         if (item.operationHash !== intentHash)
-          throw new BlueprintError('OPERATION_CONFLICT', 'Save operation changed');
+          throw new ProjectorError('OPERATION_CONFLICT', 'Save operation changed');
         this.store.record(key, intentHash, item);
         return item;
       }
     }
     await this.store.revision(artifact.id, args.revisionId);
     if (await this.store.editor(artifact.id, null))
-      throw new BlueprintError(
+      throw new ProjectorError(
         'UNFINISHED_ANNOTATION',
         'Finish the unfinished browser annotation edit before Save',
       );
     for (const rev of artifact.revisions)
       if (await this.store.editor(artifact.id, rev.id))
-        throw new BlueprintError(
+        throw new ProjectorError(
           'UNFINISHED_ANNOTATION',
           'Save or cancel the unfinished annotation first',
         );
@@ -253,7 +253,7 @@ export class ArtifactStates {
         beneath(this.store.data, 'browser-editors', artifact.id + '.json'),
       );
       if (pending)
-        throw new BlueprintError(
+        throw new ProjectorError(
           'UNFINISHED_ANNOTATION',
           'Save or cancel the unfinished browser annotation first',
         );
@@ -262,7 +262,7 @@ export class ArtifactStates {
     }
     const latest = snapshots.at(-1)?.id ?? null;
     if (latest !== args.expectedLatestSavedStateId)
-      throw new BlueprintError('STATE_CONFLICT', 'Latest saved state changed', {
+      throw new ProjectorError('STATE_CONFLICT', 'Latest saved state changed', {
         expected: args.expectedLatestSavedStateId,
         actual: latest,
       });
@@ -287,7 +287,7 @@ export class ArtifactStates {
     for (const [index, item] of draft.annotations.entries()) {
       if (item.revisionId !== null) await this.store.revision(artifact.id, item.revisionId);
       else if (item.kind !== 'browser-area' || !item.capture || item.stateContext)
-        throw new BlueprintError(
+        throw new ProjectorError(
           'INVALID_REFERENCE',
           'Invalid annotation without a document revision',
         );
@@ -347,7 +347,7 @@ export class ArtifactStates {
       answers: draft.answers,
       annotations,
       attachments,
-      notification: `Blueprint artifact ${artifact.id} has saved state ${id}. Read read_artifact(artifactId="${artifact.id}", part="state", savedStateId="${id}"). This does not authorize implementation.`,
+      notification: `Projector artifact ${artifact.id} has saved state ${id}. Read read_artifact(artifactId="${artifact.id}", part="state", savedStateId="${id}"). This does not authorize implementation.`,
       implementationAuthorized: false,
     };
     const manifest = { ...snapshot, operationKey: key, operationHash: intentHash };
@@ -360,7 +360,7 @@ export class ArtifactStates {
   }
   context(state: SavedState) {
     return (
-      `# Blueprint saved state\n\nArtifact: ${state.artifactId}\nState: ${state.id}\nOrigin session: ${state.originSession.sessionId}\nImplementation authorization: none\n\n## Answers\n\n${JSON.stringify(state.answers, null, 2)}\n\n## Annotations\n\n` +
+      `# Projector saved state\n\nArtifact: ${state.artifactId}\nState: ${state.id}\nOrigin session: ${state.originSession.sessionId}\nImplementation authorization: none\n\n## Answers\n\n${JSON.stringify(state.answers, null, 2)}\n\n## Annotations\n\n` +
       state.annotations
         .map(
           (a) =>
@@ -372,7 +372,7 @@ export class ArtifactStates {
   async attachment(artifactId: string, savedStateId: string, attachmentId: string) {
     const state = await this.read(artifactId, savedStateId);
     const ref = state?.attachments.find((a) => a.id === attachmentId);
-    if (!ref) throw new BlueprintError('UNKNOWN_ATTACHMENT', 'Unknown saved attachment');
+    if (!ref) throw new ProjectorError('UNKNOWN_ATTACHMENT', 'Unknown saved attachment');
     const artifact = await this.store.artifact(artifactId);
     const root = await this.store.artifactRoot(artifact);
     const stateRoot = await inside(root, join(root, 'states', savedStateId));
@@ -382,10 +382,10 @@ export class ArtifactStates {
   }
   async capture(artifactId: string, capture: Capture) {
     if (!capture.png || capture.png.length > 24_000_000 || !/^[A-Za-z0-9+/=]+$/.test(capture.png))
-      throw new BlueprintError('INVALID_CAPTURE', 'Invalid captured image');
+      throw new ProjectorError('INVALID_CAPTURE', 'Invalid captured image');
     const bytes = Buffer.from(capture.png, 'base64');
     if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
-      throw new BlueprintError('INVALID_CAPTURE', 'Expected a PNG capture');
+      throw new ProjectorError('INVALID_CAPTURE', 'Expected a PNG capture');
     const path = beneath(this.store.data, 'captures', artifactId, capture.id + '.png');
     // Private PNGs have an immutable capture identity. Never overwrite a referenced image.
     const { open } = await import('node:fs/promises');
@@ -401,7 +401,7 @@ export class ArtifactStates {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       if (!(await readFile(path)).equals(bytes))
-        throw new BlueprintError(
+        throw new ProjectorError(
           'OPERATION_CONFLICT',
           'Capture ID already belongs to different pixels',
         );

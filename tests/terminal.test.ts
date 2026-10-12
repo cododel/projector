@@ -218,7 +218,7 @@ it('does not persist launch arguments or environment credentials and deduplicate
     kind: 'shell' as const,
     executable: '/bin/sh',
     args: ['-c', '# launch-only-secret\nread line'],
-    env: { BLUEPRINT_FIXTURE_SECRET: 'synthetic-auth-token' },
+    env: { PROJECTOR_FIXTURE_SECRET: 'synthetic-auth-token' },
     operationId: 'same-create',
   };
   const [a, b] = await Promise.all([service.create(input), service.create(input)]);
@@ -228,7 +228,7 @@ it('does not persist launch arguments or environment credentials and deduplicate
   const disk = await readFile(join(data, 'terminals', 'catalog.json'), 'utf8');
   expect(disk).not.toContain('launch-only-secret');
   expect(disk).not.toContain('synthetic-auth-token');
-  expect(disk).not.toContain('BLUEPRINT_FIXTURE_SECRET');
+  expect(disk).not.toContain('PROJECTOR_FIXTURE_SECRET');
   expect(disk).not.toContain('"pid"');
   await expect(service.create(input)).rejects.toMatchObject({ code: 'TERMINAL_PROCESS_ENDED' });
   expect(service.snapshot()).toEqual([]);

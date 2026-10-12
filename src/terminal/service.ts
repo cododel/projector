@@ -7,14 +7,14 @@ import type {
   TerminalOutput,
   TerminalRequest,
 } from '../shared/terminal';
-const data = process.env.BLUEPRINT_DATA;
-if (!data || !process.parentPort) throw new Error('Terminal service must be launched by Blueprint');
+const data = process.env.PROJECTOR_DATA;
+if (!data || !process.parentPort) throw new Error('Terminal service must be launched by Projector');
 let pendingBytes = 0;
 const sent = new Map<string, number>();
 const gaps = new Map<string, TerminalOutput>();
 const send = (message: TerminalMessage) => process.parentPort?.postMessage(message);
-const initialOptions: TerminalOptions = process.env.BLUEPRINT_TERMINAL_OPTIONS
-  ? JSON.parse(process.env.BLUEPRINT_TERMINAL_OPTIONS)
+const initialOptions: TerminalOptions = process.env.PROJECTOR_TERMINAL_OPTIONS
+  ? JSON.parse(process.env.PROJECTOR_TERMINAL_OPTIONS)
   : {};
 const engine = new TerminalService(
   data,

@@ -20,7 +20,7 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock') },
+      env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 's.sock') },
     });
   app = await launch();
   await app.evaluate(({ session }) => {
@@ -35,12 +35,12 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   await expect(utilities.getByRole('img', { name: 'Local runtime active' })).toBeVisible();
   const footerBounds = (await utilities.boundingBox())!;
   expect(footerBounds.height).toBeLessThanOrEqual(112);
-  const buttonBounds = await Promise.all(['Settings', 'Blueprint guide', 'MCP connection'].map(name => utilities.getByRole('button', { name, exact: true }).boundingBox()));
+  const buttonBounds = await Promise.all(['Settings', 'Projector guide', 'MCP connection'].map(name => utilities.getByRole('button', { name, exact: true }).boundingBox()));
   expect(buttonBounds.every(bounds => bounds!.x === buttonBounds[0]!.x && bounds!.height === 32)).toBe(true);
   await page.screenshot({ path: '.tmp/tasks/sidebar-footer-20261012/footer.png' });
 
-  await page.getByRole('button', { name: 'Blueprint guide', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toContainText(
+  await page.getByRole('button', { name: 'Projector guide', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Projector guide' })).toContainText(
     'Available offline',
   );
   await page
@@ -53,15 +53,15 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   await expect(page.getByRole('combobox', { name: 'Guide topic or reference' })).toBeVisible();
   await expect(
     page
-      .getByRole('dialog', { name: 'Blueprint guide' })
+      .getByRole('dialog', { name: 'Projector guide' })
       .getByRole('button', { name: 'Close', exact: true }),
   ).toBeVisible();
   await mkdir(resolve('.tmp/tasks/stage-completion-20261011'), { recursive: true });
-  const guideBounds = await page.getByRole('dialog', { name: 'Blueprint guide' }).boundingBox();
+  const guideBounds = await page.getByRole('dialog', { name: 'Projector guide' }).boundingBox();
   const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
   expect(guideBounds!.x).toBeGreaterThanOrEqual(0);
   expect(guideBounds!.x + guideBounds!.width).toBeLessThanOrEqual(viewport.width + 1);
-  await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toHaveCSS('opacity', '1');
+  await expect(page.getByRole('dialog', { name: 'Projector guide' })).toHaveCSS('opacity', '1');
   const guideImage = await app.evaluate(async ({ BrowserWindow }) =>
     (await BrowserWindow.getAllWindows()[0].webContents.capturePage()).toPNG().toString('base64'),
   );
@@ -73,14 +73,14 @@ test('offline guide, folder relocation and copy conflict preserve the original p
     BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1),
   );
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Blueprint guide', exact: true })).toBeFocused();
-  await page.getByRole('button', { name: 'Blueprint guide', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Projector guide' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Projector guide', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Projector guide', exact: true }).click();
   await page.locator('.guide-content').click();
-  await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Projector guide' })).toBeVisible();
   await page.locator('.modal-backdrop').click({ position: { x: 8, y: 60 } });
-  await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Blueprint guide', exact: true })).toBeFocused();
+  await expect(page.getByRole('dialog', { name: 'Projector guide' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Projector guide', exact: true })).toBeFocused();
   await page.getByRole('button', { name: 'MCP connection', exact: true }).click();
   await page.getByRole('dialog', { name: 'MCP connection' }).getByRole('heading').click();
   await expect(page.getByRole('dialog', { name: 'MCP connection' })).toBeVisible();
@@ -93,13 +93,13 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   mcp = new Mcp(join(root, 's.sock'));
   await mcp.initialize();
-  const context = await mcp.tool('get_blueprint_context', {});
+  const context = await mcp.tool('get_projector_context', {});
   expect(context.capabilities).toMatchObject({
     limits: { version: '1', compileTimeoutMs: 30000, captureTimeoutMs: 10000 },
   });
   const a = await mcp.tool('create_artifact', {
     projectId: (context.project as { id: string }).id,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'Original plan',
     originSession: { harness: 'codex', sessionId: 'original' },
     operationId: randomUUID(),
@@ -155,8 +155,8 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   await expect(page.getByText('No plans yet', {exact: true})).toBeVisible();
   const copied = await page.evaluate(async () => {
     const bridge = (window as unknown as {
-      blueprint: { invoke(name: string): Promise<unknown> };
-    }).blueprint;
+      projector: { invoke(name: string): Promise<unknown> };
+    }).projector;
     return {
       runtime: await bridge.invoke('snapshot'),
       application: await bridge.invoke('applicationSnapshot'),
@@ -187,8 +187,8 @@ test('version summary and approval revocation are visible and separate from Save
     args: [resolve('.')],
     env: {
       ...process.env,
-      BLUEPRINT_DATA: join(root, 'data'),
-      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
+      PROJECTOR_DATA: join(root, 'data'),
+      PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
     },
   });
   const page = await app.firstWindow();
@@ -201,10 +201,10 @@ test('version summary and approval revocation are visible and separate from Save
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   mcp = new Mcp(join(root, 's.sock'));
   await mcp.initialize();
-  const context = await mcp.tool('get_blueprint_context', {});
+  const context = await mcp.tool('get_projector_context', {});
   const a = await mcp.tool('create_artifact', {
     projectId: (context.project as { id: string }).id,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'Agreement',
     originSession: { harness: 'codex', sessionId: 'agreement' },
     operationId: randomUUID(),
@@ -253,7 +253,7 @@ test('version summary and approval revocation are visible and separate from Save
     'approved',
     'revoked',
   ]);
-  if (process.env.BLUEPRINT_E2E_VISIBLE === '1') {
+  if (process.env.PROJECTOR_E2E_VISIBLE === '1') {
     await frame.getByRole('textbox', { name: 'Reason' }).fill('Private renderer recovery');
     await expect(page.getByText('Unsaved working changes', { exact: false })).toBeVisible();
     await app.evaluate(
@@ -281,7 +281,7 @@ test('version summary and approval revocation are visible and separate from Save
         app.evaluate(({ BrowserWindow }) => {
           const shell = BrowserWindow.getAllWindows()[0].webContents;
           const document = shell.mainFrame.frames.find((frame) =>
-            frame.url.startsWith('blueprint://document'),
+            frame.url.startsWith('projector://document'),
           );
           return (
             document?.executeJavaScript("document.querySelector('textarea')?.value ?? ''") ?? ''
@@ -302,8 +302,8 @@ test('a failed Save retry remains bound to its own artifact when another plan is
     args: [resolve('.')],
     env: {
       ...process.env,
-      BLUEPRINT_DATA: join(root, 'data'),
-      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
+      PROJECTOR_DATA: join(root, 'data'),
+      PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 's.sock'),
     },
   });
   const page = await app.firstWindow();
@@ -316,12 +316,12 @@ test('a failed Save retry remains bound to its own artifact when another plan is
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   mcp = new Mcp(join(root, 's.sock'));
   await mcp.initialize();
-  const context = await mcp.tool('get_blueprint_context', {});
+  const context = await mcp.tool('get_projector_context', {});
   const plans = [];
   for (const title of ['Plan A', 'Plan B']) {
     const a = await mcp.tool('create_artifact', {
       projectId: (context.project as { id: string }).id,
-      kind: 'blueprint',
+      kind: 'projector',
       title,
       originSession: { harness: 'codex', sessionId: title.replaceAll(' ', '-') },
       operationId: randomUUID(),

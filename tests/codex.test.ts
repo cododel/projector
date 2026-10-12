@@ -33,8 +33,8 @@ async function setup(extra: Record<string, string> = {}) {
       ...extra,
     }),
     getMcpOverrides: () => ({
-      'mcp_servers.blueprint.command': 'bridge',
-      'mcp_servers.blueprint.env.BLUEPRINT_DESCRIPTOR': join(root, 'descriptor.json'),
+      'mcp_servers.projector.command': 'bridge',
+      'mcp_servers.projector.env.PROJECTOR_DESCRIPTOR': join(root, 'descriptor.json'),
     }),
     onIdentity: (terminalId, sessionId) => identities.push({ terminalId, sessionId }),
     onError: (error) => errors.push(error),
@@ -80,7 +80,7 @@ async function until(predicate: () => boolean) {
 }
 async function controlGateway(launch: CodexLaunch) {
   const socket = new WebSocket(launch.args[launch.args.indexOf('--remote') + 1], {
-    headers: { Authorization: `Bearer ${launch.env.BLUEPRINT_CODEX_REMOTE_TOKEN}` },
+    headers: { Authorization: `Bearer ${launch.env.PROJECTOR_CODEX_REMOTE_TOKEN}` },
   });
   await new Promise<void>((done, reject) => {
     socket.once('open', done);
@@ -108,7 +108,7 @@ async function controlGateway(launch: CodexLaunch) {
   };
   return { socket, call, status: (params: unknown) => call('fixture/mcp-status', params) };
 }
-it('observes validated Blueprint MCP startup only from its owned upstream and exact thread', async () => {
+it('observes validated Projector MCP startup only from its owned upstream and exact thread', async () => {
   const { manager, project } = await setup();
   expect(manager.snapshot().mcpStartup).toEqual([]);
   const launch = await manager.launchNew('project', project);
@@ -122,18 +122,18 @@ it('observes validated Blueprint MCP startup only from its owned upstream and ex
   });
   expect(current().observedAt).toBeUndefined();
   await gateway.status({ name: 'other', status: 'ready', threadId: null });
-  await gateway.status({ name: 'blueprint', status: 'connected', threadId: null });
-  await gateway.status({ name: 'blueprint', status: 'failed', error: { message: 'invalid' } });
+  await gateway.status({ name: 'projector', status: 'connected', threadId: null });
+  await gateway.status({ name: 'projector', status: 'failed', error: { message: 'invalid' } });
   gateway.socket.send(
     JSON.stringify({
       method: 'mcpServer/startupStatus/updated',
-      params: { name: 'blueprint', status: 'ready', threadId: null },
+      params: { name: 'projector', status: 'ready', threadId: null },
     }),
   );
   await gateway.call('initialize');
   expect(current().status).toBe('unknown');
-  await gateway.status({ name: 'blueprint', status: 'ready', threadId: 'unrelated-thread' });
-  await gateway.status({ name: 'blueprint', status: 'starting', threadId: 'thread-exact-fixture' });
+  await gateway.status({ name: 'projector', status: 'ready', threadId: 'unrelated-thread' });
+  await gateway.status({ name: 'projector', status: 'starting', threadId: 'thread-exact-fixture' });
   expect(current().status).toBe('unknown');
   await gateway.call('thread/start', { ephemeral: false, threadSource: 'user', cwd: project });
   await until(() => current().sessionId === 'thread-exact-fixture');
@@ -143,18 +143,18 @@ it('observes validated Blueprint MCP startup only from its owned upstream and ex
     terminalId: 'mcp-terminal',
   });
   expect(Number.isNaN(Date.parse(current().observedAt!))).toBe(false);
-  await gateway.status({ name: 'blueprint', status: 'ready', threadId: null });
+  await gateway.status({ name: 'projector', status: 'ready', threadId: null });
   expect(current().status).toBe('ready');
   await gateway.status({
-    name: 'blueprint',
+    name: 'projector',
     status: 'failed',
     threadId: 'unrelated-thread',
     error: 'wrong session',
   });
-  await gateway.status({ name: 'blueprint', status: 'failed', failureReason: 'unsupported' });
+  await gateway.status({ name: 'projector', status: 'failed', failureReason: 'unsupported' });
   expect(current().status).toBe('ready');
   await gateway.status({
-    name: 'blueprint',
+    name: 'projector',
     status: 'failed',
     threadId: 'thread-exact-fixture',
     error: 'Synthetic MCP connection failure',
@@ -166,7 +166,7 @@ it('observes validated Blueprint MCP startup only from its owned upstream and ex
     failureReason: 'reauthenticationRequired',
   });
   await gateway.status({
-    name: 'blueprint',
+    name: 'projector',
     status: 'cancelled',
     threadId: 'thread-exact-fixture',
     error: null,
@@ -186,13 +186,13 @@ it('keeps MCP startup observations separate per launch and ignores older pre-ide
     two = await controlGateway(second);
   const state = (id: string) =>
     manager.snapshot().mcpStartup.find((entry) => entry.launchId === id)!;
-  await one.status({ name: 'blueprint', status: 'starting', threadId: 'thread-exact-fixture' });
-  await one.status({ name: 'blueprint', status: 'ready', threadId: null });
+  await one.status({ name: 'projector', status: 'starting', threadId: 'thread-exact-fixture' });
+  await one.status({ name: 'projector', status: 'ready', threadId: null });
   await one.call('thread/start', { ephemeral: false, threadSource: 'user', cwd: project });
   await until(() => state(first.launchId).sessionId === 'thread-exact-fixture');
   expect(state(first.launchId).status).toBe('ready');
   expect(state(second.launchId).status).toBe('unknown');
-  await two.status({ name: 'blueprint', status: 'failed', error: 'Other owned launch failed' });
+  await two.status({ name: 'projector', status: 'failed', error: 'Other owned launch failed' });
   expect(state(first.launchId).status).toBe('ready');
   expect(state(second.launchId).status).toBe('failed');
   await manager.cancelLaunch(first.launchId);
@@ -349,8 +349,8 @@ it('binds new TUI by the matching root-thread response, rejecting title and unre
   const calls = await auditRequests(audit);
   const backend = calls.find((value) => value.args?.includes('app-server'));
   expect(backend?.args).toContain('--ws-token-sha256');
-  expect(backend?.args?.join(' ')).not.toContain(launch.env.BLUEPRINT_CODEX_REMOTE_TOKEN);
-  expect(backend?.args?.join(' ')).toContain('mcp_servers.blueprint.env.BLUEPRINT_DESCRIPTOR');
+  expect(backend?.args?.join(' ')).not.toContain(launch.env.PROJECTOR_CODEX_REMOTE_TOKEN);
+  expect(backend?.args?.join(' ')).toContain('mcp_servers.projector.env.PROJECTOR_DESCRIPTOR');
   expect(backend?.args?.join(' ')).not.toMatch(/approval_policy|sandbox_mode|trust_level/);
   await manager.terminalStopped('terminal-one');
   expect(manager.snapshot().sessions[0].processState).toBe('stopped');
@@ -404,7 +404,7 @@ it('rejects unauthenticated or browser-origin access to the TUI control gateway'
   for (const headers of [
     {},
     {
-      Authorization: `Bearer ${launch.env.BLUEPRINT_CODEX_REMOTE_TOKEN}`,
+      Authorization: `Bearer ${launch.env.PROJECTOR_CODEX_REMOTE_TOKEN}`,
       Origin: 'https://external.test',
     },
   ]) {
@@ -428,7 +428,7 @@ it('does not launch an unsupported version or accept an override of user policy'
   });
   managers.push(restricted);
   await expect(restricted.launchNew('project', project)).rejects.toThrow(
-    'CODEX_OVERRIDE_NOT_BLUEPRINT_MCP',
+    'CODEX_OVERRIDE_NOT_PROJECTOR_MCP',
   );
 });
 

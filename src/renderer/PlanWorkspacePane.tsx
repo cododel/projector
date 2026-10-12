@@ -101,8 +101,8 @@ export function PlanDocumentPane({
         data-pane-id={paneId}
         sandbox="allow-scripts allow-same-origin"
         className="document-frame"
-        title="Blueprint document"
-        src={`blueprint://document/index.html?surface=1&artifactId=${encodeURIComponent(content.artifactId)}&revisionId=${encodeURIComponent(revisionId ?? '')}&paneId=${encodeURIComponent(paneId)}&shellOrigin=${encodeURIComponent(window.location.origin)}`}
+        title="Projector document"
+        src={`projector://document/index.html?surface=1&artifactId=${encodeURIComponent(content.artifactId)}&revisionId=${encodeURIComponent(revisionId ?? '')}&paneId=${encodeURIComponent(paneId)}&shellOrigin=${encodeURIComponent(window.location.origin)}`}
         onLoad={() => {
           if (frame.current)
             register(paneId, {

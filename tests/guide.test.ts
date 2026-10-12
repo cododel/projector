@@ -7,7 +7,7 @@ describe('bundled agent guidance', () => {
   it('delivers purpose, discovery and authority boundaries in the first 512 ASCII characters', () => {
     expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(512);
     expect(Buffer.byteLength(SERVER_INSTRUCTIONS, 'ascii')).toBe(SERVER_INSTRUCTIONS.length);
-    expect(SERVER_INSTRUCTIONS.slice(0, 512)).toContain('get_blueprint_guide(topic="overview")');
+    expect(SERVER_INSTRUCTIONS.slice(0, 512)).toContain('get_projector_guide(topic="overview")');
     expect(SERVER_INSTRUCTIONS).toContain('Draft feedback is private until Save');
     expect(SERVER_INSTRUCTIONS).toContain('approval does not authorize implementation');
   });

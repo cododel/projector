@@ -17,7 +17,7 @@ describe('external browser boundaries', () => {
 
   it.each([
     'file:///etc/passwd',
-    'blueprint://app/index.html',
+    'projector://app/index.html',
     'javascript:alert(1)',
     'data:text/html,test',
     'https://user:password@example.org',
@@ -29,7 +29,7 @@ describe('external browser boundaries', () => {
   it('isolates persistent browser profiles by project, preserving the same project identity', () => {
     expect(browserPartition('checkout-one')).toBe(browserPartition('checkout-one'));
     expect(browserPartition('checkout-one')).not.toBe(browserPartition('checkout-two'));
-    expect(browserPartition('checkout-one')).toMatch(/^persist:blueprint-browser-[a-f0-9]+$/);
+    expect(browserPartition('checkout-one')).toMatch(/^persist:projector-browser-[a-f0-9]+$/);
   });
 
   it('keeps annotation coordinates in the captured viewport rather than current window dimensions', () => {
@@ -55,4 +55,22 @@ describe('external browser boundaries', () => {
       safeBrowserBounds({ x: Infinity, y: 0, width: 10, height: 10 }, { width: 1000, height: 700 }),
     ).toThrow('INVALID_BOUNDS');
   });
+});
+
+it('reuses an existing legacy browser partition without changing project isolation', async () => {
+  const { mkdtemp, mkdir, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const data = await mkdtemp(join(tmpdir(), 'projector-profile-'));
+  try {
+    const current = browserPartition('legacy-project');
+    const old = current.replace('projector-browser-', 'blueprint-browser-');
+    await mkdir(join(data, 'Partitions', old.slice('persist:'.length)), { recursive: true });
+    expect(browserPartition('legacy-project', data)).toBe(old);
+    expect(browserPartition('other-project', data)).toMatch(/^persist:projector-browser-/);
+    await mkdir(join(data, 'Partitions', current.slice('persist:'.length)), { recursive: true });
+    expect(() => browserPartition('legacy-project', data)).toThrow('BROWSER_PROFILE_CONFLICT');
+  } finally {
+    await rm(data, { recursive: true, force: true });
+  }
 });

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 // The local provider supplies a final response, but never constructs the request.
 // This observes the real client's model boundary, independently of MCP initialize
 // and independently of whether a model follows the delivered instructions.
-test('Codex delivers Blueprint server instructions to its model request without credentials', async () => {
+test('Codex delivers Projector server instructions to its model request without credentials', async () => {
   const testInfo = test.info();
   test.setTimeout(60000);
   const root = await mkdtemp(join(tmpdir(), 'bp-instructions-'));
@@ -84,22 +84,22 @@ test('Codex delivers Blueprint server instructions to its model request without 
   try {
     app = await electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: join(root, 'data'), BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+      env: { ...process.env, PROJECTOR_DATA: join(root, 'data'), PROJECTOR_RUNTIME_DESCRIPTOR: socket },
     });
     await app.firstWindow();
     const overrides = {
-      model_provider: 'blueprint_delivery_probe',
+      model_provider: 'projector_delivery_probe',
       model: 'gpt-5.4',
-      'model_providers.blueprint_delivery_probe.name': 'Local delivery probe',
-      'model_providers.blueprint_delivery_probe.base_url': `http://127.0.0.1:${address.port}/v1`,
-      'model_providers.blueprint_delivery_probe.wire_api': 'responses',
-      'model_providers.blueprint_delivery_probe.requires_openai_auth': false,
-      'model_providers.blueprint_delivery_probe.request_max_retries': 0,
-      'model_providers.blueprint_delivery_probe.stream_max_retries': 0,
-      'model_providers.blueprint_delivery_probe.stream_idle_timeout_ms': 10000,
-      'mcp_servers.blueprint.command': process.execPath,
-      'mcp_servers.blueprint.args': [resolve('out/bridge.cjs')],
-      'mcp_servers.blueprint.env.BLUEPRINT_RUNTIME_DESCRIPTOR': socket,
+      'model_providers.projector_delivery_probe.name': 'Local delivery probe',
+      'model_providers.projector_delivery_probe.base_url': `http://127.0.0.1:${address.port}/v1`,
+      'model_providers.projector_delivery_probe.wire_api': 'responses',
+      'model_providers.projector_delivery_probe.requires_openai_auth': false,
+      'model_providers.projector_delivery_probe.request_max_retries': 0,
+      'model_providers.projector_delivery_probe.stream_max_retries': 0,
+      'model_providers.projector_delivery_probe.stream_idle_timeout_ms': 10000,
+      'mcp_servers.projector.command': process.execPath,
+      'mcp_servers.projector.args': [resolve('out/bridge.cjs')],
+      'mcp_servers.projector.env.PROJECTOR_RUNTIME_DESCRIPTOR': socket,
     };
     child = spawn(
       'codex',
@@ -157,7 +157,7 @@ test('Codex delivers Blueprint server instructions to its model request without 
     expect(authorizationPresent).toBe(false);
     const delivered = JSON.stringify(requests[0]);
     expect(delivered, 'MCP server instructions must reach the actual model request').toContain(
-      'Blueprint supports visual planning and agreement through MDX plans, widgets and annotations.',
+      'Projector unites projects, agents and tools. Use its MDX plans, widgets and annotations',
     );
     expect(delivered).toContain(
       'Draft feedback is private until Save; approval does not authorize implementation.',

@@ -14,7 +14,7 @@ test('document area capture stays private until Save and opens its numbered froz
   await mkdir(project);
   const app = await electron.launch({
     args: [resolve('.')],
-    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+    env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
   });
   let mcp: Mcp | undefined;
   try {
@@ -57,10 +57,10 @@ test('document area capture stays private until Save and opens its numbered froz
     await page.getByRole('button', { name: '+ Open project folder' }).click();
     mcp = new Mcp(socket);
     await mcp.initialize();
-    const context = await mcp.tool('get_blueprint_context', {});
+    const context = await mcp.tool('get_projector_context', {});
     const a = await mcp.tool('create_artifact', {
       projectId: (context.project as { id: string }).id,
-      kind: 'blueprint',
+      kind: 'projector',
       title: 'Captured plan',
       originSession: { harness: 'codex', sessionId: 'area-session' },
       operationId: randomUUID(),

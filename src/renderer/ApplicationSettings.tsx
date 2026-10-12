@@ -253,7 +253,7 @@ export function ApplicationSettings({
               <>
                 {row(
                   'Codex executable',
-                  'Blueprint changes launch parameters only; your Codex policies and login stay intact.',
+                  'Projector changes launch parameters only; your Codex policies and login stay intact.',
                   <input
                     aria-label="Codex executable"
                     value={draft.codexExecutable}
@@ -278,12 +278,12 @@ export function ApplicationSettings({
                   <p role="alert">{harnesses.compatibility.error}</p>
                 )}
                 <p className="muted">
-                  MCP startup status is observed from Blueprint-owned Codex backends. Startup ready
+                  MCP startup status is observed from Projector-owned Codex backends. Startup ready
                   does not prove that a connection remains healthy or that an agent read a saved
                   state.
                 </p>
                 {harnesses.mcpStartup.length ? (
-                  <ul aria-label="Blueprint MCP startup status">
+                  <ul aria-label="Projector MCP startup status">
                     {harnesses.mcpStartup.map((connection) => (
                       <li key={connection.launchId}>
                         <strong>{connection.sessionId ?? 'New session'}</strong>

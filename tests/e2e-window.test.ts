@@ -37,10 +37,10 @@ describe('test window mode', () => {
 
   test('normal and explicitly visible launches retain their original window behavior', () => {
     const options = { show: true, focusable: true, webPreferences: { backgroundThrottling: true } };
-    vi.stubEnv('BLUEPRINT_E2E_BACKGROUND', undefined);
+    vi.stubEnv('PROJECTOR_E2E_BACKGROUND', undefined);
     try {
       expect(e2eWindowOptions(options)).toBe(options);
-      vi.stubEnv('BLUEPRINT_E2E_BACKGROUND', '0');
+      vi.stubEnv('PROJECTOR_E2E_BACKGROUND', '0');
       expect(e2eWindowOptions(options)).toBe(options);
     } finally {
       vi.unstubAllEnvs();
@@ -50,7 +50,7 @@ describe('test window mode', () => {
   test('a recorded native focus violation fails the suite even after the window is gone', async () => {
     const root = await mkdtemp(join(tmpdir(), 'bp-window-audit-'));
     const path = join(root, 'windows.jsonl');
-    vi.stubEnv('BLUEPRINT_E2E_WINDOW_AUDIT', path);
+    vi.stubEnv('PROJECTOR_E2E_WINDOW_AUDIT', path);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       await writeFile(path, JSON.stringify({ event: 'window-focus', pid: 1, windowId: 2 }) + '\n');

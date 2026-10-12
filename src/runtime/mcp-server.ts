@@ -1,9 +1,9 @@
 import { Server, type Tool, type CallToolResult } from '@modelcontextprotocol/server';
 import { z, ZodError } from 'zod';
-import { BlueprintError, type RpcResponse } from '../shared/protocol';
+import { ProjectorError, type RpcResponse } from '../shared/protocol';
 import { storageError } from './files';
 
-export interface BlueprintHello {
+export interface ProjectorHello {
   version: string;
   instructions: string;
   tools: Tool[];
@@ -28,7 +28,7 @@ const helloSchema = z.object({
     }),
   ),
 });
-export function parseBlueprintHello(value: unknown): BlueprintHello {
+export function parseProjectorHello(value: unknown): ProjectorHello {
   return helloSchema.parse(value);
 }
 
@@ -39,10 +39,10 @@ export function operationError(error: unknown): NonNullable<RpcResponse['error']
   const value =
     storageError(error) ??
     (typed?.code === 'INVALID_INPUT'
-      ? new BlueprintError(typed.code, typed.message, {
+      ? new ProjectorError(typed.code, typed.message, {
           guideReference: typed.guideReference ?? 'overview',
         })
-      : new BlueprintError(
+      : new ProjectorError(
           error instanceof ZodError ? 'INVALID_INPUT' : 'OPERATION_FAILED',
           error instanceof ZodError
             ? 'Request does not match the operation schema'
@@ -65,13 +65,19 @@ export function mcpError(error: unknown): CallToolResult {
 }
 
 /** The public allowlist contains tools only; operator operations never enter this factory. */
-export function createBlueprintMcpServer(
-  hello: BlueprintHello,
+export function createProjectorMcpServer(
+  hello: ProjectorHello,
   call: (name: string, args: unknown) => Promise<CallToolResult>,
 ): Server {
   const names = new Set(hello.tools.map((tool) => tool.name));
+  const aliases: Record<string, string> = {
+    get_blueprint_guide: 'get_projector_guide',
+    get_blueprint_context: 'get_projector_context',
+    get_projector_guide: 'get_blueprint_guide',
+    get_projector_context: 'get_blueprint_context',
+  };
   const server = new Server(
-    { name: 'blueprint', version: hello.version },
+    { name: 'projector', version: hello.version },
     {
       instructions: hello.instructions,
       capabilities: { tools: {} },
@@ -79,10 +85,13 @@ export function createBlueprintMcpServer(
   );
   server.setRequestHandler('tools/list', async () => ({ tools: hello.tools }));
   server.setRequestHandler('tools/call', async (request) => {
-    if (!names.has(request.params.name))
-      return mcpError(new BlueprintError('UNKNOWN_TOOL', 'Unsupported Blueprint tool.'));
+    const requested = request.params.name;
+    // Respect the actual runtime's advertised tools, including legacy runtimes.
+    const name = names.has(requested) ? requested : (aliases[requested] ?? requested);
+    if (!names.has(name))
+      return mcpError(new ProjectorError('UNKNOWN_TOOL', 'Unsupported Projector tool.'));
     try {
-      return await call(request.params.name, request.params.arguments ?? {});
+      return await call(name, request.params.arguments ?? {});
     } catch (error) {
       return mcpError(error);
     }

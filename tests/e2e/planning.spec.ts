@@ -11,7 +11,7 @@ class Mcp {
   next = 0;
   constructor(socket: string) {
     this.child = spawn(process.execPath, [resolve('out/bridge.cjs')], {
-      env: { ...process.env, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+      env: { ...process.env, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
     });
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       const value = JSON.parse(line) as Record<string, unknown>;
@@ -70,7 +70,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+      env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   const page = await app.firstWindow();
@@ -80,7 +80,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
     'Production build from source',
   );
   await expect(page.getByRole('dialog', { name: 'MCP connection' })).toContainText(
-    `BLUEPRINT_RUNTIME_DESCRIPTOR = ${JSON.stringify(socket)}`,
+    `PROJECTOR_RUNTIME_DESCRIPTOR = ${JSON.stringify(socket)}`,
   );
   await page.getByRole('button', { name: 'Close', exact: true }).click();
   // Exercise native folder choice with a deterministic dialog result.
@@ -91,13 +91,13 @@ test('production Electron + real MCP publication, review, Save, revision and res
   await expect(page.getByText('RECIPIENT SESSION')).toHaveCount(0);
   bridge = new Mcp(socket);
   await bridge.initialize();
-  const guide = await bridge.tool('get_blueprint_guide', {});
-  expect(guide.guideVersion).toBe('0.1.0-alpha.1+guide.10');
-  const context = await bridge.tool('get_blueprint_context', {});
+  const guide = await bridge.tool('get_projector_guide', {});
+  expect(guide.guideVersion).toBe('0.1.0-alpha.1+guide.11');
+  const context = await bridge.tool('get_projector_context', {});
   const projectId = (context.project as { id: string }).id;
   const a = await bridge.tool('create_artifact', {
     projectId,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'Permission policy',
     originSession: { harness: 'codex', sessionId: 'isolated-alpha-session' },
     operationId: randomUUID(),
@@ -131,7 +131,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   await expect(frame.getByRole('heading', { name: 'Permission policy' })).toBeVisible();
   const isolation = await frame.locator('body').evaluate(() => ({
     node: typeof (window as unknown as { process?: unknown }).process,
-    bridge: typeof (window as unknown as { blueprint?: unknown }).blueprint,
+    bridge: typeof (window as unknown as { projector?: unknown }).projector,
   }));
   expect(isolation).toEqual({ node: 'undefined', bridge: 'undefined' });
   const denied = await frame.locator('body').evaluate(
@@ -146,8 +146,8 @@ test('production Electron + real MCP publication, review, Save, revision and res
         };
         window.addEventListener('message', handler);
         window.parent.postMessage(
-          { type: 'blueprint-request', id, method: 'approve', params: {} },
-          'blueprint://app',
+          { type: 'projector-request', id, method: 'approve', params: {} },
+          'projector://app',
         );
       }),
   );
@@ -239,7 +239,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   await expect(page.getByText('In review', { exact: true })).toBeVisible();
   // Close last window: macOS runtime survives and bridge still answers.
   await page.close();
-  expect((await bridge.tool('get_blueprint_guide', {})).guideVersion).toBe('0.1.0-alpha.1+guide.10');
+  expect((await bridge.tool('get_projector_guide', {})).guideVersion).toBe('0.1.0-alpha.1+guide.11');
   bridge.close();
   await app.close();
   app = await launch();
@@ -262,7 +262,7 @@ test('unfinished private annotation survives restart and cannot approve the docu
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+      env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   let page = await app.firstWindow();
@@ -272,10 +272,10 @@ test('unfinished private annotation survives restart and cannot approve the docu
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   bridge = new Mcp(socket);
   await bridge.initialize();
-  const context = await bridge.tool('get_blueprint_context', {});
+  const context = await bridge.tool('get_projector_context', {});
   const artifact = await bridge.tool('create_artifact', {
     projectId: (context.project as { id: string }).id,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'Access policy planning',
     originSession: { harness: 'codex', sessionId: 'editor-session' },
     operationId: randomUUID(),
@@ -314,9 +314,9 @@ test('unfinished private annotation survives restart and cannot approve the docu
       return page.evaluate(async () => {
         const api = (
           window as unknown as {
-            blueprint: { invoke: (name: string, args?: unknown) => Promise<unknown> };
+            projector: { invoke: (name: string, args?: unknown) => Promise<unknown> };
           }
-        ).blueprint;
+        ).projector;
         const snapshot = (await api.invoke('snapshot')) as {
           selected: { artifactId: string; revisionId: string };
         };
@@ -351,7 +351,7 @@ test('overlapping markers, disclosed old-version navigation and private annotati
   const launch = () =>
     electron.launch({
       args: [resolve('.')],
-      env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+      env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
     });
   app = await launch();
   let page = await app.firstWindow();
@@ -361,10 +361,10 @@ test('overlapping markers, disclosed old-version navigation and private annotati
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   bridge = new Mcp(socket);
   await bridge.initialize();
-  const context = await bridge.tool('get_blueprint_context', {});
+  const context = await bridge.tool('get_projector_context', {});
   const a = await bridge.tool('create_artifact', {
     projectId: (context.project as { id: string }).id,
-    kind: 'blueprint',
+    kind: 'projector',
     title:
       'A long artifact title with many words that must remain at most two lines in the compact sidebar',
     originSession: { harness: 'codex', sessionId: 'anchors-test' },
@@ -500,9 +500,9 @@ test('overlapping markers, disclosed old-version navigation and private annotati
       page.evaluate(async () => {
         const api = (
           window as unknown as {
-            blueprint: { invoke(name: string, args?: unknown): Promise<unknown> };
+            projector: { invoke(name: string, args?: unknown): Promise<unknown> };
           }
-        ).blueprint;
+        ).projector;
         const snapshot = (await api.invoke('snapshot')) as { selected: unknown };
         const document = (await api.invoke('getDocument', snapshot.selected)) as {
           editor?: { comment: string };
@@ -566,7 +566,7 @@ test('text markers bind to widget and disclosure state and historical preview ne
   await mkdir(project);
   app = await electron.launch({
     args: [resolve('.')],
-    env: { ...process.env, BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: socket },
+    env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
   });
   const page = await app.firstWindow();
   await app.evaluate(({ dialog }, path) => {
@@ -575,10 +575,10 @@ test('text markers bind to widget and disclosure state and historical preview ne
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   bridge = new Mcp(socket);
   await bridge.initialize();
-  const context = await bridge.tool('get_blueprint_context', {});
+  const context = await bridge.tool('get_projector_context', {});
   const a = await bridge.tool('create_artifact', {
     projectId: (context.project as { id: string }).id,
-    kind: 'blueprint',
+    kind: 'projector',
     title: 'State-bound feedback',
     originSession: { harness: 'codex', sessionId: 'state-bound' },
     operationId: randomUUID(),
@@ -656,8 +656,8 @@ test('text markers bind to widget and disclosure state and historical preview ne
   await expect(frame.locator('.inline-annotation-number')).toHaveCount(1);
   const actual = await page.evaluate(async () => {
     const api = (
-      window as unknown as { blueprint: { invoke(name: string, args?: unknown): Promise<unknown> } }
-    ).blueprint;
+      window as unknown as { projector: { invoke(name: string, args?: unknown): Promise<unknown> } }
+    ).projector;
     const snapshot = (await api.invoke('snapshot')) as { selected: unknown };
     return api.invoke('getDocument', snapshot.selected);
   });

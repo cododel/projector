@@ -20,7 +20,7 @@ async function setup() {
   const a = await store.create({
     projectId: p.id,
     title: 'Stateful plan',
-    kind: 'blueprint',
+    kind: 'projector',
     originSession: { harness: 'codex', sessionId: 'context-session' },
     operationId: randomUUID(),
   });
