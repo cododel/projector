@@ -1,3 +1,4 @@
+import { openProjectOverview } from './workspace-ui';
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -103,13 +104,13 @@ test('production Electron + real MCP publication, review, Save, revision and res
     operationId: randomUUID(),
   });
   // Unpublished entities remain interactive without publishing or accepting answers.
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Permission policy', exact: true }).click();
   const preview = page.frameLocator('iframe');
   await expect(page.getByRole('heading', { name: 'Waiting for your agent' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy message for agent' })).toBeVisible();
   await writeFile(join(String(a.sourcePath), 'plan.mdx'), 'import unsafe from "unsafe";');
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Permission policy', exact: true }).click();
   await expect(preview.getByRole('alert')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
@@ -244,7 +245,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   await app.close();
   app = await launch();
   const restarted = await app.firstWindow();
-  await restarted.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(restarted);
   await restarted.getByRole('button', { name: 'Permission policy', exact: true }).click();
   await expect(
     restarted.frameLocator('iframe').getByLabel('Member', { exact: true }),
@@ -330,7 +331,7 @@ test('unfinished private annotation survives restart and cannot approve the docu
   await app.close();
   app = await launch();
   page = await app.firstWindow();
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Access policy planning', exact: true }).click();
   frame = page.frameLocator('iframe');
   await expect(frame.getByLabel('Annotation comment')).toHaveValue('Keep this unfinished comment');

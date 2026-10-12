@@ -1,3 +1,4 @@
+import { newTerminal } from './workspace-ui';
 import { randomUUID } from 'node:crypto';
 import { test, expect, _electron as electron } from '@playwright/test';
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -213,7 +214,7 @@ test('relocated packaged app uses its own stdio helper without system Node and p
       shell: '/bin/sh',
       shellArgs: ['-i'],
     });
-    await page.getByRole('button', { name: 'New terminal', exact: true }).first().click();
+    await newTerminal(page);
     await expect
       .poll(async () => (await invoke<Application>('applicationSnapshot')).terminals.length)
       .toBe(1);

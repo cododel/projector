@@ -1,3 +1,4 @@
+import { newBrowserTab } from './workspace-ui';
 import { test, expect, _electron as electron } from '@playwright/test';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -29,13 +30,11 @@ test('document area capture stays private until Save and opens its numbered froz
     const sidebarBounds = (await page.locator('.sidebar').boundingBox())!;
     expect(leftBounds.x + leftBounds.width).toBeCloseTo(sidebarBounds.x + sidebarBounds.width, 0);
     expect((await centerTop.boundingBox())!.x).toBeCloseTo(leftBounds.x + leftBounds.width, 0);
-    expect((await rightTop.boundingBox())!.x).toBeCloseTo(
-      (await page.locator('.feedback-panel').boundingBox())!.x,
-      0,
-    );
+    await expect(rightTop).toHaveCount(0);
+    await expect(page.locator('.feedback-panel')).toBeHidden();
 
     await expect(titlebar.getByRole('button', { name: 'Hide projects sidebar' })).toBeVisible();
-    await expect(titlebar.getByRole('button', { name: 'Hide feedback sidebar' })).toBeVisible();
+    await expect(titlebar.getByRole('button', { name: 'Show feedback sidebar' })).toBeDisabled();
     expect(
       await titlebar.evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region')),
     ).toBe('drag');
@@ -223,7 +222,7 @@ test('document area capture stays private until Save and opens its numbered froz
 
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 700));
     for (let i = 0; i < 9; i++) {
-      await titlebar.getByRole('button', { name: 'New tab', exact: true }).click();
+      await newBrowserTab(page);
       await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeFocused();
     }
     await expect(titlebar.getByRole('tab')).toHaveCount(10);

@@ -1,3 +1,4 @@
+import { newBrowserTab } from './workspace-ui';
 import {
   test,
   expect,
@@ -41,10 +42,6 @@ async function applicationSnapshot(page: Page): Promise<ApplicationWorkspaceSnap
   );
 }
 const tabs = (page: Page) => page.getByRole('tablist', { name: 'Workspace tabs' }).getByRole('tab');
-const newTab = (page: Page) =>
-  page
-    .getByRole('toolbar', { name: 'Window toolbar' })
-    .getByRole('button', { name: 'New tab', exact: true });
 async function planTab(
   page: Page,
   artifactId: unknown,
@@ -159,7 +156,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await frame.getByRole('button', { name: 'Annotate', exact: true }).click();
   await frame.getByLabel('Annotation comment', { exact: true }).fill('Private annotation');
   // Tab transition finalizes the editor, waits for private persistence, and never publishes.
-  await newTab(page).click();
+  await newBrowserTab(page);
   await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeFocused();
   await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveCount(0);
   await expect(page.locator('.annotation p')).toContainText('Private annotation');
@@ -177,7 +174,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   // Standalone Plans now shares one tabstrip per project. Artifact state stays independent.
   await expect(tabs(page)).toHaveCount(3);
-  await newTab(page).click();
+  await newBrowserTab(page);
   await page.getByRole('textbox', { name: 'New tab address' }).fill('https://example.test/second');
   await page.getByRole('button', { name: 'Open project other', exact: true }).click();
   await expect(page.locator('.project-dashboard')).toBeVisible();
@@ -515,7 +512,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
       return Reflect.apply(original, this, [request, transfer]);
     };
   }, probeFile);
-  await newTab(page).click();
+  await newBrowserTab(page);
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
   await expect(frame.getByLabel('Annotation comment', { exact: true })).toHaveValue(
     'Retry this comment',

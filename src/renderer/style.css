@@ -1561,6 +1561,8 @@ svg.annotation-number::after {
 }
 .workspace-pane.active {
   box-shadow: inset 0 0 0 1px #d4dcf8;
+  background: white;
+  color: #28323e;
 }
 .workspace-split.horizontal {
   flex-direction: row;
@@ -1585,54 +1587,6 @@ svg.annotation-number::after {
 .pane-divider:focus-visible {
   background: var(--accent);
   outline: none;
-}
-.workspace-tools {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 33px;
-  padding: 3px 8px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  min-width: 0;
-  font-size: 10px;
-}
-.workspace-tools > span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--muted);
-}
-.workspace-tools button {
-  font-size: 10px;
-  padding: 4px 5px;
-  white-space: nowrap;
-}
-.terminal-list {
-  position: relative;
-}
-.terminal-list summary {
-  cursor: pointer;
-  white-space: nowrap;
-}
-.terminal-list > div {
-  position: absolute;
-  right: 0;
-  top: 25px;
-  width: 240px;
-  padding: 6px;
-  background: white;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 24px #26314220;
-  z-index: 25;
-}
-.terminal-list > div button {
-  display: block;
-  width: 100%;
-  text-align: left;
 }
 .terminal-pane {
   display: flex;
@@ -1799,6 +1753,21 @@ svg.annotation-number::after {
   max-width: 100%;
   font-size: 12px;
 }
+.session-home {
+  background: white;
+  color: #28323e;
+}
+.session-home h2 { margin: 0; font-size: 18px; }
+.session-summary { margin: 0; font-size: 12px; }
+.session-details { width: min(360px, 100%); font-size: 12px; }
+.session-details summary { cursor: pointer; text-align: center; color: var(--muted); }
+.session-details button { font-size: 11px; margin-right: 8px; }
+.titlebar-workspace-actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; -webkit-app-region: no-drag; }
+.workspace-menu { position: relative; flex-shrink: 0; -webkit-app-region: no-drag; }
+.workspace-menu > button, .titlebar-workspace-actions > button { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; }
+.workspace-actions-menu { position: fixed; right: 0; top: 32px; width: 230px; max-height: min(400px, calc(100vh - 80px)); overflow: auto; padding: 6px; background: white; border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px #26314220; z-index: 60; }
+.workspace-actions-menu button { display: block; width: 100%; padding: 7px 10px; text-align: left; font-size: 12px; white-space: normal; }
+.workspace-actions-menu p { margin: 8px; font-size: 12px; }
 .session-home dt {
   font-weight: 550;
   margin-top: 8px;

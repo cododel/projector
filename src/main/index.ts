@@ -1023,13 +1023,14 @@ void app
         if (!project) throw new Error('PROJECT_NOT_FOUND');
         if (!window || window.isDestroyed()) throw new Error('Project window unavailable');
         const target = window;
-        return new Promise<{ action: 'new' | 'locate' | 'remove' | null }>((resolve) => {
+        return new Promise<{ action: 'new' | 'refresh' | 'locate' | 'remove' | null }>((resolve) => {
           const menu = Menu.buildFromTemplate([
             {
               label: 'New session',
               enabled: project.available !== false,
               click: () => resolve({ action: 'new' }),
             },
+            { label: 'Refresh sessions', click: () => resolve({ action: 'refresh' }) },
             ...(project.available === false
               ? [{ label: 'Locate folder', click: () => resolve({ action: 'locate' }) }]
               : []),

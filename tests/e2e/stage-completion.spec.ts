@@ -1,3 +1,4 @@
+import { openProjectOverview } from './workspace-ui';
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
 import { mkdtemp, mkdir, rm, rename, cp, writeFile, chmod, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -138,7 +139,7 @@ test('offline guide, folder relocation and copy conflict preserve the original p
     };
   });
   await page.getByRole('button', { name: 'Project actions for project', exact: true }).click();
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Original plan', exact: true }).click();
   await expect(page.frameLocator('iframe').getByRole('textbox')).toHaveValue('PRIVATE retained');
   await cp(join(root, 'moved'), join(root, 'copy'), { recursive: true });
@@ -350,7 +351,7 @@ test('a failed Save retry remains bound to its own artifact when another plan is
   } finally {
     await chmod(plans[0].path, 0o755);
   }
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Plan B', exact: true }).click();
   await expect(page.frameLocator('iframe').getByRole('heading', { name: 'Plan B' })).toBeVisible();
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -363,7 +364,7 @@ test('a failed Save retry remains bound to its own artifact when another plan is
   expect(
     (await mcp.tool('read_artifact', { artifactId: plans[1].artifactId, part: 'state' })).content,
   ).toContain(String(plans[1].artifactId));
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Plan A', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Retry Save', exact: true })).toBeVisible();
 });

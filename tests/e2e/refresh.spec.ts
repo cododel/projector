@@ -1,3 +1,4 @@
+import { openProjectOverview } from './workspace-ui';
 import {
   test,
   expect,
@@ -178,7 +179,7 @@ test('refreshes arriving during a plan load coalesce and retain a later MCP publ
     .getByLabel('Decision', { exact: true })
     .fill('Private first answer');
   await comment(page, 'Private first annotation');
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await expect(page.locator('.project-dashboard')).toBeVisible();
   await installGate();
   await arm('snapshot');
@@ -213,7 +214,7 @@ test('refreshes arriving during a plan load coalesce and retain a later MCP publ
   );
   await expect(frame.getByLabel('Decision', { exact: true })).toHaveValue('');
   await expect(page.locator('.annotation')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'First refresh plan', exact: true }).click();
   await expect(frame.getByLabel('Decision', { exact: true })).toHaveValue('Private first answer');
   await expect(page.locator('.annotation p')).toHaveText(['Private first annotation']);
@@ -232,7 +233,7 @@ test('switching drains pending answer and annotation acknowledgements before lea
     .getByLabel('Decision', { exact: true })
     .fill('Pending private answer');
   await held();
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.evaluate(async () => {
     await (
       window as unknown as { projector: { invoke(name: string): Promise<unknown> } }
@@ -245,14 +246,14 @@ test('switching drains pending answer and annotation acknowledgements before lea
   await expect(
     page.frameLocator('iframe').getByRole('heading', { name: 'Second refresh plan' }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'First refresh plan', exact: true }).click();
   await expect(page.frameLocator('iframe').getByLabel('Decision', { exact: true })).toHaveValue(
     'Pending private answer',
   );
   await comment(page, 'Pending private annotation', false);
   await arm('addAnnotation');
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await held();
   expect(await requests('openArtifact')).toHaveLength(0);
   await release();
@@ -266,7 +267,7 @@ test('switching drains pending answer and annotation acknowledgements before lea
   await app.close();
   app = await launch();
   page = await app.firstWindow();
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'First refresh plan', exact: true }).click();
   await expect(page.frameLocator('iframe').getByLabel('Decision', { exact: true })).toHaveValue(
     'Pending private answer',

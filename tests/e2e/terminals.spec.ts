@@ -1,3 +1,4 @@
+import { newTerminal, workspaceAction } from './workspace-ui';
 import {
   test,
   expect,
@@ -135,7 +136,7 @@ async function setup(development = false) {
 
 test('real terminal tabs, nested splits and project terminals keep independent ownership when views close', async () => {
   const { page, projectId, other } = await setup();
-  await page.getByRole('button', { name: 'New terminal', exact: true }).first().click();
+  await newTerminal(page);
   await expect.poll(async () => (await snapshot(page)).terminals.length).toBe(1);
   let value = await snapshot(page);
   const first = value.terminals[0],
@@ -154,12 +155,12 @@ test('real terminal tabs, nested splits and project terminals keep independent o
   await expect.poll(async () => (await screen(page, first.id)).content).toContain('\r\n輸入🙂\r\n');
   expect((await snapshot(page)).terminals[0].pid).toBe(first.pid);
 
-  await page.getByRole('button', { name: 'Split right', exact: true }).click();
+  await workspaceAction(page, 'Split right');
   await expect.poll(async () => (await snapshot(page)).terminals.length).toBe(2);
   value = await snapshot(page);
   const second = value.terminals.find((record) => record.id !== first.id)!;
   const secondPane = terminalPane(value, key, second.id);
-  await page.getByRole('button', { name: 'Split down', exact: true }).click();
+  await workspaceAction(page, 'Split down');
   await expect.poll(async () => (await snapshot(page)).terminals.length).toBe(3);
   value = await snapshot(page);
   const split = value.workspaces[key].tabs[0].root;
@@ -320,7 +321,7 @@ test('renderer reload retains a live PID, Quit removes ended terminals, and Stop
 
 test('development renderer sends real xterm input and renders a live output subscription', async () => {
   const { page } = await setup(true);
-  await page.getByRole('button', { name: 'New terminal', exact: true }).first().click();
+  await newTerminal(page);
   await expect.poll(async () => (await snapshot(page)).terminals.length).toBe(1);
   const value = await snapshot(page),
     terminal = value.terminals[0];

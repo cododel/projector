@@ -1,3 +1,4 @@
+import { expectNewTerminalEnabled, openProjectOverview } from './workspace-ui';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -140,7 +141,7 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
     expect(copied).toContain(`artifactId="${artifact.artifactId}"`);
     expect(copied).toContain(`savedStateId="${savedStateId}"`);
     await expect(page.locator('.terminal-pane.active .xterm-helper-textarea')).toBeFocused();
-    await expect(page.getByRole('button', { name: 'New terminal', exact: true })).toBeEnabled();
+    await expectNewTerminalEnabled(page);
     const current = await snapshot(page);
     expect(current.selectedWorkspace).toBe(`${projectId}/${exact}`);
     const workspace = current.workspaces[current.selectedWorkspace!];
@@ -166,7 +167,7 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
 
   // Historical-state copy follows the same UI path from a different workspace;
   // the selected saved state must remain the first one after a newer Save exists.
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Shared authored plan', exact: true }).click();
   await expect.poll(async () => (await snapshot(page)).selectedWorkspace).toBe(`${projectId}/plans`);
   await page.frameLocator('iframe').getByLabel('Decision', { exact: true }).fill('A newer private saved state');
@@ -189,7 +190,7 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   await history.getByRole('button', { name: 'Copy update message', exact: true }).nth(historicalIndex).click();
   await assertCopied(beforeCopy);
 
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Shared authored plan', exact: true }).click();
   await page.frameLocator('iframe').getByLabel('Decision', { exact: true }).fill('Copy-only saved context');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -209,7 +210,7 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   await expect.poll(() => app!.evaluate(() =>
     (globalThis as unknown as { harnessCopiedText?: string }).harnessCopiedText ?? '',
   )).toContain(`savedStateId="${copyOnlyState}"`);
-  await expect(page.getByRole('button', { name: 'New terminal', exact: true })).toBeEnabled();
+  await expectNewTerminalEnabled(page);
   const afterCopyOnly = await snapshot(page);
   expect(afterCopyOnly.selectedWorkspace).toBe(beforeCopyOnly.selectedWorkspace);
   expect(afterCopyOnly.workspaces[afterCopyOnly.selectedWorkspace!].activePaneId)
@@ -218,7 +219,7 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   // complete, instead of merely acknowledging clipboard before a reload deadlock.
   await page.getByRole('button', { name: 'Toggle project terminals', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Project terminals', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'New terminal', exact: true })).toBeEnabled();
+  await expectNewTerminalEnabled(page);
   await page.getByRole('button', { name: 'Toggle project terminals', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Project terminals', exact: true })).toHaveCount(0);
   await invoke(page, 'terminalScreen', { id: terminal.id });
@@ -271,7 +272,9 @@ test('Resume reports an active writer without starting a terminal or taking over
   await invoke(page, 'applicationCommand', { action: 'closePane', projectId: before.workspaces[key].projectId, key, paneId: paneLeaves(pinned.root)[0].id });
   expect((await snapshot(page)).workspaces[key].tabs).toEqual(before.workspaces[key].tabs);
   await expect(tab).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Close panel', exact: true })).toBeDisabled();
+  await page.getByRole('button', {name:'Workspace actions',exact:true}).click();
+  await expect(page.getByRole('menuitem', { name: 'Close panel', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Resume', exact: true }).click();
   const error = page.locator('.error-banner');
   await expect(error).toContainText('This session is already in use by another Codex process.');

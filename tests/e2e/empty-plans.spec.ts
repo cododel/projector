@@ -1,3 +1,5 @@
+import { newBrowserTab } from './workspace-ui';
+import { openProjectOverview } from './workspace-ui';
 import {
   test,
   expect,
@@ -82,7 +84,7 @@ test('agent-created unpublished plan has native project actions and retains priv
   const expanded = await toggle.getAttribute('aria-expanded');
   await page.getByRole('button', { name: 'Project actions for project', exact: true }).click();
   const dotsMenu = await menuItems();
-  expect(dotsMenu.map((item) => item.label)).toEqual(['New session', '', 'Remove from list']);
+  expect(dotsMenu.map((item) => item.label)).toEqual(['New session', 'Refresh sessions', '', 'Remove from list']);
   await menuAction('');
   await folder.click({ button: 'right' });
   expect(await menuItems()).toEqual(dotsMenu);
@@ -109,14 +111,14 @@ test('agent-created unpublished plan has native project actions and retains priv
   await expect(page.getByRole('button', { name: 'New plan in project', exact: true })).toHaveCount(0);
   const plan = await mcp.tool('create_artifact', {projectId, title: 'Untitled plan', kind: 'projector', originSession, operationId: randomUUID()});
   const artifactId = String(plan.artifactId);
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Untitled plan', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Waiting for your agent' })).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Copy message for agent', exact: true }),
   ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await menuAction('Rename plan');
   await page.getByRole('button', { name: 'Untitled plan', exact: true }).click({ button: 'right' });
   const renameDialog = page.getByRole('dialog', { name: 'Rename plan' });
@@ -139,7 +141,7 @@ test('agent-created unpublished plan has native project actions and retains priv
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Missing server address');
   const url = `http://127.0.0.1:${address.port}/`;
-  await page.getByRole('button', { name: 'New tab', exact: true }).first().click();
+  await newBrowserTab(page);
   await page.getByRole('textbox', { name: 'New tab address' }).fill(url);
   await page.getByRole('textbox', { name: 'New tab address' }).press('Enter');
   await expect(page.getByRole('tab', { name: 'Before document', exact: true })).toBeVisible();
@@ -195,7 +197,7 @@ test('agent-created unpublished plan has native project actions and retains priv
   );
   await page.getByLabel('Edit annotation', { exact: true }).press('Escape');
   await expect(page.getByLabel('Edit annotation', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await page.getByRole('button', { name: 'Research workspace', exact: true }).click();
   await expect(page.getByText('Research before first publication', { exact: true })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Before document', exact: true })).toBeVisible();
@@ -331,6 +333,7 @@ test('agent-created unpublished plan has native project actions and retains priv
   await page.getByRole('button', { name: 'Project actions for project', exact: true }).click();
   expect(await menuItems()).toMatchObject([
     { label: 'New session', enabled: false },
+    { label: 'Refresh sessions', enabled: true },
     { label: 'Locate folder' },
     { type: 'separator' },
     { label: 'Remove from list' },

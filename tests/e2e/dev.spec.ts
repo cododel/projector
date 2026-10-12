@@ -1,3 +1,4 @@
+import { newBrowserTab } from './workspace-ui';
 import { randomUUID } from 'node:crypto';
 import { Mcp } from './mcp';
 import { test, expect, _electron as electron } from '@playwright/test';
@@ -144,7 +145,7 @@ test('development renderer proxy loads the isolated document without production 
       await test.info().attach('development-document', {
         path: documentImage, contentType: 'image/png',
       });
-      await page.getByRole('button', { name: 'New tab', exact: true }).click();
+      await newBrowserTab(page);
       await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeFocused();
       await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveCount(0);
       const homeImage = test.info().outputPath('development-home.png');

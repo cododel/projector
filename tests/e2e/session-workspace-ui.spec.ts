@@ -1,3 +1,4 @@
+import { openProjectOverview, workspaceAction } from './workspace-ui';
 import {
   test,
   expect,
@@ -131,7 +132,7 @@ test('session document views share private answers and annotations while retaini
     .toBeGreaterThan(400);
   const firstWorkspace = (await snapshot(page)).selectedWorkspace!;
   // Leave through the real renderer transition to drain comment and view writes.
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await expect(page.locator('.project-dashboard')).toBeVisible();
   await command('select', { sessionId: 'ui-session-two' });
   await command('openPlan', { artifactId: plan.artifactId, revisionId: plan.first });
@@ -142,7 +143,7 @@ test('session document views share private answers and annotations while retaini
   expect(await frame.locator('body').evaluate(() => window.scrollY)).toBe(0);
   await expect(page.locator('.annotation p')).toContainText('Shared private comment');
   await frame.getByLabel('Shared answer', { exact: true }).fill('Second private value');
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await expect(page.locator('.project-dashboard')).toBeVisible();
   await command('select', { key: firstWorkspace });
   await expect(frame.getByLabel('Shared answer', { exact: true })).toHaveValue(
@@ -156,7 +157,7 @@ test('session document views share private answers and annotations while retaini
     .getByRole('combobox', { name: 'Document version', exact: true })
     .selectOption(plan.second);
   await expect(frame.getByRole('heading', { name: 'Second revision', exact: true })).toBeAttached();
-  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await openProjectOverview(page);
   await expect(page.locator('.project-dashboard')).toBeVisible();
   await command('select', { sessionId: 'ui-session-two' });
   await expect(page.getByRole('combobox', { name: 'Document version', exact: true })).toHaveValue(
@@ -427,8 +428,8 @@ test('native browser and nested shell panels retain actual geometry and obey bef
   await expect(page.getByRole('textbox', { name: 'Browser address', exact: true })).toHaveValue(
     url,
   );
-  await page.getByRole('button', { name: 'Split right', exact: true }).click();
-  await page.getByRole('button', { name: 'Split down', exact: true }).click();
+  await workspaceAction(page, 'Split right');
+  await workspaceAction(page, 'Split down');
   await expect(page.locator('.terminal-pane')).toHaveCount(2);
   const browserPane = page.locator('.browser-area[data-browser-pane]');
   await expect(browserPane).toBeVisible();
@@ -471,13 +472,13 @@ test('native browser and nested shell panels retain actual geometry and obey bef
   await app!.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = () => 1;
   });
-  await page.getByRole('button', { name: 'Close panel', exact: true }).click();
+  await workspaceAction(page, 'Close panel');
   await expect(browserPane).toBeVisible();
   await expect(page.locator('.terminal-pane')).toHaveCount(2);
   await app!.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = () => 0;
   });
-  await page.getByRole('button', { name: 'Close panel', exact: true }).click();
+  await workspaceAction(page, 'Close panel');
   await expect(browserPane).toHaveCount(0);
   await expect(page.locator('.terminal-pane')).toHaveCount(2);
   expect(

@@ -76,9 +76,9 @@ test('session pin persists; archive and undo preserve workspaces and use exact p
   await expect(notice.getByRole('button', { name: 'View', exact: true })).toHaveCount(0);
   await expect(notice).toHaveCSS('opacity', '1');
   const noticeBounds = await notice.boundingBox();
-  const toolbarBounds = await page.getByRole('toolbar', { name: 'Workspace controls', exact: true }).boundingBox();
-  expect(noticeBounds!.y).toBeGreaterThanOrEqual(toolbarBounds!.y);
-  expect(noticeBounds!.y + noticeBounds!.height).toBeLessThanOrEqual(toolbarBounds!.y + toolbarBounds!.height);
+  const toolbarBounds = await page.getByRole('toolbar', { name: 'Window toolbar', exact: true }).boundingBox();
+  expect(noticeBounds!.y).toBeGreaterThanOrEqual(toolbarBounds!.y + toolbarBounds!.height);
+  expect(noticeBounds!.y).toBeLessThanOrEqual(toolbarBounds!.y + toolbarBounds!.height + 8);
   await page.screenshot({ path: '.tmp/tasks/session-actions-20261012/archive-notice.png' });
   await notice.getByRole('button', { name: 'Undo', exact: true }).click();
   await expect(notice).toHaveCount(0);
