@@ -329,6 +329,7 @@ test('application browser composer survives restart, remains private, and Save e
   await app.close();
   app = await launch();
   page = await app.firstWindow();
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Browser planning scenario', exact: true }).click();
   await expect(page.getByRole('tab', { name: 'Plan', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.frameLocator('iframe').getByRole('heading', { name: 'Browser planning scenario' })).toBeVisible();

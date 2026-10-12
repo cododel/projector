@@ -17,6 +17,7 @@ const tabSchema = z.discriminatedUnion('kind', [
   z.object({ id, kind: z.literal('browser'), url: z.string().max(10000), title: z.string().max(10000), nativeId: id.optional() }),
 ]);
 const contentSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('session'), sessionId: id, terminalId: id.optional() }),
   z.object({ kind: z.literal('terminal'), terminalId: id }),
   z.object({ kind: z.literal('plan'), artifactId: id, tab: tabSchema,
     scrollTop: z.number().finite().nonnegative().optional(),
@@ -44,7 +45,7 @@ const sessionSchema = z.object({ projectId: id, sessionId: id.nullable(),
 const bottomSchema = z.object({ tabs: z.array(id), activeTerminalId: id.nullable(),
   visible: z.boolean(), height: z.number().int().min(120).max(800) });
 const schema = z.object({ formatVersion: z.literal(1), settings: applicationSettingsSchema,
-  selectedWorkspace: id.nullable(), workspaces: z.record(id, sessionSchema), bottom: z.record(id, bottomSchema) });
+  selectedWorkspace: id.nullable(), selectedSurface: z.enum(['project', 'workspace']).optional(), pinnedSessionIds: z.array(id).max(10000).optional(), workspaces: z.record(id, sessionSchema), bottom: z.record(id, bottomSchema) });
 
 export function normalizeShortcut(value: string, allowTextInput = false): string {
   const parts = value.split('+').map(part => part.trim());
@@ -73,25 +74,77 @@ export class ApplicationWorkspace {
     // Older text-producing bindings remain readable with the workspace intact.
     // The keyboard boundary ignores them; changing settings requires remapping.
     this.validateSettings(this.value.settings, true);
+    for (const workspace of Object.values(this.value.workspaces)) this.ensureSessionPane(workspace);
     if (!this.value.settings.restoreWorkspace) this.value.selectedWorkspace = null;
   }
   snapshot(): ApplicationWorkspaceSnapshot { return structuredClone(this.value); }
-  restore(value: ApplicationWorkspaceSnapshot) { this.assertConfirmed(); this.value = schema.parse(value); }
+  restore(value: ApplicationWorkspaceSnapshot) {
+    this.assertConfirmed(); this.value = schema.parse(value);
+    for (const workspace of Object.values(this.value.workspaces)) this.ensureSessionPane(workspace);
+  }
   workspace(key: string): SessionWorkspace {
     const workspace = this.value.workspaces[key];
     if (!workspace) throw new Error('WORKSPACE_NOT_FOUND');
     return workspace;
+  }
+  pinSession(sessionId: string, pinned: boolean) {
+    this.assertConfirmed(); id.parse(sessionId);
+    const ids = this.value.pinnedSessionIds ?? [];
+    this.value.pinnedSessionIds = ids.filter(value => value !== sessionId);
+    if (pinned) this.value.pinnedSessionIds.push(sessionId);
   }
   select(projectId: string, sessionId: string | null): string {
     this.assertConfirmed();
     id.parse(projectId); if (sessionId !== null) id.parse(sessionId);
     const key = workspaceKey(projectId, sessionId);
     this.value.workspaces[key] ??= { projectId, sessionId, tabs: [], activeTabId: null, activePaneId: null };
+    this.ensureSessionPane(this.value.workspaces[key]);
     this.value.selectedWorkspace = key;
+    this.value.selectedSurface = 'workspace';
     return key;
+  }
+  showProject(projectId: string) {
+    const key = this.select(projectId, null);
+    this.value.selectedSurface = 'project';
+    return key;
+  }
+  private ensureSessionPane(workspace: SessionWorkspace) {
+    if (workspace.sessionId === null) return;
+    const existing = workspace.tabs.flatMap(tab => paneLeaves(tab.root)).filter(pane => pane.content.kind === 'session');
+    const pane = existing[0] ?? { kind: 'pane' as const, id: randomUUID(),
+      content: { kind: 'session' as const, sessionId: workspace.sessionId } };
+    if (pane.content.kind === 'session') pane.content.sessionId = workspace.sessionId;
+    for (const duplicate of existing.slice(1)) this.removePane(workspace, duplicate.id);
+    let tab = workspace.tabs.find(tab => paneLeaves(tab.root).some(item => item.id === pane.id));
+    if (!tab) { tab = { id: randomUUID(), root: pane }; workspace.tabs.unshift(tab); }
+    else { workspace.tabs = [tab, ...workspace.tabs.filter(item => item !== tab)]; }
+    if (!workspace.tabs.some(item => item.id === workspace.activeTabId)) workspace.activeTabId = tab.id;
+    const active = workspace.tabs.find(item => item.id === workspace.activeTabId)!;
+    if (!paneLeaves(active.root).some(item => item.id === workspace.activePaneId)) workspace.activePaneId = paneLeaves(active.root)[0].id;
+    return pane;
+  }
+  bindSessionTerminal(key: string, terminalId: string) {
+    this.assertConfirmed(); id.parse(terminalId);
+    const workspace = this.workspace(key);
+    const primary = this.ensureSessionPane(workspace);
+    if (!primary || workspace.sessionId === null) throw new Error('SESSION_WORKSPACE_REQUIRED');
+    const legacy = workspace.tabs.flatMap(tab => paneLeaves(tab.root))
+      .find(pane => pane.content.kind === 'terminal' && pane.content.terminalId === terminalId);
+    let pane = primary;
+    if (legacy) {
+      const activeTabId = workspace.activeTabId, activePaneId = workspace.activePaneId;
+      this.removePane(workspace, primary.id);
+      legacy.content = { kind: 'session', sessionId: workspace.sessionId, terminalId };
+      pane = legacy;
+      workspace.activeTabId = activeTabId; workspace.activePaneId = activePaneId;
+      this.ensureSessionPane(workspace);
+    } else primary.content = { kind: 'session', sessionId: workspace.sessionId, terminalId };
+    if (!legacy) this.focus(key, pane.id);
+    return pane;
   }
   private newTab(key: string, content: PaneContent) {
     this.assertConfirmed();
+    this.value.selectedSurface = 'workspace';
     const pane: Extract<PaneNode, { kind: 'pane' }> = { kind: 'pane', id: randomUUID(), content: contentSchema.parse(content) };
     const tab = { id: randomUUID(), root: pane };
     const workspace = this.workspace(key);
@@ -102,7 +155,7 @@ export class ApplicationWorkspace {
     this.assertConfirmed();
     const workspace = this.workspace(key);
     const existing = workspace.tabs.flatMap(tab => paneLeaves(tab.root))
-      .find(pane => pane.content.kind === 'terminal' && pane.content.terminalId === terminalId);
+      .find(pane => (pane.content.kind === 'terminal' || pane.content.kind === 'session') && pane.content.terminalId === terminalId);
     if (existing) { this.focus(key, existing.id); return existing; }
     return this.newTab(key, { kind: 'terminal', terminalId });
   }
@@ -118,7 +171,8 @@ export class ApplicationWorkspace {
     }
     const content: PaneContent = { kind: 'plan', artifactId, tab: structuredClone(tab) };
     const active = workspace.activePaneId ? this.findPane(key, workspace.activePaneId) : null;
-    if (tab.kind === 'document' && this.value.settings.planPlacement === 'beside' && active?.content.kind === 'terminal')
+    if (tab.kind === 'document' && this.value.settings.planPlacement === 'beside' &&
+      (active?.content.kind === 'terminal' || (active?.content.kind === 'session' && active.content.terminalId)))
       return this.split(key, active.id, 'horizontal', content);
     return this.newTab(key, content);
   }
@@ -129,6 +183,7 @@ export class ApplicationWorkspace {
   }
   focus(key: string, paneId: string) {
     this.assertConfirmed();
+    this.value.selectedSurface = 'workspace';
     this.findPane(key, paneId);
     const workspace = this.workspace(key);
     workspace.activeTabId = workspace.tabs.find(tab => paneLeaves(tab.root).some(pane => pane.id === paneId))!.id;
@@ -136,6 +191,7 @@ export class ApplicationWorkspace {
   }
   selectTab(key: string, tabId: string) {
     this.assertConfirmed();
+    this.value.selectedSurface = 'workspace';
     const workspace = this.workspace(key); const tab = workspace.tabs.find(tab => tab.id === tabId);
     if (!tab) throw new Error('WORKSPACE_TAB_NOT_FOUND');
     const pane = paneLeaves(tab.root).find(pane => pane.id === workspace.activePaneId) ?? paneLeaves(tab.root)[0];
@@ -143,6 +199,7 @@ export class ApplicationWorkspace {
   }
   split(key: string, paneId: string, axis: 'horizontal' | 'vertical', content: PaneContent) {
     this.assertConfirmed();
+    this.value.selectedSurface = 'workspace';
     this.findPane(key, paneId);
     const workspace = this.workspace(key);
     const pane: Extract<PaneNode, { kind: 'pane' }> = {
@@ -174,6 +231,7 @@ export class ApplicationWorkspace {
     this.assertConfirmed();
     const workspace = this.workspace(key), index = workspace.tabs.findIndex(tab => tab.id === tabId);
     if (index < 0) return;
+    if (paneLeaves(workspace.tabs[index].root).some(pane => pane.content.kind === 'session')) return;
     workspace.tabs.splice(index, 1);
     if (workspace.activeTabId === tabId) {
       const next = workspace.tabs[Math.min(index, workspace.tabs.length - 1)];
@@ -182,7 +240,11 @@ export class ApplicationWorkspace {
   }
   closePane(key: string, paneId: string) {
     this.assertConfirmed();
-    const workspace = this.workspace(key); this.findPane(key, paneId);
+    const workspace = this.workspace(key);
+    if (this.findPane(key, paneId).content.kind === 'session') return;
+    this.removePane(workspace, paneId);
+  }
+  private removePane(workspace: SessionWorkspace, paneId: string) {
     const tab = workspace.tabs.find(tab => paneLeaves(tab.root).some(pane => pane.id === paneId))!;
     const remove = (node: PaneNode): PaneNode | null => {
       if (node.kind === 'pane') return node.id === paneId ? null : node;
@@ -191,11 +253,39 @@ export class ApplicationWorkspace {
       return { ...node, first, second };
     };
     const root = remove(tab.root);
-    if (!root) this.closeTab(key, tab.id);
+    if (!root) {
+      const index = workspace.tabs.indexOf(tab); workspace.tabs.splice(index, 1);
+      if (workspace.activeTabId === tab.id) {
+        const next = workspace.tabs[Math.min(index, workspace.tabs.length - 1)];
+        workspace.activeTabId = next?.id ?? null; workspace.activePaneId = next ? paneLeaves(next.root)[0].id : null;
+      }
+    }
     else {
       tab.root = root;
       if (workspace.activePaneId === paneId) workspace.activePaneId = paneLeaves(root)[0].id;
     }
+  }
+  retainTerminals(ids: ReadonlySet<string>): boolean {
+    this.assertConfirmed();
+    let changed = false;
+    for (const [key, workspace] of Object.entries(this.value.workspaces)) {
+      for (const pane of workspace.tabs.flatMap(tab => paneLeaves(tab.root))) {
+        if (pane.content.kind === 'session' && pane.content.terminalId && !ids.has(pane.content.terminalId)) {
+          delete pane.content.terminalId; changed = true;
+        }
+      }
+      const stale = workspace.tabs.flatMap(tab => paneLeaves(tab.root))
+        .filter(pane => pane.content.kind === 'terminal' && !ids.has(pane.content.terminalId));
+      for (const pane of stale) { this.closePane(key, pane.id); changed = true; }
+    }
+    for (const bottom of Object.values(this.value.bottom)) {
+      const kept = bottom.tabs.filter(id => ids.has(id));
+      if (kept.length === bottom.tabs.length) continue;
+      bottom.tabs = kept;
+      if (!bottom.activeTerminalId || !ids.has(bottom.activeTerminalId)) bottom.activeTerminalId = kept[0] ?? null;
+      changed = true;
+    }
+    return changed;
   }
   view(key: string, paneId: string, view: { scrollTop?: number; details?: Record<string, boolean> }) {
     this.assertConfirmed();

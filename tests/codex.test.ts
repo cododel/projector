@@ -224,13 +224,6 @@ it('discovers all pages and providers by protocol without starting sessions; can
       cwd: other,
       processState: 'unknown',
     }),
-    expect.objectContaining({
-      id: 'archived-exact-fixture',
-      projectId: 'one',
-      archived: true,
-      processState: 'unknown',
-      status: 'unknown',
-    }),
   ]);
   const requests = (await auditRequests(audit)).filter((value) => value.kind === 'request');
   expect(requests.map((value) => value.method)).toEqual([
@@ -261,6 +254,7 @@ it('hides subagents by protocol metadata while keeping named roots, unknown sour
     'thread-exact-fixture': { name: 'Guardian review', source: 'cli' },
     'other-worktree': { source: 'cli', forkedFromId: 'manual-parent' },
     'archived-exact-fixture': { source: 'unknown' },
+    'unknown-root': { source: 'unknown' },
     'review-child': { source: { subAgent: 'review' } },
     'compact-child': { source: { subAgent: 'compact' }, archived: true },
     'spawn-child': {
@@ -280,11 +274,11 @@ it('hides subagents by protocol metadata while keeping named roots, unknown sour
   const sessions = await manager.discover(projects);
   expect(sessions.map((session) => session.id)).toEqual([
     'thread-exact-fixture',
+    'unknown-root',
     'other-worktree',
-    'archived-exact-fixture',
   ]);
   expect(sessions[0].title).toBe('Guardian review');
-  expect(sessions[1].projectId).toBe('two');
+  expect(sessions.find((session) => session.id === 'other-worktree')?.projectId).toBe('two');
   for (const request of (await auditRequests(audit)).filter(
     (request) => request.method === 'thread/list',
   ))
@@ -293,6 +287,7 @@ it('hides subagents by protocol metadata while keeping named roots, unknown sour
       useStateDbOnly: true,
       modelProviders: [],
     });
+  expect(await manager.read('archived-exact-fixture')).toMatchObject({ archived: true });
   for (const id of Object.keys(catalog).filter((id) => id.endsWith('-child')))
     expect(await manager.read(id)).toMatchObject({ id, isSubAgent: true });
   expect(manager.snapshot().sessions.map((session) => session.id)).toEqual(
@@ -537,4 +532,73 @@ it('drains a backend still starting when Quit begins and never hands out a live 
   await manager.stop();
   expect(await outcome).toBe('CODEX_MANAGER_STOPPED');
   expect(manager.snapshot().sessions).toEqual([]);
+});
+it('archives and undoes the exact thread without resuming it or losing its workspace identity', async () => {
+  const { manager, project, audit } = await setup();
+  await manager.discover([{ id: 'project', path: project }]);
+  await manager.setArchived('thread-exact-fixture', true);
+  expect(manager.snapshot().sessions.some((session) => session.id === 'thread-exact-fixture')).toBe(
+    false,
+  );
+  await manager.discover([{ id: 'project', path: project }]);
+  expect(manager.snapshot().sessions.some((session) => session.id === 'thread-exact-fixture')).toBe(
+    false,
+  );
+  await manager.setArchived('thread-exact-fixture', false);
+  expect(manager.snapshot().sessions).toContainEqual(
+    expect.objectContaining({ id: 'thread-exact-fixture', projectId: 'project' }),
+  );
+  const calls = await auditRequests(audit);
+  expect(
+    calls
+      .filter((call) => call.method === 'thread/archive' || call.method === 'thread/unarchive')
+      .map((call) => call.params),
+  ).toEqual([{ threadId: 'thread-exact-fixture' }, { threadId: 'thread-exact-fixture' }]);
+  expect(
+    calls.some((call) => call.method === 'thread/start' || call.method === 'thread/resume'),
+  ).toBe(false);
+});
+it.each(['before', 'after'])(
+  'reconciles archive failure %s without repeating the mutation',
+  async (failure) => {
+    const { manager, project, audit } = await setup({ CODEX_FIXTURE_ARCHIVE_FAILURE: failure });
+    await manager.discover([{ id: 'project', path: project }]);
+    const operation = manager.setArchived('thread-exact-fixture', true);
+    if (failure === 'before') {
+      await expect(operation).rejects.toThrow('CODEX_RPC_FAILED');
+      expect(
+        manager.snapshot().sessions.some((session) => session.id === 'thread-exact-fixture'),
+      ).toBe(true);
+    } else {
+      await expect(operation).resolves.toEqual({
+        sessionId: 'thread-exact-fixture',
+        archived: true,
+      });
+      expect(
+        manager.snapshot().sessions.some((session) => session.id === 'thread-exact-fixture'),
+      ).toBe(false);
+    }
+    expect(
+      (await auditRequests(audit)).filter((call) => call.method === 'thread/archive'),
+    ).toHaveLength(1);
+  },
+);
+it('rejects an undo response for another thread', async () => {
+  const { manager, project } = await setup({ CODEX_FIXTURE_WRONG_UNARCHIVE: '1' });
+  await manager.discover([{ id: 'project', path: project }]);
+  await manager.setArchived('thread-exact-fixture', true);
+  await expect(manager.setArchived('thread-exact-fixture', false)).rejects.toThrow(
+    'CODEX_THREAD_ID_MISMATCH',
+  );
+});
+
+it('reports an active writer as a session conflict without starting or resuming a process', async () => {
+  const { manager, project, audit } = await setup({ CODEX_FIXTURE_ACTIVE_WRITER: 'thread-exact-fixture' });
+  await manager.discover([{ id: 'project', path: project }]);
+  await expect(manager.launchResume('project', project, 'thread-exact-fixture')).rejects.toThrow('CODEX_SESSION_IN_USE: This session is already in use by another Codex process.');
+  expect(manager.snapshot().sessions.find(session => session.id === 'thread-exact-fixture')?.processState).toBe('unknown');
+  expect(manager.snapshot().mcpStartup).toHaveLength(0);
+  expect((await auditRequests(audit)).some(request => request.method === 'thread/start' || request.method === 'thread/resume')).toBe(false);
+  // The refused read must not poison the connection or block unrelated sessions.
+  await expect(manager.read('other-thread')).resolves.toMatchObject({ id: 'other-thread' });
 });

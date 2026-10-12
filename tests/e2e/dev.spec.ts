@@ -71,6 +71,8 @@ test('development renderer proxy loads the isolated document without production 
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] });
     }, project);
     await page.getByRole('button', { name: '+ Open project folder' }).click();
+    await expect(page.locator('.project-dashboard')).toBeVisible();
+    await page.screenshot({ path: '.tmp/tasks/project-orchestrator-20261012/development-project-overview.png' });
     await expect(page.getByText('RECIPIENT SESSION')).toHaveCount(0);
     const mcp = new Mcp(join(root, 's.sock'));
     try {

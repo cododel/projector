@@ -584,15 +584,12 @@ export class Operations {
           args.revisionId == null ? null : required('revisionId'),
           args.workspace !== true,
         );
-      case 'createEmptyPlan': {
-        const input = z.object({ projectId: id, operationId: id }).strict().parse(args);
-        const result = await this.store.create({
-          ...input,
-          kind: 'blueprint',
-          title: 'Untitled plan',
-          originSession: null,
-        });
-        await this.show(result.artifactId, null);
+      case 'archivePlan': {
+        const input = z
+          .object({ artifactId: id, operationId: id, archived: z.boolean() })
+          .strict()
+          .parse(args);
+        const result = await this.store.archivePlan(input);
         this.refresh();
         return result;
       }

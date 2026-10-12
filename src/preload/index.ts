@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { TerminalOutput } from '../shared/terminal';
 import type { ShortcutAction } from '../shared/application-workspace';
 const terminalListeners = new Set<(output: TerminalOutput) => void>();
@@ -10,6 +10,7 @@ ipcRenderer.on('blueprint:terminal-output', (_event, delivery: { deliveryId: str
   } finally { ipcRenderer.send('blueprint:terminal-output-ack', delivery.deliveryId); }
 });
 contextBridge.exposeInMainWorld('blueprint', {
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
   invoke: (method: string, params: unknown = {}) =>
     ipcRenderer.invoke('blueprint:invoke', method, params),
   onOperationStatus: (callback: (status: { waiting: boolean; operation?: string }) => void) => {

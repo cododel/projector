@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { mkdtemp, mkdir, readdir, readFile, rm, rename, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -61,7 +61,7 @@ async function menuItems() {
       }[],
   );
 }
-test('operator empty workspace has native menu actions and retains private browser capture through first agent publication', async () => {
+test('agent-created unpublished plan has native project actions and retains private browser capture through first publication', async () => {
   root = await mkdtemp(join(tmpdir(), 'bp-empty-ui-'));
   const data = join(root, 'data'),
     project = join(root, 'project'),
@@ -76,11 +76,12 @@ test('operator empty workspace has native menu actions and retains private brows
   let page = await app.firstWindow();
   await choose(page, project);
   await interceptMenus();
-  const folder = page.locator('.project-folder').filter({ hasText: 'project' });
-  const expanded = await folder.getAttribute('aria-expanded');
+  const folder = page.getByRole('button', {name: 'Open project project', exact: true});
+  const toggle = page.locator('.project-toggle').first();
+  const expanded = await toggle.getAttribute('aria-expanded');
   await page.getByRole('button', { name: 'Project actions for project', exact: true }).click();
   const dotsMenu = await menuItems();
-  expect(dotsMenu.map((item) => item.label)).toEqual(['New plan', '', 'Remove from list']);
+  expect(dotsMenu.map((item) => item.label)).toEqual(['New session', '', 'Remove from list']);
   await menuAction('');
   await folder.click({ button: 'right' });
   expect(await menuItems()).toEqual(dotsMenu);
@@ -93,25 +94,28 @@ test('operator empty workspace has native menu actions and retains private brows
   await menuAction('');
   await page.keyboard.press('Enter');
   expect(await menuItems()).toEqual(dotsMenu);
-  expect(await folder.getAttribute('aria-expanded')).toBe(expanded);
+  expect(await toggle.getAttribute('aria-expanded')).toBe(expanded);
   await expect(page.getByRole('button', { name: 'Remove from list', exact: true })).toHaveCount(0);
-  // Two synchronous activation events must result in one real artifact.
-  await page
-    .getByRole('button', { name: 'New plan in project', exact: true })
-    .evaluate((button) => {
-      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+  mcp = new Mcp(socket);
+  await mcp.initialize();
+  const context = await mcp.tool('get_blueprint_context', {});
+  const projectId = (context.project as {id: string}).id;
+  const originSession = {harness: 'codex', sessionId: 'actual-empty-plan-agent'};
+  await expect(page.evaluate(async projectId => {
+    const bridge = (window as unknown as {blueprint: {invoke(name: string,args: Record<string,unknown>):Promise<unknown>}}).blueprint;
+    await bridge.invoke('createEmptyPlan', {projectId, operationId: crypto.randomUUID()});
+  }, projectId)).rejects.toThrow('Unsupported operator command');
+  await expect(page.getByRole('button', { name: 'New plan in project', exact: true })).toHaveCount(0);
+  const plan = await mcp.tool('create_artifact', {projectId, title: 'Untitled plan', kind: 'blueprint', originSession, operationId: randomUUID()});
+  const artifactId = String(plan.artifactId);
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await page.getByRole('button', { name: 'Untitled plan', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Waiting for your agent' })).toBeVisible();
-  const artifactIds = (await readdir(join(project, '.blueprint', 'artifacts'))).filter(
-    (id) => !id.startsWith('.'),
-  );
-  expect(artifactIds).toHaveLength(1);
-  const artifactId = artifactIds[0];
   await expect(
     page.getByRole('button', { name: 'Copy message for agent', exact: true }),
   ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await menuAction('Rename plan');
   await page.getByRole('button', { name: 'Untitled plan', exact: true }).click({ button: 'right' });
   const renameDialog = page.getByRole('dialog', { name: 'Rename plan' });
@@ -123,6 +127,7 @@ test('operator empty workspace has native menu actions and retains private brows
   await renameDialog.getByLabel('Plan name').press('Enter');
   await expect(renameDialog).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Research workspace', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Research workspace', exact: true }).click();
   server = createServer((_request, response) => {
     response.setHeader('Content-Type', 'text/html');
     response.end(
@@ -137,12 +142,10 @@ test('operator empty workspace has native menu actions and retains private brows
   await page.getByRole('textbox', { name: 'New tab address' }).fill(url);
   await page.getByRole('textbox', { name: 'New tab address' }).press('Enter');
   await expect(page.getByRole('tab', { name: 'Before document', exact: true })).toBeVisible();
-  mcp = new Mcp(socket);
-  await mcp.initialize();
   const manifest = await mcp.tool('read_artifact', { artifactId });
   expect(manifest).toMatchObject({
     revisionId: null,
-    originSession: null,
+    originSession,
     privateStateIncluded: false,
   });
   await page.getByRole('button', { name: 'Annotate browser', exact: true }).click();
@@ -191,6 +194,7 @@ test('operator empty workspace has native menu actions and retains private brows
   );
   await page.getByLabel('Edit annotation', { exact: true }).press('Escape');
   await expect(page.getByLabel('Edit annotation', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Research workspace', exact: true }).click();
   await expect(page.getByText('Research before first publication', { exact: true })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Before document', exact: true })).toBeVisible();
@@ -254,7 +258,7 @@ test('operator empty workspace has native menu actions and retains private brows
   }
   expect(attachment.mimeType).toBe('image/svg+xml');
   expect(Buffer.from(encoded, 'base64').toString()).toContain('>1</text>');
-  // Unavailable projects expose Locate folder in the same menu and cannot create a plan.
+  // Unavailable projects expose Locate folder in the same menu and cannot start a session.
   await rename(project, join(root, 'moved-project'));
   const other = join(root, 'other');
   await mkdir(other);
@@ -262,13 +266,13 @@ test('operator empty workspace has native menu actions and retains private brows
   await interceptMenus();
   await page.getByRole('button', { name: 'Project actions for project', exact: true }).click();
   expect(await menuItems()).toMatchObject([
-    { label: 'New plan', enabled: false },
+    { label: 'New session', enabled: false },
     { label: 'Locate folder' },
     { type: 'separator' },
     { label: 'Remove from list' },
   ]);
   await expect(
-    page.getByRole('button', { name: 'New plan in project', exact: true }),
+    page.getByRole('button', { name: 'New Codex session in project', exact: true }),
   ).toBeDisabled();
   // A missing folder must also be safe when it is the selected restored workspace.
   await page.evaluate(async () => {
@@ -297,6 +301,6 @@ test('operator empty workspace has native menu actions and retains private brows
     page.getByRole('button', { name: 'Project actions for project', exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole('button', { name: 'New plan in project', exact: true }),
+    page.getByRole('button', { name: 'New Codex session in project', exact: true }),
   ).toBeDisabled();
 });

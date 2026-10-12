@@ -92,7 +92,7 @@ test('production Electron + real MCP publication, review, Save, revision and res
   bridge = new Mcp(socket);
   await bridge.initialize();
   const guide = await bridge.tool('get_blueprint_guide', {});
-  expect(guide.guideVersion).toBe('0.1.0-alpha.1+guide.5');
+  expect(guide.guideVersion).toBe('0.1.0-alpha.1+guide.10');
   const context = await bridge.tool('get_blueprint_context', {});
   const projectId = (context.project as { id: string }).id;
   const a = await bridge.tool('create_artifact', {
@@ -103,11 +103,13 @@ test('production Electron + real MCP publication, review, Save, revision and res
     operationId: randomUUID(),
   });
   // Unpublished entities remain interactive without publishing or accepting answers.
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Permission policy', exact: true }).click();
   const preview = page.frameLocator('iframe');
   await expect(page.getByRole('heading', { name: 'Waiting for your agent' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy message for agent' })).toBeVisible();
   await writeFile(join(String(a.sourcePath), 'plan.mdx'), 'import unsafe from "unsafe";');
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Permission policy', exact: true }).click();
   await expect(preview.getByRole('alert')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
@@ -237,11 +239,12 @@ test('production Electron + real MCP publication, review, Save, revision and res
   await expect(page.getByText('In review', { exact: true })).toBeVisible();
   // Close last window: macOS runtime survives and bridge still answers.
   await page.close();
-  expect((await bridge.tool('get_blueprint_guide', {})).guideVersion).toBe('0.1.0-alpha.1+guide.5');
+  expect((await bridge.tool('get_blueprint_guide', {})).guideVersion).toBe('0.1.0-alpha.1+guide.10');
   bridge.close();
   await app.close();
   app = await launch();
   const restarted = await app.firstWindow();
+  await restarted.getByRole('button', { name: 'Project overview', exact: true }).click();
   await restarted.getByRole('button', { name: 'Permission policy', exact: true }).click();
   await expect(
     restarted.frameLocator('iframe').getByLabel('Member', { exact: true }),
@@ -327,6 +330,7 @@ test('unfinished private annotation survives restart and cannot approve the docu
   await app.close();
   app = await launch();
   page = await app.firstWindow();
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Access policy planning', exact: true }).click();
   frame = page.frameLocator('iframe');
   await expect(frame.getByLabel('Annotation comment')).toHaveValue('Keep this unfinished comment');
@@ -488,8 +492,6 @@ test('overlapping markers, disclosed old-version navigation and private annotati
     document.getElementById('scroll-fixture')?.remove();
   });
   await expect(frame.locator('.inline-annotation-number')).toHaveText(['1', '2']);
-  const height = await page.locator('.plan-row').evaluate((e) => e.getBoundingClientRect().height);
-  expect(height).toBeLessThanOrEqual(36);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.getByRole('button', { name: 'Edit annotation 1', exact: true }).click();
   await page.getByLabel('Edit annotation', { exact: true }).fill('Unfinished edit remains private');

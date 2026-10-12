@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 const execute = promisify(execFile);
 const require = createRequire(import.meta.url);
-it('qualifies PTY ownership and restoration through real Electron utilityProcess IPC', async () => {
+it('qualifies PTY ownership and ended-process removal through real Electron utilityProcess IPC', async () => {
   const root = await mkdtemp(join(tmpdir(), 'bp-terminal-electron-'));
   const data = join(root, 'data');
   await mkdir(data);
@@ -57,15 +57,14 @@ it('qualifies PTY ownership and restoration through real Electron utilityProcess
     expect(result).toMatchObject({
       success: true,
       versions: { electron: '44.7.0' },
-      restored: [{ status: 'inactive', projectId: 'isolated-project', kind: 'shell' }],
+      restored: [],
     });
     expect(result.screen.content).toContain('INPUT:Привет 🙂 日本語');
     expect(result.configuredScreen).toMatchObject({ truncated: true });
     expect(result.configuredScreen.content).toContain('RESTART_LINE:0399');
     expect(result.configuredScreen.content).not.toContain('RESTART_LINE:0000');
     expect(result.configuredReplay.gap).toBe(true);
-    expect(result.crashSequence.observed).toBeGreaterThan(result.crashSequence.restored);
-    expect(result.restartedOutputDisplayed).toBe(true);
+    expect(result.freshOutputDisplayed).toBe(true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

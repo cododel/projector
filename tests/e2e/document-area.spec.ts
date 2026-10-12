@@ -106,6 +106,13 @@ test('document area capture stays private until Save and opens its numbered froz
     await expect(leftResize).toHaveAttribute('aria-valuemin', '200');
     await leftResize.press('Home');
     await expect(leftResize).toHaveAttribute('aria-valuenow', '200');
+    const titleBrand = page.locator('.titlebar-brand');
+    const brandBounds = (await titleBrand.boundingBox())!;
+    const toggleBounds = (await page.getByRole('button', { name: 'Hide projects sidebar' }).boundingBox())!;
+    expect(brandBounds.x).toBeGreaterThanOrEqual(82);
+    expect(brandBounds.x + brandBounds.width).toBeLessThanOrEqual(toggleBounds.x);
+    expect(await titleBrand.locator('.titlebar-brand-name').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+
     await leftResize.dblclick();
     await expect(leftResize).toHaveAttribute('aria-valuenow', '250');
     await leftResize.focus();
@@ -151,7 +158,7 @@ test('document area capture stays private until Save and opens its numbered froz
     await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
     await expect(leftResize).toHaveAttribute('aria-valuenow', '250');
     const originalWidth = (await page.locator('iframe').boundingBox())!.width;
-    const brandWidth = (await page.locator('.brand').boundingBox())!.width;
+    const treeWidth = (await page.locator('.project-tree').boundingBox())!.width;
     await page.getByRole('button', { name: 'Hide projects sidebar' }).click();
     expect(
       await page.locator('.app').evaluate((el) => getComputedStyle(el).transitionDuration),
@@ -164,7 +171,7 @@ test('document area capture stays private until Save and opens its numbered froz
       while (performance.now() - start < 400) {
         samples.push(el.getBoundingClientRect().width);
         if (el.closest('.app')?.classList.contains('sidebar-animating'))
-          textWidths.push(el.querySelector('.brand')!.getBoundingClientRect().width);
+          textWidths.push(el.querySelector('.project-tree')!.getBoundingClientRect().width);
         await new Promise(requestAnimationFrame);
       }
       return { samples, textWidths };
@@ -172,7 +179,7 @@ test('document area capture stays private until Save and opens its numbered froz
     expect(widths.samples.some((width) => width > 0 && width < 250)).toBe(true);
     expect(widths.samples.at(-1)).toBe(0);
     expect(widths.textWidths.length).toBeGreaterThan(0);
-    expect(widths.textWidths.every((width) => width === brandWidth)).toBe(true);
+    expect(widths.textWidths.every((width) => width === treeWidth)).toBe(true);
 
     const feedbackWidth = (await page.locator('.feedback-panel').boundingBox())!.width;
     await page.getByRole('button', { name: 'Hide feedback sidebar' }).click();

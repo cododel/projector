@@ -1,3 +1,5 @@
+import { terminalFilePaths } from './terminal-drop';
+import { Icon } from './Icon';
 import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -13,6 +15,7 @@ import type {
 
 export interface TerminalBridge {
   invoke(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  getPathForFile?(file: File): string;
   onTerminalOutput?(callback: (output: TerminalOutput) => void): () => void;
 }
 export function TerminalPane({
@@ -24,6 +27,7 @@ export function TerminalPane({
   onFocus,
   onChange,
   onResume,
+  onActivateForDrop,
 }: {
   record: TerminalRecord;
   viewId: string;
@@ -33,12 +37,19 @@ export function TerminalPane({
   onFocus(): void;
   onChange(): void;
   onResume?(): void;
+  onActivateForDrop?(): Promise<boolean>;
 }): React.JSX.Element {
   const container = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const activeRef = useRef(active);
   const inputReady = useRef(false);
+  const pendingInput = useRef('');
+  const pendingDrop = useRef<string | null>(null);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const resizeSequence = useRef(0);
+  const flushInput = useRef<() => void>(() => {});
+  const focusAfterResize = useRef(false);
   const initializedRef = useRef(false);
   const [error, setError] = useState('');
   const [truncated, setTruncated] = useState(false);
@@ -46,6 +57,19 @@ export function TerminalPane({
   const running = record.status === 'running';
   const runningRef = useRef(running);
   runningRef.current = running;
+  function acknowledgeInput(): void {
+    if (pendingDrop.current && activeRef.current && inputReady.current && runningRef.current) {
+      const text = pendingDrop.current;
+      pendingDrop.current = null;
+      terminalRef.current?.paste(text);
+    }
+    flushInput.current();
+    if (focusAfterResize.current && activeRef.current) {
+      focusAfterResize.current = false;
+      terminalRef.current?.focus();
+    }
+  }
+
   useEffect(() => {
     if (!container.current) return;
     const terminal = new Terminal({
@@ -107,6 +131,7 @@ export function TerminalPane({
       if (terminal.cols > 500 || terminal.rows > 300)
         terminal.resize(Math.min(500, terminal.cols), Math.min(300, terminal.rows));
       inputReady.current = false;
+      const sequence = ++resizeSequence.current;
       void bridge
         .invoke('terminalResize', {
           id: record.id,
@@ -116,7 +141,10 @@ export function TerminalPane({
           active: activeRef.current,
         })
         .then(() => {
-          if (!disposed) inputReady.current = activeRef.current;
+          if (!disposed && sequence === resizeSequence.current) {
+            inputReady.current = activeRef.current;
+            acknowledgeInput();
+          }
         })
         .catch((error) => {
           if (!disposed) setError(String(error));
@@ -124,14 +152,38 @@ export function TerminalPane({
     };
     const observer = new ResizeObserver(resize);
     observer.observe(container.current);
+    flushInput.current = () => {
+      if (
+        disposed ||
+        !activeRef.current ||
+        !inputReady.current ||
+        !runningRef.current ||
+        !pendingInput.current
+      )
+        return;
+      const data = pendingInput.current;
+      // Clear before sending: an uncertain acknowledgement must never replay keystrokes.
+      pendingInput.current = '';
+      void bridge.invoke('terminalInput', { id: record.id, viewId, data }).catch((error) => {
+        if (!disposed) setError(String(error));
+      });
+    };
     const input = terminal.onData((data) => {
-      if (!activeRef.current || !inputReady.current || !runningRef.current) return;
-      void bridge
-        .invoke('terminalInput', { id: record.id, viewId, data })
-        .catch((error) => setError(String(error)));
+      if (!activeRef.current || !runningRef.current) return;
+      if (new TextEncoder().encode(pendingInput.current + data).byteLength > 65536) {
+        setError('Pending terminal input is full. Wait for the terminal before typing more.');
+        return;
+      }
+      pendingInput.current += data;
+      flushInput.current();
     });
     return () => {
       disposed = true;
+      resizeSequence.current++;
+      pendingInput.current = '';
+      pendingDrop.current = null;
+      focusAfterResize.current = false;
+      flushInput.current = () => {};
       initializedRef.current = false;
       reader.stop();
       inputReady.current = false;
@@ -153,6 +205,15 @@ export function TerminalPane({
     if (terminal.cols > 500 || terminal.rows > 300)
       terminal.resize(Math.min(500, terminal.cols), Math.min(300, terminal.rows));
     inputReady.current = false;
+    const sequence = ++resizeSequence.current;
+    focusAfterResize.current = active;
+    if (!active || !runningRef.current) {
+      if (pendingInput.current)
+        setError('Pending input was cancelled when this terminal became inactive.');
+      pendingInput.current = '';
+      pendingDrop.current = null;
+    }
+    let disposed = false;
     void bridge
       .invoke('terminalResize', {
         id: record.id,
@@ -162,10 +223,16 @@ export function TerminalPane({
         active,
       })
       .then(() => {
+        if (disposed || sequence !== resizeSequence.current) return;
         inputReady.current = initializedRef.current && activeRef.current;
-        if (activeRef.current) terminal.focus();
+        acknowledgeInput();
       })
-      .catch((error) => setError(String(error)));
+      .catch((error) => {
+        if (!disposed) setError(String(error));
+      });
+    return () => {
+      disposed = true;
+    };
   }, [
     active,
     settings.terminalFont,
@@ -176,43 +243,99 @@ export function TerminalPane({
     viewId,
     bridge,
   ]);
+  const cleanup = !running && Boolean(record.error);
   return (
     <section
-      className={`terminal-pane ${active ? 'active' : ''}`}
+      className={`terminal-pane ${active ? 'active' : ''} ${draggingFiles ? 'terminal-file-drop' : ''}`}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes('Files')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = running ? 'copy' : 'none';
+        setDraggingFiles(running);
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+          setDraggingFiles(false);
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.types.includes('Files')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setDraggingFiles(false);
+        if (!runningRef.current || pendingDrop.current) return;
+        const terminal = terminalRef.current;
+        try {
+          if (!bridge.getPathForFile) throw new Error('Local file dropping is unavailable.');
+          const text = terminalFilePaths(
+            Array.from(event.dataTransfer.files, (file) => bridge.getPathForFile!(file)),
+          );
+          pendingDrop.current = text;
+          const activate = onActivateForDrop
+            ? onActivateForDrop()
+            : Promise.resolve(activeRef.current);
+          void activate
+            .then((accepted) => {
+              if (terminalRef.current !== terminal || !runningRef.current) return;
+              if (!accepted) {
+                pendingDrop.current = null;
+                setError('Select this terminal and drop the files again.');
+                return;
+              }
+              focusAfterResize.current = true;
+              acknowledgeInput();
+            })
+            .catch((failure) => {
+              pendingDrop.current = null;
+              setError(String(failure));
+            });
+        } catch (failure) {
+          pendingDrop.current = null;
+          setError(String(failure));
+        }
+      }}
       aria-label={record.title}
       onPointerDown={onFocus}
       onFocus={onFocus}
     >
       <div className="terminal-statusbar">
         <span title={record.cwd}>{record.title}</span>
-        <small>{running ? 'Running' : 'Saved screen · ' + record.status}</small>
+        <small>{running ? 'Running' : cleanup ? 'Cleanup required' : record.status}</small>
         {(truncated || record.truncated) && (
           <small title="Earlier output was removed at the configured limit">Output truncated</small>
         )}
         <button
-          disabled={!running && record.kind === 'codex' && !onResume}
+          disabled={!running && !cleanup && record.kind === 'codex' && !onResume}
           aria-label={
-            running
-              ? 'Stop terminal'
-              : record.kind === 'codex'
-                ? 'Resume Codex session'
-                : 'Restart terminal'
+            cleanup
+              ? 'Retry terminal cleanup'
+              : running
+                ? 'Stop terminal'
+                : record.kind === 'codex'
+                  ? 'Resume Codex session'
+                  : 'Restart terminal'
           }
           onClick={() => {
-            if (!running && record.kind === 'codex') {
+            if (!running && !cleanup && record.kind === 'codex') {
               onResume?.();
               return;
             }
             void bridge
-              .invoke(running ? 'terminalStop' : 'terminalRestart', { id: record.id })
+              .invoke(running || cleanup ? 'terminalStop' : 'terminalRestart', { id: record.id })
               .then(onChange)
               .catch((error) => setError(String(error)));
           }}
         >
-          {running ? 'Stop' : record.kind === 'codex' ? 'Resume' : 'Start shell'}
+          {cleanup
+            ? 'Retry cleanup'
+            : running
+              ? 'Stop'
+              : record.kind === 'codex'
+                ? 'Resume'
+                : 'Start shell'}
         </button>
       </div>
-      {record.kind === 'codex' && !running && (
+      {record.kind === 'codex' && !running && !cleanup && (
         <p className="terminal-inactive-note">
           This is a saved screen. Resume starts Codex only by the recorded exact session ID.
         </p>
@@ -223,7 +346,7 @@ export function TerminalPane({
           {error && <span>{error}</span>}
           {error && (
             <button aria-label="Dismiss terminal input error" onClick={() => setError('')}>
-              ×
+              <Icon name="close" />
             </button>
           )}
         </div>

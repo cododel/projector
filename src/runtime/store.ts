@@ -43,6 +43,7 @@ export interface Artifact {
   projectId: string;
   title: string;
   kind: 'blueprint';
+  archived?: boolean;
   originSession: SessionRef | null;
   latestRevision: string | null;
   revisions: { id: string }[];
@@ -498,6 +499,14 @@ export class Store {
       'rename:' + args.operationId,
       digest(args),
       () => ({ title: args.title }),
+    );
+  }
+  async archivePlan(args: { artifactId: string; archived: boolean; operationId: string }) {
+    return this.updateArtifactMetadata(
+      args.artifactId,
+      'archive:' + args.operationId,
+      digest(args),
+      () => ({ archived: args.archived }),
     );
   }
   async publish(args: {

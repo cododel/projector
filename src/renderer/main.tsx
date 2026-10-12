@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import mermaid from 'mermaid';
 import type { DocumentNode, WidgetDefinition } from '../document/types';
 import './style.css';
+import { Icon } from './Icon';
 import { markerGeometry, commentPosition } from '../shared/annotation-marker';
 import { SidebarResizer } from './SidebarResizer';
 import { fitSidebars, SIDEBAR_DEFAULT } from '../shared/sidebar-layout';
@@ -14,7 +15,9 @@ import { captureTextSelection, anchorRange } from './anchors';
 import { annotationClip } from './annotation-visibility';
 import { RefreshQueue } from './refresh-queue';
 import { TerminalPane } from './TerminalPane';
+import { SessionActions, ArchiveNotice, type ArchivedChat } from './SessionActions';
 import { WorkspaceSplit } from './WorkspaceSplit';
+import { ProjectDashboard } from './ProjectDashboard';
 import { ApplicationSettings } from './ApplicationSettings';
 import {
   PlanDocumentPane,
@@ -84,6 +87,7 @@ interface Artifact {
   latestRevision: string | null;
   displayStatus?: string;
   privateChanges?: boolean;
+  archived?: boolean;
   revisions?: ({ id: string } | string)[];
 }
 interface FeedbackPackage {
@@ -150,6 +154,7 @@ interface Bridge {
     callback: (status: { waiting: boolean; operation?: string }) => void,
   ): () => void;
   onRefresh(callback: () => void): (() => void) | void;
+  getPathForFile?(file: File): string;
   onTerminalOutput?(callback: (output: TerminalOutput) => void): () => void;
   onOpenSettings?(callback: () => void): () => void;
   onShortcut?(callback: (action: ShortcutAction) => void): () => void;
@@ -254,43 +259,14 @@ function annotationSelection(a: Annotation): SelectionData {
     ...(a.stateContext ? { stateContext: a.stateContext } : {}),
   };
 }
-function Icon({
-  name,
-}: {
-  name: 'edit' | 'delete' | 'folder' | 'sidebar-left' | 'sidebar-right';
-}): React.JSX.Element {
-  return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      aria-hidden="true"
-    >
-      {name === 'sidebar-left' || name === 'sidebar-right' ? (
-        <>
-          <rect x="3" y="4" width="18" height="16" rx="2" />
-          <path d={name === 'sidebar-left' ? 'M9 4v16' : 'M15 4v16'} />
-        </>
-      ) : name === 'edit' ? (
-        <path d="m16 3 5 5-13 13H3v-5L16 3ZM13 6l5 5" />
-      ) : name === 'folder' ? (
-        <path d="M3 7V5h6l2 2h10v13H3V7Z" />
-      ) : (
-        <>
-          <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" />
-        </>
-      )}
-    </svg>
-  );
-}
 function App(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
   const [projectId, setProjectId] = useState('');
   const [application, setApplication] = useState<FullApplicationSnapshot | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const sessionChanges = useRef(new Set<string>());
+  const [pendingSessions, setPendingSessions] = useState<string[]>([]);
+  const [archivedChats, setArchivedChats] = useState<ArchivedChat[]>([]);
   const [sessionMetadata, setSessionMetadata] = useState<HarnessSession | null>(null);
   const [bottomFocused, setBottomFocused] = useState(false);
   const [bottomHeightPreview, setBottomHeightPreview] = useState<number | null>(null);
@@ -307,7 +283,9 @@ function App(): React.JSX.Element {
   const [framesVersion, setFramesVersion] = useState(0);
   const currentKey = application?.selectedWorkspace ?? null;
   const sessionWorkspace = currentKey ? application?.workspaces[currentKey] : undefined;
-  const applicationTab = sessionWorkspace?.tabs.find(
+  const projectOverview = application?.selectedSurface === 'project' && sessionWorkspace?.sessionId === null;
+  const [showArchivedPlans, setShowArchivedPlans] = useState(false);
+  const applicationTab = projectOverview ? undefined : sessionWorkspace?.tabs.find(
     (tab) => tab.id === sessionWorkspace.activeTabId,
   );
   const activePane = applicationTab
@@ -358,7 +336,7 @@ function App(): React.JSX.Element {
   } | null>(null);
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState('');
-  const creatingPlan = useRef(false);
+  const creatingSession = useRef(false);
   const renameSubmitting = useRef(false);
   const [runtimeNotice, setRuntimeNotice] = useState(false);
   const guideLoad = useCallback(
@@ -395,7 +373,7 @@ function App(): React.JSX.Element {
     side: 'left' | 'right';
     width: number;
   } | null>(null);
-  const sidebarWrite = useRef(false);
+  const sidebarWrites = useRef(Promise.resolve());
   const [sidebarAnimating, setSidebarAnimating] = useState(false);
   const [sidebarAnimationWidths, setSidebarAnimationWidths] = useState({ left: 250, right: 310 });
   const leftSidebarContent = useRef<HTMLElement>(null);
@@ -761,6 +739,32 @@ function App(): React.JSX.Element {
     if (useTransition) await transition(execute);
     else await action(execute);
   }
+  const pinnedSessions = application?.pinnedSessionIds ?? [];
+  function pinOrder(a: HarnessSession, b: HarnessSession): number {
+    return Number(pinnedSessions.includes(b.id)) - Number(pinnedSessions.includes(a.id));
+  }
+  async function changeSession(session: HarnessSession, archive: boolean): Promise<void> {
+    if (sessionChanges.current.has(session.id)) return;
+    sessionChanges.current.add(session.id);
+    setPendingSessions([...sessionChanges.current]);
+    try {
+      if (archive) {
+        const chat = { notificationId: crypto.randomUUID(), id: session.id, title: session.title, executable: currentSettings.codexExecutable, profile: currentSettings.codexProfile };
+        await invoke('harnessArchive', { sessionId: chat.id, archived: true, executable: chat.executable, profile: chat.profile });
+        setArchivedChats(previous => [...previous, chat]);
+      } else {
+        await invoke('harnessPin', { sessionId: session.id, pinned: !pinnedSessions.includes(session.id) });
+      }
+      await reload();
+    } catch (failure) { setError(message(failure)); }
+    finally {
+      sessionChanges.current.delete(session.id);
+      setPendingSessions([...sessionChanges.current]);
+    }
+  }
+  function sessionActions(session: HarnessSession): React.JSX.Element {
+    return <SessionActions title={session.title || 'Codex session'} pinned={pinnedSessions.includes(session.id)} pending={pendingSessions.includes(session.id)} onPin={() => void changeSession(session, false)} onArchive={() => void changeSession(session, true)} />;
+  }
   function focusPane(paneId: string) {
     if (paneId === activePane?.id && !bottomFocused) return;
     setBottomFocused(false);
@@ -1077,26 +1081,28 @@ function App(): React.JSX.Element {
     if (activeBrowser || nativeFrames.current.size)
       void invoke('browserResizeMode', { active: false }).catch((e) => setError(message(e)));
   }
-  async function saveSidebarWidth(side: 'left' | 'right', width: number) {
-    if (sidebarWrite.current) return;
-    sidebarWrite.current = true;
-    const layout = {
-      ...workspace.layout,
-      ...(width === 0
-        ? { [side === 'left' ? 'leftSidebarVisible' : 'rightSidebarVisible']: false }
-        : { [side === 'left' ? 'leftSidebarWidth' : 'rightSidebarWidth']: width }),
-    };
-    let committed = false;
-    try {
-      await invoke('workspaceLayout', layout);
-      setWorkspace((current) => ({ ...current, layout }));
-      committed = true;
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      sidebarWrite.current = false;
-      finishSidebarResize(!committed);
-    }
+  function saveSidebarWidth(side: 'left' | 'right', width: number): Promise<void> {
+    const write = sidebarWrites.current.then(async () => {
+      let committed = false;
+      try {
+        const current = await invoke<WorkspaceSnapshot>('workspaceSnapshot');
+        const layout = {
+          ...current.layout,
+          ...(width === 0
+            ? { [side === 'left' ? 'leftSidebarVisible' : 'rightSidebarVisible']: false }
+            : { [side === 'left' ? 'leftSidebarWidth' : 'rightSidebarWidth']: width }),
+        };
+        await invoke('workspaceLayout', layout);
+        setWorkspace((current) => ({ ...current, layout }));
+        committed = true;
+      } catch (e) {
+        setError(message(e));
+      } finally {
+        finishSidebarResize(!committed);
+      }
+    });
+    sidebarWrites.current = write.catch(() => {});
+    return write;
   }
   function closeInformation() {
     setGuideOpen(false);
@@ -1417,13 +1423,14 @@ function App(): React.JSX.Element {
         });
       });
   }
-  async function createEmptyPlan(project: Project): Promise<void> {
-    if (creatingPlan.current || project.available === false) return;
-    creatingPlan.current = true;
+  async function startProjectSession(project: Project): Promise<void> {
+    if (creatingSession.current || project.available === false) return;
+    creatingSession.current = true;
     const operationId = crypto.randomUUID();
     try {
       await transition(async () => {
-        await invoke('createEmptyPlan', {
+        await invoke('applicationCommand', {
+          action: 'newCodex',
           projectId: project.id,
           operationId,
         });
@@ -1434,7 +1441,7 @@ function App(): React.JSX.Element {
         });
       });
     } finally {
-      creatingPlan.current = false;
+      creatingSession.current = false;
     }
   }
   async function openProjectMenu(project: Project): Promise<void> {
@@ -1442,7 +1449,7 @@ function App(): React.JSX.Element {
       const { action: selectedAction } = await invoke<{
         action: 'new' | 'locate' | 'remove' | null;
       }>('projectMenu', { projectId: project.id });
-      if (selectedAction === 'new') await createEmptyPlan(project);
+      if (selectedAction === 'new') await startProjectSession(project);
       else if (selectedAction === 'locate' || selectedAction === 'remove')
         await transition(() =>
           invoke(selectedAction === 'locate' ? 'locateProject' : 'removeProject', {
@@ -1455,9 +1462,13 @@ function App(): React.JSX.Element {
   }
   async function openPlanMenu(plan: Artifact): Promise<void> {
     try {
-      const { action: selectedAction } = await invoke<{ action: 'rename' | null }>('planMenu', {
+      const { action: selectedAction } = await invoke<{ action: 'rename' | 'archive' | 'restore' | null }>('planMenu', {
         artifactId: plan.id,
       });
+      if (selectedAction === 'archive' || selectedAction === 'restore') {
+        await archivePlan(plan, selectedAction === 'archive');
+        return;
+      }
       if (selectedAction === 'rename')
         await transition(async () => {
           informationBrowser.current = activeBrowser?.id ?? null;
@@ -1469,6 +1480,26 @@ function App(): React.JSX.Element {
     } catch (error) {
       setError(message(error));
     }
+  }
+  async function archivePlan(plan: Artifact, archived: boolean) {
+    await transition(() => invoke('archivePlan', { artifactId: plan.id, archived, operationId: crypto.randomUUID() }));
+  }
+  async function openProjectTerminal(record: TerminalRecord) {
+    const shared = application?.bottom[record.projectId]?.tabs.includes(record.id);
+    const owner = !shared ? Object.entries(application?.workspaces ?? {}).find(([, entry]) =>
+      entry.projectId === record.projectId && entry.sessionId !== null && entry.tabs.some(tab =>
+        paneLeaves(tab.root).some(pane => (pane.content.kind === 'terminal' || pane.content.kind === 'session') && pane.content.terminalId === record.id))) : undefined;
+    setBottomFocused(!owner);
+    await transition(async () => {
+      if (owner) await invoke('applicationCommand', { action: 'select', projectId: record.projectId, key: owner[0] });
+      await invoke('applicationCommand', { action: 'showTerminal', projectId: record.projectId,
+        key: owner?.[0] ?? currentKey, terminalId: record.id, area: owner ? 'main' : 'bottom' });
+    });
+  }
+  async function showProject(project: Project) {
+    setBottomFocused(false);
+    setShowArchivedPlans(false);
+    await transition(() => invoke('applicationCommand', { action: 'projectOverview', projectId: project.id }));
   }
   function closeRename(): void {
     if (renameSubmitting.current) return;
@@ -1523,13 +1554,75 @@ function App(): React.JSX.Element {
     rightSidebarVisible ? requestedRight : 0,
     windowWidth,
   );
+  function renderSessionHome(sessionId: string): React.ReactNode {
+    const session = application?.harnesses.sessions.find(item => item.id === sessionId) ?? {
+      id: sessionId, title: 'Codex session', cwd: snapshot.projects.find(item => item.id === sessionWorkspace?.projectId)?.path ?? '',
+      processState: 'unknown', terminalId: undefined,
+    };
+    return (
+              <div className="session-home new-tab-home">
+                <h2>{session.title || 'Codex session'}</h2>
+                <dl>
+                  <dt>Session ID</dt>
+                  <dd>{session.id}</dd>
+                  <dt>Working folder</dt>
+                  <dd>{session.cwd}</dd>
+                  <dt>Process</dt>
+                  <dd>
+                    {session.processState === 'unknown'
+                      ? 'Unknown · this session was discovered from history'
+                      : session.processState}
+                  </dd>
+                </dl>
+                {session.processState === 'running' && session.terminalId ? (
+                  <button
+                    className="primary"
+                    onClick={() =>
+                      void applicationCommand('showTerminal', {
+                        terminalId: session.terminalId,
+                      })
+                    }
+                  >
+                    Open terminal
+                  </button>
+                ) : (
+                  <>
+                    <p className="muted">
+                      Resume explicitly starts this exact session. Another external launch may
+                      exist; its state is unknown.
+                    </p>
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() =>
+                        void applicationCommand('newCodex', {
+                          sessionId: session.id,
+                          operationId: crypto.randomUUID(),
+                        })
+                      }
+                    >
+                      Resume
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={() =>
+                    void applicationCommand('newTerminal', { operationId: crypto.randomUUID() })
+                  }
+                >
+                  New terminal
+                </button>
+              </div>
+    );
+  }
   function renderApplicationPane(
     pane: Extract<PaneNode, { kind: 'pane' }>,
     active: boolean,
   ): React.ReactNode {
     if (!currentKey || !application) return null;
     const content = pane.content;
-    if (content.kind === 'terminal') {
+    if (content.kind === 'session' && !application.terminals.some(record => record.id === content.terminalId)) return renderSessionHome(content.sessionId);
+    if (content.kind === 'terminal' || content.kind === 'session') {
       const record = application.terminals.find((record) => record.id === content.terminalId);
       return record ? (
         <TerminalPane
@@ -1547,6 +1640,13 @@ function App(): React.JSX.Element {
           settings={currentSettings}
           bridge={bridge}
           onFocus={() => focusPane(pane.id)}
+          onActivateForDrop={async () => {
+            if (settingsOpen || guideOpen || setup || renaming || sessionMetadata || busy) return false;
+            setBottomFocused(false);
+            await applicationCommand('focus', { paneId: pane.id });
+            const state = await invoke<FullApplicationSnapshot>('applicationSnapshot');
+            return state.selectedSurface !== 'project' && state.selectedWorkspace === currentKey && state.workspaces[currentKey!]?.activePaneId === pane.id;
+          }}
           onChange={() => void reload()}
           onResume={
             record.harnessSessionId
@@ -1573,6 +1673,7 @@ function App(): React.JSX.Element {
           bridge={bridge}
           register={registerDocument}
           onFocus={() => focusPane(pane.id)}
+
           onNewTab={() => void applicationCommand('openHome', { artifactId: content.artifactId })}
           onCopy={() => void copy(agentMessage(plan))}
           message={agentMessage(plan)}
@@ -1588,6 +1689,7 @@ function App(): React.JSX.Element {
           error={native?.error}
           register={registerBrowser}
           onFocus={() => focusPane(pane.id)}
+
         />
       );
     }
@@ -1631,10 +1733,17 @@ function App(): React.JSX.Element {
       }
       className={`app ${sidebarAnimating ? 'sidebar-animating' : ''} ${!leftSidebarVisible ? 'left-sidebar-hidden' : ''} ${!rightSidebarVisible ? 'right-sidebar-hidden' : ''}`}
     >
+      {archivedChats[0] && <ArchiveNotice key={archivedChats[0].notificationId} chat={archivedChats[0]} onDismiss={() => setArchivedChats(previous => previous.slice(1))} onUndo={async chat => {
+        await invoke('harnessArchive', { sessionId: chat.id, archived: false, executable: chat.executable, profile: chat.profile });
+        await reload();
+      }} />}
       <header className="window-titlebar" role="toolbar" aria-label="Window toolbar">
         {leftSidebarVisible && (
           <div className="titlebar-section titlebar-left">
-            <span className="titlebar-drag-space" />
+            <div className="titlebar-brand" aria-label="Blueprint">
+              <span className="titlebar-brand-mark" aria-hidden="true">B</span>
+              <span className="titlebar-brand-name">Blueprint</span>
+            </div>
             {sidebarToggle('left')}
           </div>
         )}
@@ -1647,17 +1756,18 @@ function App(): React.JSX.Element {
               aria-label="Workspace tabs"
               ref={titlebarTabs}
             >
-              {sessionWorkspace?.tabs.map((tab) => {
+              {(!projectOverview ? (sessionWorkspace?.tabs ?? []) : []).map((tab) => {
                 const panes = paneLeaves(tab.root),
                   content =
-                    panes.find((pane) => pane.id === sessionWorkspace.activePaneId)?.content ??
+                    panes.find((pane) => pane.id === sessionWorkspace?.activePaneId)?.content ??
                     panes[0].content;
+                const pinned = panes.some(pane => pane.content.kind === 'session');
                 const terminal =
-                  content.kind === 'terminal'
+                  content.kind === 'terminal' || content.kind === 'session'
                     ? application?.terminals.find((record) => record.id === content.terminalId)
                     : null;
                 const title =
-                  content.kind === 'terminal'
+                  pinned || content.kind === 'session' ? 'Codex' : content.kind === 'terminal'
                     ? (terminal?.title ?? 'Terminal')
                     : content.tab.kind === 'document'
                       ? 'Plan'
@@ -1673,13 +1783,14 @@ function App(): React.JSX.Element {
                       role="tab"
                       aria-selected={applicationTab?.id === tab.id}
                       disabled={busy}
-                      title={title}
+                      title={pinned ? 'Session tab: cannot be closed' : title}
                       onMouseDown={(event) => {
                         if (event.button === 1) event.preventDefault();
                       }}
                       onAuxClick={(event) => {
                         if (event.button === 1) {
                           event.preventDefault();
+                          if (pinned) return;
                           void applicationCommand('closeTab', { tabId: tab.id });
                         }
                       }}
@@ -1689,7 +1800,7 @@ function App(): React.JSX.Element {
                       }}
                     >
                       <span aria-hidden="true">
-                        {content.kind === 'terminal'
+                        {pinned || content.kind === 'terminal' || content.kind === 'session'
                           ? '›_'
                           : content.tab.kind === 'document'
                             ? '▤'
@@ -1700,14 +1811,16 @@ function App(): React.JSX.Element {
                         {panes.length > 1 ? ` · ${panes.length}` : ''}
                       </span>
                     </button>
+                    {!pinned && (
                     <button
                       className="tab-close"
                       disabled={busy}
                       aria-label={`Close ${title.toLowerCase()} tab`}
                       onClick={() => void applicationCommand('closeTab', { tabId: tab.id })}
                     >
-                      ×
+                      <Icon name="close" />
                     </button>
+                    )}
                   </div>
                 );
               })}
@@ -1762,7 +1875,7 @@ function App(): React.JSX.Element {
                       aria-label={`Close ${tab.kind === 'document' ? 'plan' : tab.kind === 'home' ? 'new tab' : tab.title || 'browser'} tab`}
                       onClick={() => void tabCommand('close', tab.id)}
                     >
-                      ×
+                      <Icon name="close" />
                     </button>
                   </div>
                 ))}
@@ -1776,7 +1889,7 @@ function App(): React.JSX.Element {
             disabled={busy || (!selected && !sessionWorkspace)}
             onClick={() => (appMode ? shortcut('newTab') : void tabCommand('new'))}
           >
-            +
+            <Icon name="plus" />
           </button>
           <span className="titlebar-drag-space" />
 
@@ -1832,12 +1945,6 @@ function App(): React.JSX.Element {
       {sidebarPreview && <div className="sidebar-resize-shield" />}
       <div className="sidebar-viewport">
         <aside className="sidebar" ref={leftSidebarContent}>
-          <div className="brand">
-            <span className="brand-mark">B</span>
-            <div>
-              Blueprint<small>ALPHA 1 · LOCAL WORKSPACE</small>
-            </div>
-          </div>
           <div className="project-tree">
             <div className="tree-heading">Projects</div>
             {snapshot.projects.map((item) => (
@@ -1849,26 +1956,13 @@ function App(): React.JSX.Element {
                     void openProjectMenu(item);
                   }}
                 >
-                  <button
-                    className={`project-folder ${item.id === projectId ? 'current' : ''}`}
-                    title={
-                      item.available === false
-                        ? 'Project folder unavailable · ' + item.path
-                        : item.path
-                    }
-                    aria-expanded={!collapsed.has(item.id)}
-                    onClick={() =>
-                      setCollapsed((previous) => {
-                        const next = new Set(previous);
-                        if (next.has(item.id)) next.delete(item.id);
-                        else next.add(item.id);
-                        return next;
-                      })
-                    }
-                  >
-                    <span aria-hidden="true">{collapsed.has(item.id) ? '▸' : '▾'}</span>
-                    <Icon name="folder" />
-                    <span>{item.path.split('/').filter(Boolean).at(-1)}</span>
+                  <button className="project-toggle" aria-label={`${collapsed.has(item.id) ? 'Expand' : 'Collapse'} sessions in ${item.path.split('/').at(-1)}`}
+                    aria-expanded={!collapsed.has(item.id)} onClick={() => setCollapsed(previous => {
+                      const next = new Set(previous); if (next.has(item.id)) next.delete(item.id); else next.add(item.id); return next;
+                    })}><Icon name={collapsed.has(item.id) ? 'right' : 'down'} /></button>
+                  <button className={`project-name ${item.id === projectId ? 'current' : ''}`} title={item.path}
+                    disabled={busy} aria-label={`Open project ${item.path.split('/').at(-1)}`} onClick={() => void showProject(item)}>
+                    {item.path.split('/').filter(Boolean).at(-1)}
                   </button>
                   <div className="project-row-actions">
                     <button
@@ -1877,15 +1971,15 @@ function App(): React.JSX.Element {
                       disabled={busy}
                       onClick={() => void openProjectMenu(item)}
                     >
-                      …
+                      <Icon name="more" />
                     </button>
                     <button
-                      aria-label={`New plan in ${item.path.split('/').at(-1)}`}
-                      title="New plan"
+                      aria-label={`New Codex session in ${item.path.split('/').at(-1)}`}
+                      title="New Codex session"
                       disabled={busy || item.available === false}
-                      onClick={() => void createEmptyPlan(item)}
+                      onClick={() => void startProjectSession(item)}
                     >
-                      +
+                      <Icon name="plus" />
                     </button>
                   </div>
                 </div>
@@ -1902,109 +1996,43 @@ function App(): React.JSX.Element {
                         disabled={busy}
                         onClick={() => void action(() => invoke('harnessRefresh'))}
                       >
-                        ↻
-                      </button>
-                      <button
-                        title="New Codex session"
-                        aria-label={`New Codex session in ${item.path.split('/').at(-1)}`}
-                        disabled={busy || item.available === false}
-                        onClick={() =>
-                          void transition(() =>
-                            invoke('applicationCommand', {
-                              action: 'newCodex',
-                              projectId: item.id,
-                              operationId: crypto.randomUUID(),
-                            }),
-                          )
-                        }
-                      >
-                        +
+                        <Icon name="refresh" />
                       </button>
                     </div>
                     {application?.harnesses.sessions
                       .filter((session) => session.projectId === item.id)
+                      .sort(pinOrder)
                       .map((session) => (
-                        <button
+                        <div
                           key={session.id}
                           className={`harness-session ${sessionWorkspace?.sessionId === session.id && sessionWorkspace.projectId === item.id ? 'active' : ''}`}
-                          title={`${session.title} · ${session.id} · ${session.processState === 'unknown' ? 'Process state unknown' : session.processState}`}
-                          onClick={() => {
-                            setBottomFocused(false);
-                            void transition(() =>
-                              invoke('applicationCommand', {
-                                action: 'select',
-                                projectId: item.id,
-                                sessionId: session.id,
-                              }),
-                            );
-                          }}
                         >
-                          <span aria-hidden="true">›_</span>
-                          <span>{session.title || 'Codex session'}</span>
-                          {session.processState === 'running' && <span className="runtime-dot" />}
-                        </button>
+                          <button
+                            className="session-select"
+                            title={`${session.title} · ${session.id} · ${session.processState === 'unknown' ? 'Process state unknown' : session.processState}`}
+                            onClick={() => {
+                              setBottomFocused(false);
+                              void transition(() =>
+                                invoke('applicationCommand', {
+                                  action: 'select',
+                                  projectId: item.id,
+                                  sessionId: session.id,
+                                }),
+                              );
+                            }}
+                          >
+                            <span aria-hidden="true">›_</span>
+                            <span className="session-title">{session.title || 'Codex session'}</span>
+                            {session.processState === 'running' && <span className="runtime-dot" />}
+                          </button>
+                          {sessionActions(session)}
+                        </div>
                       ))}
                     {!application?.harnesses.sessions.some(
                       (session) => session.projectId === item.id,
-                    ) && <small className="tree-empty">Refresh to discover local sessions</small>}
-                    <button
-                      className={`tree-group-heading plans-workspace ${sessionWorkspace?.projectId === item.id && sessionWorkspace.sessionId === null ? 'active' : ''}`}
-                      onClick={() =>
-                        void transition(() =>
-                          invoke('applicationCommand', {
-                            action: 'select',
-                            projectId: item.id,
-                            sessionId: null,
-                          }),
-                        )
-                      }
-                    >
-                      Plans
-                    </button>
+                    ) && <small className="tree-empty">No sessions to display</small>}
                   </div>
                 )}
-                {!collapsed.has(item.id) &&
-                  snapshot.artifacts
-                    .filter((a) => a.projectId === item.id)
-                    .map((plan) => (
-                      <div
-                        key={plan.id}
-                        className={`plan-row ${selected?.artifactId === plan.id ? 'active' : ''}`}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          void openPlanMenu(plan);
-                        }}
-                      >
-                        <span
-                          className={`plan-status ${plan.displayStatus === 'Approved' ? 'approved' : ''}`}
-                          title={
-                            plan.displayStatus ?? (plan.latestRevision ? 'In review' : 'Draft')
-                          }
-                          aria-label={plan.displayStatus ?? 'Draft'}
-                        >
-                          {plan.displayStatus === 'Approved'
-                            ? '✓'
-                            : plan.latestRevision
-                              ? '◷'
-                              : '◇'}
-                        </span>
-                        <button
-                          className="plan-title"
-                          title={plan.title}
-                          disabled={busy}
-                          onClick={() => void openPlan(plan, planRevision(plan))}
-                        >
-                          {plan.title}
-                        </button>
-                        {plan.privateChanges && (
-                          <span
-                            className="private-dot"
-                            title="Private changes"
-                            aria-label="Private changes"
-                          />
-                        )}
-                      </div>
-                    ))}
               </section>
             ))}
             {(application?.harnesses.sessions.filter((session) => session.projectId === null)
@@ -2013,9 +2041,10 @@ function App(): React.JSX.Element {
                 <summary>Other sessions</summary>
                 {application?.harnesses.sessions
                   .filter((session) => session.projectId === null)
+                  .sort(pinOrder)
                   .map((session) => (
                     <div key={session.id}>
-                      <strong>{session.title || 'Codex session'}</strong>
+                      <div className="other-session-heading"><strong>{session.title || 'Codex session'}</strong>{sessionActions(session)}</div>
                       <small title={session.cwd}>{session.cwd}</small>
                       <small>Process state unknown · open its project folder to resume.</small>
                       <button
@@ -2043,12 +2072,13 @@ function App(): React.JSX.Element {
               + Open project folder
             </button>
           </div>
-          <div className="sidebar-bottom">
-            <button className="subtle full" onClick={openSettings}>
-              Settings
+          <nav className="sidebar-bottom" aria-label="Application utilities">
+            <button className="sidebar-utility" onClick={openSettings}>
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3z" /><circle cx="12" cy="12" r="3" /></svg>
+              <span>Settings</span>
             </button>
             <button
-              className="subtle full"
+              className="sidebar-utility"
               onClick={() =>
                 void transition(async () => {
                   informationBrowser.current = activeBrowser?.id ?? null;
@@ -2058,11 +2088,13 @@ function App(): React.JSX.Element {
                 })
               }
             >
-              Blueprint guide
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M4 3h12a2 2 0 0 1 2 2v16H6a2 2 0 0 1-2-2V3Zm0 14h14M8 7h6M8 10h6" /></svg>
+              <span>Blueprint guide</span>
             </button>
-            <span className="runtime-dot" /> Local runtime active
             <button
-              className="subtle full"
+              className="sidebar-utility"
+              aria-label="MCP connection"
+              title="MCP connection · Local runtime active"
               onClick={() =>
                 void transition(async () => {
                   const connection = await invoke<import('../shared/protocol').McpSetup>('setup');
@@ -2073,9 +2105,11 @@ function App(): React.JSX.Element {
                 })
               }
             >
-              MCP connection
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M8 3v5m8-5v5M6 8h12v3a6 6 0 0 1-12 0V8Zm6 9v4" /></svg>
+              <span>MCP connection</span>
+              <span className="runtime-dot footer-runtime" role="img" aria-label="Local runtime active" />
             </button>
-          </div>
+          </nav>
         </aside>
       </div>
       <main className="workspace">
@@ -2165,7 +2199,7 @@ function App(): React.JSX.Element {
                     )
                   }
                 >
-                  ←
+                  <Icon name="back" />
                 </button>
                 <button
                   aria-label="Forward"
@@ -2176,7 +2210,7 @@ function App(): React.JSX.Element {
                     )
                   }
                 >
-                  →
+                  <Icon name="forward" />
                 </button>
                 <button
                   aria-label={activeBrowser.loading ? 'Stop' : 'Reload'}
@@ -2189,7 +2223,7 @@ function App(): React.JSX.Element {
                     )
                   }
                 >
-                  {activeBrowser.loading ? '■' : '↻'}
+                  <Icon name={activeBrowser.loading ? 'stop' : 'refresh'} />
                 </button>
                 <form
                   onSubmit={(e) => {
@@ -2239,7 +2273,7 @@ function App(): React.JSX.Element {
                     )
                   }
                 >
-                  ↗
+                  <Icon name="external" />
                 </button>
 
                 <button
@@ -2260,7 +2294,8 @@ function App(): React.JSX.Element {
         )}
         {appMode && (
           <div className="workspace-tools" role="toolbar" aria-label="Workspace controls">
-            <span>{selectedSession?.title ?? 'Plans workspace'}</span>
+            <span>{selectedSession?.title ?? 'Project workspace'}</span>
+            <button disabled={busy} onClick={() => { const project = snapshot.projects.find(item => item.id === sessionWorkspace?.projectId); if (project) void showProject(project); }}>Project overview</button>
             <button
               aria-label="New terminal"
               disabled={busy}
@@ -2276,7 +2311,7 @@ function App(): React.JSX.Element {
               disabled={busy || !activePane}
               onClick={() => shortcut('splitRight')}
             >
-              ▥
+              <Icon name="split-right" />
             </button>
             <button
               aria-label="Split down"
@@ -2284,15 +2319,15 @@ function App(): React.JSX.Element {
               disabled={busy || !activePane}
               onClick={() => shortcut('splitDown')}
             >
-              ▤
+              <Icon name="split-down" />
             </button>
             <button
               aria-label="Close panel"
               title="Close panel · process keeps running"
-              disabled={busy || !activePane}
+              disabled={busy || !activePane || activePane.content.kind === 'session'}
               onClick={() => void applicationCommand('closePane', { paneId: activePane?.id })}
             >
-              ×
+              <Icon name="close" />
             </button>
             <button
               aria-label="Toggle project terminals"
@@ -2300,7 +2335,7 @@ function App(): React.JSX.Element {
               aria-pressed={bottom?.visible ?? false}
               onClick={() => shortcut('bottomPanel')}
             >
-              ›_
+              <Icon name="terminal" />
             </button>
             <details className="terminal-list">
               <summary>All terminals</summary>
@@ -2361,8 +2396,8 @@ function App(): React.JSX.Element {
               </>
             )}
             <button onClick={() => setError('')} aria-label="Dismiss error">
-              ×
-            </button>
+<Icon name="close" />
+</button>
           </div>
         )}
         {application?.metadataPending && !settingsOpen && (
@@ -2374,7 +2409,22 @@ function App(): React.JSX.Element {
             </button>
           </div>
         )}
-        {appMode ? (
+        {projectOverview ? (
+          <ProjectDashboard
+            project={snapshot.projects.find(item => item.id === sessionWorkspace?.projectId)}
+            plans={snapshot.artifacts.filter(plan => plan.projectId === sessionWorkspace?.projectId)}
+            sessions={(application?.harnesses.sessions ?? []).filter(session => session.projectId === sessionWorkspace?.projectId).sort(pinOrder)}
+            terminals={(application?.terminals ?? []).filter(record => record.projectId === sessionWorkspace?.projectId)}
+            busy={busy} showArchived={showArchivedPlans} onShowArchived={setShowArchivedPlans}
+            onOpenPlan={plan => void openPlan(plan, planRevision(plan))}
+            onPlanMenu={plan => void openPlanMenu(plan)}
+            onArchive={plan => void archivePlan(plan, !plan.archived)}
+            onSession={session => void applicationCommand('select', { sessionId: session.id, key: undefined })}
+            onNewTerminal={() => { setBottomFocused(true); void applicationCommand('newTerminal', { area: 'bottom', operationId: crypto.randomUUID() }); }}
+            onTerminal={record => void openProjectTerminal(record)}
+            onWorkspace={() => void applicationCommand('select', { sessionId: null })}
+          />
+        ) : appMode ? (
           <div className="session-workspace-content">
             {applicationTab ? (
               <WorkspaceSplit
@@ -2391,63 +2441,11 @@ function App(): React.JSX.Element {
                 }}
               />
             ) : selectedSession ? (
-              <div className="session-home new-tab-home">
-                <h2>{selectedSession.title || 'Codex session'}</h2>
-                <dl>
-                  <dt>Session ID</dt>
-                  <dd>{selectedSession.id}</dd>
-                  <dt>Working folder</dt>
-                  <dd>{selectedSession.cwd}</dd>
-                  <dt>Process</dt>
-                  <dd>
-                    {selectedSession.processState === 'unknown'
-                      ? 'Unknown · this session was discovered from history'
-                      : selectedSession.processState}
-                  </dd>
-                </dl>
-                {selectedSession.processState === 'running' && selectedSession.terminalId ? (
-                  <button
-                    className="primary"
-                    onClick={() =>
-                      void applicationCommand('showTerminal', {
-                        terminalId: selectedSession.terminalId,
-                      })
-                    }
-                  >
-                    Open terminal
-                  </button>
-                ) : (
-                  <>
-                    <p className="muted">
-                      Resume explicitly starts this exact session. Another external launch may
-                      exist; its state is unknown.
-                    </p>
-                    <button
-                      className="primary"
-                      disabled={busy}
-                      onClick={() =>
-                        void applicationCommand('newCodex', {
-                          sessionId: selectedSession.id,
-                          operationId: crypto.randomUUID(),
-                        })
-                      }
-                    >
-                      Resume
-                    </button>
-                  </>
-                )}
-                <button
-                  onClick={() =>
-                    void applicationCommand('newTerminal', { operationId: crypto.randomUUID() })
-                  }
-                >
-                  New terminal
-                </button>
-              </div>
+              renderSessionHome(selectedSession.id)
             ) : (
               <div className="new-tab-home">
                 <h2>No open tabs</h2>
-                <p className="muted">Open a plan from the sidebar or start a project terminal.</p>
+                <p className="muted">Open a plan from the project overview or start a project terminal.</p>
                 {lastPlan && (
                   <>
                     <button onClick={() => void openPlan(lastPlan, planRevision(lastPlan))}>
@@ -2660,7 +2658,7 @@ function App(): React.JSX.Element {
                       aria-label={`Close ${record?.title ?? 'project terminal'} view`}
                       onClick={() => void applicationCommand('bottomClose', { terminalId: id })}
                     >
-                      ×
+                      <Icon name="close" />
                     </button>
                   </div>
                 );
@@ -2676,14 +2674,14 @@ function App(): React.JSX.Element {
                   });
                 }}
               >
-                +
+                <Icon name="plus" />
               </button>
               <button
                 className="bottom-hide"
                 aria-label="Hide project terminals"
                 onClick={() => void applicationCommand('bottomToggle')}
               >
-                ⌄
+                <Icon name="down" />
               </button>
             </nav>
             {application?.terminals.find((record) => record.id === bottom.activeTerminalId) ? (
@@ -2703,6 +2701,10 @@ function App(): React.JSX.Element {
                 settings={currentSettings}
                 bridge={bridge}
                 onFocus={() => setBottomFocused(true)}
+                onActivateForDrop={async () => {
+                  if (settingsOpen || guideOpen || setup || renaming || sessionMetadata || busy) return false;
+                  setBottomFocused(true); return true;
+                }}
                 onChange={() => void reload()}
               />
             ) : (
@@ -2929,7 +2931,9 @@ function App(): React.JSX.Element {
                     : 'Save'}
             </button>
             <small>
-              {!artifact?.latestRevision ? (
+              {projectOverview ? (
+                'Open a plan to review its answers and annotations.'
+              ) : !artifact?.latestRevision ? (
                 'Save and approval become available after the agent publishes the first document. Your workspace is autosaved privately.'
               ) : (
                 <>
@@ -4187,7 +4191,9 @@ function DocumentSurface(): React.JSX.Element {
               Retry autosave
             </button>
           )}
-          <button onClick={() => setError('')}>×</button>
+          <button onClick={() => setError('')}>
+<Icon name="close" />
+</button>
         </div>
       )}
       {data?.error && (

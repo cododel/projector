@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,9 +6,30 @@ import { randomUUID } from 'node:crypto';
 import { openStore, type Store } from '../src/runtime/store';
 import { Operations } from '../src/runtime/operations';
 
+const metadataFault = vi.hoisted(() => ({ phase: '' }));
+vi.mock('node:fs/promises', async (original) => {
+  const actual = await original<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      if (metadataFault.phase === 'write' && args[1] === 'wx')
+        handle.writeFile = async () => {
+          throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+        };
+      if (metadataFault.phase === 'directory-sync' && args[1] === 'r')
+        handle.sync = async () => {
+          throw Object.assign(new Error('disk sync failed'), { code: 'ENOSPC' });
+        };
+      return handle;
+    },
+  };
+});
+
 let store: Store;
 let root: string;
 afterEach(async () => {
+  metadataFault.phase = '';
   store?.close();
   if (root) await rm(root, { recursive: true, force: true });
 });
@@ -20,6 +41,11 @@ interface EmptyPlan {
   sourcePath: string;
   sourceFile: string;
 }
+// Seed only the historical format: the operator creation route is deliberately absent.
+async function seedLegacyEmptyPlan(input: { projectId: string; operationId: string }) {
+  const plan = await store.create({ ...input, title: 'Untitled plan', kind: 'blueprint', originSession: null });
+  return {...plan, sourceFile: 'plan.mdx'};
+}
 async function setup() {
   root = await mkdtemp(join(tmpdir(), 'bp-empty-'));
   await mkdir(join(root, 'project'));
@@ -27,12 +53,15 @@ async function setup() {
   const project = await store.register(join(root, 'project'));
   const ops = new Operations(store, () => {});
   const input = { projectId: project.id, operationId: randomUUID() };
-  const plan = (await ops.operator('createEmptyPlan', input)) as EmptyPlan;
+  const plan = await seedLegacyEmptyPlan(input);
   return { project, ops, input, plan };
 }
-it('creates a durable unbound workspace once, without a fabricated revision or publication', async () => {
+it('keeps historical unbound workspaces readable without allowing operator creation', async () => {
   const { ops, input, plan } = await setup();
-  expect(await ops.operator('createEmptyPlan', input)).toEqual(plan);
+  await expect(
+    ops.operator('createEmptyPlan', { ...input, operationId: randomUUID() }),
+  ).rejects.toMatchObject({ code: 'UNKNOWN_COMMAND' });
+  expect(await seedLegacyEmptyPlan(input)).toEqual(plan);
   expect(await store.artifacts()).toHaveLength(1);
   expect(await store.artifact(plan.artifactId)).toMatchObject({
     title: 'Untitled plan',
@@ -124,13 +153,13 @@ it('renames metadata and explicitly attaches the agent session with replay and c
 });
 it('preserves pre-document browser annotations privately through restart, first publication and Save v2', async () => {
   const { ops, project, plan } = await setup();
-  const sibling = (await ops.operator('createEmptyPlan', {
+  const sibling = (await seedLegacyEmptyPlan({
     projectId: project.id,
     operationId: randomUUID(),
   })) as EmptyPlan;
   await mkdir(join(root, 'other-project'));
   const otherProject = await store.register(join(root, 'other-project'));
-  const separate = (await ops.operator('createEmptyPlan', {
+  const separate = (await seedLegacyEmptyPlan({
     projectId: otherProject.id,
     operationId: randomUUID(),
   })) as EmptyPlan;
@@ -243,8 +272,38 @@ it('preserves pre-document browser annotations privately through restart, first 
   expect(await resumed.tool('get_blueprint_context', { projectPath: project.path })).toMatchObject({
     capabilities: { supportedSavedStateVersions: [1, 2] },
   });
+  const savedBeforeArchive = await store.states.read(plan.artifactId, saved.id);
+  const draftBeforeArchive = await store.states.draft(plan.artifactId);
+  await resumed.operator('approve', {
+    artifactId: plan.artifactId,
+    revisionId: published.revisionId,
+  });
+  const approval = await store.approval(plan.artifactId, published.revisionId);
+  const metadataBeforeArchive = await store.artifact(plan.artifactId);
+  await resumed.operator('archivePlan', {
+    artifactId: plan.artifactId,
+    archived: true,
+    operationId: randomUUID(),
+  });
+  expect(await store.artifact(plan.artifactId)).toMatchObject({
+    id: metadataBeforeArchive.id,
+    projectId: metadataBeforeArchive.projectId,
+    title: metadataBeforeArchive.title,
+    kind: metadataBeforeArchive.kind,
+    originSession: metadataBeforeArchive.originSession,
+    latestRevision: metadataBeforeArchive.latestRevision,
+    revisions: metadataBeforeArchive.revisions,
+    archived: true,
+  });
+  expect(await store.states.read(plan.artifactId, saved.id)).toEqual(savedBeforeArchive);
+  expect(await store.states.draft(plan.artifactId)).toEqual(draftBeforeArchive);
+  expect(await store.states.attachment(plan.artifactId, saved.id, capture.id)).toEqual(image);
+  expect(await store.approval(plan.artifactId, published.revisionId)).toEqual(approval);
   store.close();
   store = await openStore(join(root, 'data'));
+  expect(await store.approval(plan.artifactId, published.revisionId)).toEqual(approval);
+  expect(await store.states.draft(plan.artifactId)).toEqual(draftBeforeArchive);
+  expect(await store.states.attachment(plan.artifactId, saved.id, capture.id)).toEqual(image);
   expect(await store.states.read(plan.artifactId, saved.id)).toMatchObject({
     formatVersion: 2,
     annotations: [{ source: { revisionId: null } }],
@@ -337,4 +396,54 @@ it('serializes concurrent session attachment so a different session cannot silen
   ]);
   const winner = results.findIndex((result) => result.status === 'fulfilled');
   expect((await store.artifact(plan.artifactId)).originSession).toEqual(sessions[winner]);
+});
+
+it('archives durably without changing identity, history or private work and rejects conflicting replay', async () => {
+  const { ops, plan } = await setup();
+  const before = await store.artifact(plan.artifactId);
+  const draft = await store.states.draft(plan.artifactId);
+  const input = { artifactId: plan.artifactId, archived: true, operationId: randomUUID() };
+  const result = await ops.operator('archivePlan', input);
+  expect(await ops.operator('archivePlan', input)).toEqual(result);
+  await expect(ops.operator('archivePlan', { ...input, archived: false })).rejects.toMatchObject({
+    code: 'OPERATION_CONFLICT',
+  });
+  expect(await store.artifact(plan.artifactId)).toMatchObject({ ...before, archived: true });
+  expect(await store.states.draft(plan.artifactId)).toEqual(draft);
+  await expect(ops.tool('archivePlan', input)).rejects.toMatchObject({ code: 'UNKNOWN_TOOL' });
+  store.close();
+  store = await openStore(join(root, 'data'));
+  const resumed = new Operations(store, () => {});
+  expect(await resumed.operator('archivePlan', input)).toEqual(result);
+  await resumed.operator('archivePlan', { ...input, archived: false, operationId: randomUUID() });
+  // Replaying the original archive receipt must not undo the later restore.
+  expect(await resumed.operator('archivePlan', input)).toEqual(result);
+  expect(await store.artifact(plan.artifactId)).toMatchObject({ ...before, archived: false });
+});
+
+it('does not report an archive after a failed write and safely retries the same operation', async () => {
+  const { ops, plan } = await setup();
+  const before = await store.artifact(plan.artifactId);
+  const input = { artifactId: plan.artifactId, archived: true, operationId: randomUUID() };
+  metadataFault.phase = 'write';
+  await expect(ops.operator('archivePlan', input)).rejects.toMatchObject({ code: 'ENOSPC' });
+  metadataFault.phase = '';
+  expect(await store.artifact(plan.artifactId)).toEqual(before);
+  await ops.operator('archivePlan', input);
+  expect(await store.artifact(plan.artifactId)).toMatchObject({ archived: true });
+});
+it('reconciles committed archive receipts after uncertain durability without overwriting a later restore', async () => {
+  const { ops, plan } = await setup();
+  const input = { artifactId: plan.artifactId, archived: true, operationId: randomUUID() };
+  metadataFault.phase = 'directory-sync';
+  await expect(ops.operator('archivePlan', input)).rejects.toMatchObject({
+    code: 'UNKNOWN_RESULT',
+  });
+  metadataFault.phase = '';
+  expect(await store.artifact(plan.artifactId)).toMatchObject({ archived: true });
+  await ops.operator('archivePlan', { ...input, archived: false, operationId: randomUUID() });
+  store.close();
+  store = await openStore(join(root, 'data'));
+  await new Operations(store, () => {}).operator('archivePlan', input);
+  expect(await store.artifact(plan.artifactId)).toMatchObject({ archived: false });
 });

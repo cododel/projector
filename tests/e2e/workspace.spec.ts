@@ -172,13 +172,19 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await page
     .getByRole('textbox', { name: 'New tab address' })
     .fill('https://example.test/unfinished');
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   // Standalone Plans now shares one tabstrip per project. Artifact state stays independent.
   await expect(tabs(page)).toHaveCount(3);
   await newTab(page).click();
   await page.getByRole('textbox', { name: 'New tab address' }).fill('https://example.test/second');
+  await page.getByRole('button', { name: 'Open project other', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'Third plan', exact: true }).click();
   await expect(tabs(page)).toHaveCount(1);
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'First plan', exact: true }).click();
   await expect(frame.getByRole('heading', { name: 'First plan', exact: true })).toBeVisible();
   await expect(frame.getByLabel('Decision', { exact: true })).toHaveValue('Private answer');
@@ -225,6 +231,18 @@ test('project Plans workspaces, local comments, browser close and restart preser
     expect(topBounds.width).toBeCloseTo(contentBounds.width, 0);
     await expect(page.locator('.titlebar-left')).toHaveCount(left ? 1 : 0);
     await expect(page.locator('.titlebar-right')).toHaveCount(right ? 1 : 0);
+    await expect(page.locator('.sidebar .brand')).toHaveCount(0);
+    const branding = page.locator('.titlebar-brand');
+    await expect(branding).toHaveCount(left ? 1 : 0);
+    if (left) {
+      await expect(branding).toHaveText('BBlueprint');
+      const brand = (await branding.boundingBox())!;
+      const toggle = (await page.getByRole('button', { name: 'Hide projects sidebar' }).boundingBox())!;
+      expect(brand.x).toBeGreaterThanOrEqual(82);
+      expect(brand.x + brand.width).toBeLessThanOrEqual(toggle.x);
+      expect(await branding.evaluate(el => getComputedStyle(el).getPropertyValue('-webkit-app-region'))).toBe('drag');
+    }
+
     const bounds = await toolbar.boundingBox();
     for (const name of [
       'Document version',
@@ -349,24 +367,34 @@ test('project Plans workspaces, local comments, browser close and restart preser
   // other artifact's document/home tabs intact in the shared project workspace.
   await (await planTab(page, a.artifact.artifactId, 'document')).click({ button: 'middle' });
   await expect(tabs(page)).toHaveCount(2);
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'First plan', exact: true }).click();
   await expect(frame.getByLabel('Decision', { exact: true })).toHaveValue('Private answer');
   await expect(page.locator('.annotation p')).toContainText('Private annotation');
   // The other project's only tab exercises last-tab closure without deleting
   // the first project's preserved Second plan home workspace.
+  await page.getByRole('button', { name: 'Open project other', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'Third plan', exact: true }).click();
   await (await planTab(page, c.artifact.artifactId, 'document')).click({ button: 'middle' });
   await expect(page.getByRole('heading', { name: 'No open tabs' })).toBeVisible();
   await page.getByRole('button', { name: 'Open plan', exact: true }).click();
   await expect(frame.getByRole('heading', { name: 'Third plan', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Close plan tab', exact: true }).click();
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'First plan', exact: true }).click();
   await expect(page.getByRole('combobox', { name: 'Document version' })).toHaveValue(
     String(a.revision.revisionId),
   );
   // Leave a browser URL persisted but no live browser will load on restart.
   await mcp.tool('show_content', { artifactId: b.artifact.artifactId, url });
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   await page.getByRole('tab', { name: 'Local browser page', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveValue(url + '/');
@@ -392,6 +420,8 @@ test('project Plans workspaces, local comments, browser close and restart preser
     'aria-valuenow',
     '260',
   );
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   await expect(tabs(page)).toHaveCount(4);
   const afterRestart = await applicationSnapshot(page);
@@ -413,6 +443,8 @@ test('project Plans workspaces, local comments, browser close and restart preser
   );
   await page.getByRole('tab', { name: 'Local browser page', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Browser address' })).toHaveValue(url + '/');
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'First plan', exact: true }).click();
   await expect(frame.getByRole('heading', { name: 'First plan', exact: true })).toBeVisible({
     timeout: 15000,
@@ -425,8 +457,12 @@ test('project Plans workspaces, local comments, browser close and restart preser
   });
   await page.getByRole('button', { name: 'Edit annotation 1', exact: true }).click();
   await page.getByLabel('Edit annotation', { exact: true }).fill('Edited private annotation');
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   await expect(frame.getByRole('heading', { name: 'Second plan', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'First plan', exact: true }).click();
   await expect(page.locator('.annotation p')).toContainText('Edited private annotation');
   await expect(page.getByRole('combobox', { name: 'Document version' })).toHaveValue(
@@ -497,6 +533,8 @@ test('project Plans workspaces, local comments, browser close and restart preser
     1,
   );
   // A failed workspace write must be detected before a live site's view closes.
+  await page.getByRole('button', { name: 'Open project project', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await page.getByRole('button', { name: 'Second plan', exact: true }).click();
   await page.getByRole('tab', { name: 'Local browser page', exact: true }).click();
   await expect(

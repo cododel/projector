@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   DEFAULT_SHORTCUTS,
@@ -160,7 +161,7 @@ export function ApplicationSettings({
           <header>
             <h2>{section}</h2>
             <button type="button" onClick={onClose} disabled={busy} aria-label="Close settings">
-              ×
+              <Icon name="close" />
             </button>
           </header>
           <div className="settings-content">
@@ -337,6 +338,7 @@ export function ApplicationSettings({
                             if (recording !== action || event.nativeEvent.isComposing) return;
                             if (event.key === 'Escape') {
                               event.preventDefault();
+                              event.stopPropagation();
                               setRecording(null);
                               return;
                             }

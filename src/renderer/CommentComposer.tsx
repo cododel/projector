@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import React, { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState } from 'react';
 
 interface Props {
@@ -145,7 +146,7 @@ export const CommentComposer = forwardRef<CommentComposerHandle, Props>(
             disabled={disabled}
             onClick={() => void run(() => current.current.onCancel()).catch(() => {})}
           >
-            {props.editing ? 'Cancel' : '×'}
+            {props.editing ? 'Cancel' : <Icon name="close" />}
           </button>
           <button
             className={`comment-save ${props.editing ? '' : 'comment-confirm'}`}

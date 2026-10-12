@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -21,15 +21,22 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   const project = join(root, 'project'), other = join(root, 'worktree'), data = join(root, 'data'), home = join(root, 'codex-home');
   await Promise.all([project, other, data, home].map(path => mkdir(path)));
   const descriptor = join(root, 'endpoint.json'), audit = join(root, 'codex.jsonl'), exact = 'exact-product-thread';
+  const metadataPath = join(root, 'session-metadata.json');
+  const metadata = {
+    [exact]: { name: 'Guardian review', source: 'cli' },
+    'hidden-review-child': { name: 'Hidden child review', source: { subAgent: 'review' } },
+    'hidden-archived-child': { name: 'Hidden archived child', parentThreadId: exact, source: 'cli', archived: true },
+  };
+  const changeCatalog = async (archived: boolean) => {
+    await writeFile(metadataPath + '.tmp', JSON.stringify({ ...metadata, [exact]: { ...metadata[exact], archived } }));
+    await rename(metadataPath + '.tmp', metadataPath);
+  };
+  await changeCatalog(false);
   const launch = () => electron.launch({ args: [resolve('.')], env: { ...process.env,
     BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: descriptor, CODEX_HOME: home,
     CODEX_FIXTURE_PROJECT: project, CODEX_FIXTURE_OTHER_PROJECT: other, CODEX_FIXTURE_AUDIT: audit,
-    CODEX_FIXTURE_ID: exact, CODEX_FIXTURE_MCP_STARTUP_STATUS: 'ready',
-    CODEX_FIXTURE_SESSION_METADATA: JSON.stringify({
-      [exact]: { name: 'Guardian review', source: 'cli' },
-      'hidden-review-child': { name: 'Hidden child review', source: { subAgent: 'review' } },
-      'hidden-archived-child': { name: 'Hidden archived child', parentThreadId: exact, source: 'cli', archived: true },
-    }) } });
+    CODEX_FIXTURE_ID: exact, CODEX_FIXTURE_EMPTY: '0', BLUEPRINT_E2E_HARNESS_INTERVAL_MS: '200', CODEX_FIXTURE_MCP_STARTUP_STATUS: 'ready',
+    CODEX_FIXTURE_METADATA_FILE: metadataPath } });
   app = await launch();
   let launchErrors = '';
   app.process().stderr?.on('data', chunk => { launchErrors += String(chunk); });
@@ -43,13 +50,13 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   const projectId = await choose(project), otherId = await choose(other);
   const settings = (await snapshot(page)).settings;
   await invoke(page, 'applicationSettings', { ...settings, codexExecutable: resolve('tests/fixtures/codex-cli.mjs') });
-  await invoke(page, 'harnessRefresh');
+  await expect.poll(async () => (await snapshot(page)).harnesses.sessions.some(session => session.id === exact && session.projectId === projectId)).toBe(true);
   let value = await snapshot(page);
   expect(value.harnesses.sessions).toEqual(expect.arrayContaining([
     expect.objectContaining({ id: exact, projectId, processState: 'unknown' }),
     expect.objectContaining({ id: 'other-worktree', projectId: otherId, processState: 'unknown' }),
-    expect.objectContaining({ id: 'archived-exact-fixture', archived: true, projectId }),
   ]));
+  expect(value.harnesses.sessions.some(session => session.archived)).toBe(false);
   expect(value.terminals).toEqual([]);
   await expect(page.getByRole('button', { name: 'Guardian review', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Hidden child review', exact: true })).toHaveCount(0);
@@ -59,6 +66,14 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   value = await snapshot(page);
   expect(value.harnesses.sessions.some(session => session.id === 'hidden-review-child')).toBe(false);
   expect(value.workspaces).toEqual(workspaces);
+  await changeCatalog(true);
+  await expect.poll(async () => (await snapshot(page)).harnesses.sessions.some(session => session.id === exact)).toBe(false);
+  await expect(page.getByRole('button', { name: 'Guardian review', exact: true })).toHaveCount(0);
+  expect(await invoke(page, 'harnessRead', { sessionId: exact })).toMatchObject({ archived: true });
+  expect((await snapshot(page)).harnesses.sessions.some(session => session.id === exact)).toBe(false);
+  expect((await snapshot(page)).workspaces).toEqual(workspaces);
+  await changeCatalog(false);
+  await expect(page.getByRole('button', { name: 'Guardian review', exact: true })).toBeVisible();
   const requests = async () => (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { kind: string; method?: string; params?: Record<string, unknown>; args?: string[] });
   expect((await requests()).some(event => event.method === 'thread/start' || event.method === 'thread/resume')).toBe(false);
   await page.getByRole('button', { name: 'New Codex session in project', exact: true }).click();
@@ -87,7 +102,8 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   const artifact = await mcp.tool('create_artifact', { projectId, kind: 'blueprint', title: 'Shared authored plan', originSession: { harness: 'codex', sessionId: author }, operationId: randomUUID() });
   await writeFile(join(String(artifact.sourcePath), 'plan.mdx'), '# Shared authored plan\n\n<TextAnswer id="choice" meaning="Decision" semanticsVersion="1" defaultValue="" />');
   const revision = await mcp.tool('publish_artifact', { artifactId: artifact.artifactId, expectedLatestRevision: null, operationId: randomUUID() });
-  await page.getByRole('button', { name: 'Shared authored plan', exact: true }).click();
+  // Open in the explicit live session to protect side-by-side plan/terminal behavior.
+  await invoke(page, 'applicationCommand', {action: 'openPlan', projectId, key: `${projectId}/${exact}`, artifactId: artifact.artifactId, revisionId: revision.revisionId});
   await expect(page.frameLocator('iframe').getByRole('heading', { name: 'Shared authored plan' })).toBeVisible();
   expect((await snapshot(page)).workspaces[`${projectId}/${exact}`].tabs[0].root.kind).toBe('split');
   await page.frameLocator('iframe').getByLabel('Decision', { exact: true }).fill('Private before manual Save');
@@ -130,7 +146,7 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
     const workspace = current.workspaces[current.selectedWorkspace!];
     const active = workspace.tabs.flatMap(tab => paneLeaves(tab.root))
       .find(pane => pane.id === workspace.activePaneId);
-    expect(active?.content).toEqual({ kind: 'terminal', terminalId: terminal.id });
+    expect(active?.content).toEqual({ kind: 'session', sessionId: exact, terminalId: terminal.id });
     expect(current.terminals).toHaveLength(1);
     await invoke(page, 'terminalScreen', { id: terminal.id });
     expect(await app!.evaluate(() =>
@@ -150,11 +166,9 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
 
   // Historical-state copy follows the same UI path from a different workspace;
   // the selected saved state must remain the first one after a newer Save exists.
-  await page.locator('.project-sessions').filter({
-    has: page.getByRole('button', { name: 'New Codex session in project', exact: true }),
-  }).getByRole('button', { name: 'Plans', exact: true }).click();
-  await expect.poll(async () => (await snapshot(page)).selectedWorkspace).toBe(`${projectId}/plans`);
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Shared authored plan', exact: true }).click();
+  await expect.poll(async () => (await snapshot(page)).selectedWorkspace).toBe(`${projectId}/plans`);
   await page.frameLocator('iframe').getByLabel('Decision', { exact: true }).fill('A newer private saved state');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect.poll(async () => (await invoke<{ savedStates: { artifactId: string }[] }>(page, 'snapshot'))
@@ -175,6 +189,7 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   await history.getByRole('button', { name: 'Copy update message', exact: true }).nth(historicalIndex).click();
   await assertCopied(beforeCopy);
 
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Shared authored plan', exact: true }).click();
   await page.frameLocator('iframe').getByLabel('Decision', { exact: true }).fill('Copy-only saved context');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -218,7 +233,7 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   expect(revision.revisionId).toBeTruthy();
 
   mcp.close(); mcp = undefined; await app.close(); app = await launch(); page = await app.firstWindow();
-  await expect.poll(async () => (await snapshot(page)).terminals[0]?.status).toBe('inactive');
+  await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
   const afterRestart = await requests();
   expect(afterRestart.filter(event => event.method === 'thread/start' && event.params?.ephemeral === false)).toHaveLength(1);
   expect(afterRestart.filter(event => event.method === 'thread/resume')).toHaveLength(0);
@@ -226,4 +241,47 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   await expect.poll(async () => (await snapshot(page)).terminals.some(record => record.status === 'running' && record.harnessSessionId === exact)).toBe(true);
   await expect.poll(async () => (await requests()).filter(event => event.method === 'thread/resume').map(event => event.params?.threadId)).toEqual([exact]);
   await expect.poll(async () => (await snapshot(page)).harnesses.sessions.find(session => session.id === exact)?.processState).toBe('running');
+});
+
+test('Resume reports an active writer without starting a terminal or taking over the session', async () => {
+  root = await realpath(await mkdtemp(join(tmpdir(), 'bp-writer-ui-')));
+  const project = join(root, 'project'), data = join(root, 'data'), home = join(root, 'home');
+  await Promise.all([project, data, home].map(path => mkdir(path)));
+  const audit = join(root, 'audit.jsonl'), sessionId = 'busy-session';
+  app = await electron.launch({ args: [resolve('.')], env: { ...process.env,
+    BLUEPRINT_DATA: data, BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'), CODEX_HOME: home,
+    BLUEPRINT_E2E_CODEX_EXECUTABLE: resolve('tests/fixtures/codex-cli.mjs'),
+    CODEX_FIXTURE_EMPTY: '0', CODEX_FIXTURE_PROJECT: project, CODEX_FIXTURE_ID: sessionId,
+    CODEX_FIXTURE_NAME: 'In use session', CODEX_FIXTURE_ACTIVE_WRITER: sessionId, CODEX_FIXTURE_AUDIT: audit,
+  } });
+  const page = await app.firstWindow();
+  await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, project);
+  await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();
+  await page.locator('.sidebar').getByRole('button', { name: 'In use session', exact: true }).click();
+  const before = await snapshot(page);
+  const key = before.selectedWorkspace!;
+  const pinned = before.workspaces[key].tabs[0];
+  expect(paneLeaves(pinned.root)[0].content).toEqual({ kind: 'session', sessionId });
+  const tab = page.getByRole('tab', { name: 'Codex', exact: true });
+  await expect(tab).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close codex tab', exact: true })).toHaveCount(0);
+  await tab.click({ button: 'middle' });
+  await page.keyboard.press('Meta+w');
+  await invoke(page, 'applicationCommand', { action: 'closeTab', projectId: before.workspaces[key].projectId, key, tabId: pinned.id });
+  await invoke(page, 'applicationCommand', { action: 'closePane', projectId: before.workspaces[key].projectId, key, paneId: paneLeaves(pinned.root)[0].id });
+  expect((await snapshot(page)).workspaces[key].tabs).toEqual(before.workspaces[key].tabs);
+  await expect(tab).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close panel', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Resume', exact: true }).click();
+  const error = page.locator('.error-banner');
+  await expect(error).toContainText('This session is already in use by another Codex process.');
+  await expect(error).toContainText('Return to the existing launch, or retry after it releases the session.');
+  await expect(error).not.toContainText('CODEX_RPC_FAILED');
+  await expect(page.getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
+  const state = await snapshot(page);
+  expect(state.terminals).toEqual([]);
+  expect(state.harnesses.mcpStartup).toEqual([]);
+  expect(state.harnesses.sessions.find(session => session.id === sessionId)?.processState).toBe('unknown');
+  const calls = (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { method?: string });
+  expect(calls.some(call => call.method === 'thread/start' || call.method === 'thread/resume')).toBe(false);
 });

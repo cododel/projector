@@ -168,3 +168,32 @@ it('rejects a failed cwd checkpoint and reconciles a renamed checkpoint without 
   expect(await service.currentCwd(terminal.id)).toBe(canonical);
   expect(service.snapshot()).toHaveLength(1);
 });
+it('keeps a failed removal actionable and removes the ended terminal after Retry without restarting it', async () => {
+  const { path, service } = await setup();
+  const terminal = await service.create({
+    projectId: 'p',
+    cwd: path,
+    kind: 'shell',
+    executable: '/bin/sh',
+    args: ['-c', 'read line'],
+  });
+  fault.write = true;
+  await expect(service.stop(terminal.id)).rejects.toBeDefined();
+  expect(service.snapshot()).toEqual([
+    expect.objectContaining({
+      id: terminal.id,
+      status: 'exited',
+      error: expect.stringContaining('removed'),
+    }),
+  ]);
+  expect(() => process.kill(terminal.pid!, 0)).toThrow();
+  fault.write = false;
+  await service.stop(terminal.id);
+  expect(service.snapshot()).toEqual([]);
+  expect(
+    JSON.parse(await readFile(join(path, 'terminals', 'catalog.json'), 'utf8')).terminals,
+  ).toEqual([]);
+  await expect(readFile(join(path, 'terminals', `${terminal.id}.json`))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+});

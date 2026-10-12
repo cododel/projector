@@ -45,8 +45,9 @@ test('public show_content reuses only its session page and closing another sessi
   await shell.getByRole('button', { name: '+ Open project folder', exact: true }).click();
   const state = await invoke<{ projects: { id: string }[] }>(shell, 'snapshot');
   const projectId = state.projects[0].id;
-  const { artifactId } = await invoke<{ artifactId: string }>(shell, 'createEmptyPlan', { projectId, operationId: randomUUID() });
   mcp = new Mcp(descriptor); await mcp.initialize();
+  const artifact = await mcp.tool('create_artifact', {projectId, kind: 'blueprint', title: 'Agent browser workspace', originSession: {harness: 'codex', sessionId: 'ownership-author'}, operationId: randomUUID()});
+  const artifactId = String(artifact.artifactId);
   const select = (sessionId: string) => invoke(shell, 'applicationCommand', { action: 'select', projectId, sessionId });
   const show = () => mcp!.tool('show_content', { artifactId, url });
   const keyA = `${projectId}/ownership-a`, keyB = `${projectId}/ownership-b`;

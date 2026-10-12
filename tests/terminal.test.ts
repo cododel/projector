@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TerminalService } from '../src/terminal/engine';
@@ -43,7 +43,7 @@ it('starts a real PTY, routes Unicode only through its active view and applies t
     executable: '/bin/sh',
     args: [
       '-c',
-      'stty -echo; printf "PTY_READY\\n"; IFS= read -r line; printf "INPUT:%s\\n" "$line"; printf "SIZE:"; stty size; exit 7',
+      'stty -echo; printf "PTY_READY\\n"; IFS= read -r line; printf "INPUT:%s\\n" "$line"; printf "SIZE:"; stty size; read finish; exit 7',
     ],
   });
   expect(terminal.status).toBe('running');
@@ -54,15 +54,21 @@ it('starts a real PTY, routes Unicode only through its active view and applies t
     /Select the terminal pane/,
   );
   service.input(terminal.id, 'Привет 🙂 日本語\r', 'active');
-  await until(() => service.snapshot()[0].status === 'exited');
+  await until(() =>
+    output
+      .map((e) => e.data)
+      .join('')
+      .includes('SIZE:37 101'),
+  );
   const frame = await service.screen(terminal.id);
   expect(frame.content).toContain('INPUT:Привет 🙂 日本語');
   expect(frame.content).toContain('SIZE:37 101');
-  expect(service.snapshot()[0].exitCode).toBe(7);
+  service.input(terminal.id, '\r', 'active');
+  await until(() => service.snapshot().length === 0);
   expect(output.map((e) => e.seq)).toEqual(output.map((_, i) => i + 1));
   expect(output.map((e) => e.data).join('')).not.toContain('wrong');
 });
-it('preserves the real terminal after view detachment and restores its saved screen without executing again', async () => {
+it('preserves a detached live terminal and removes it after Quit without executing again', async () => {
   const { data, service, output } = await setup();
   const terminal = await service.create({
     projectId: 'project',
@@ -89,12 +95,8 @@ it('preserves the real terminal after view detachment and restores its saved scr
   const restored = new TerminalService(data);
   services.push(restored);
   await restored.open();
-  expect(restored.snapshot()).toMatchObject([
-    { id: terminal.id, status: 'inactive', cwd: await realpath(data), projectId: 'project' },
-  ]);
-  expect(restored.snapshot()[0].pid).toBeUndefined();
-  expect((await restored.screen(terminal.id)).content).toContain('AFTER_REATTACH');
-  expect(() => restored.input(terminal.id, 'run again\r', 'pane')).toThrow();
+  expect(restored.snapshot()).toEqual([]);
+  await expect(restored.screen(terminal.id)).rejects.toMatchObject({ code: 'TERMINAL_NOT_FOUND' });
 });
 it('limits scrollback and replay and discloses removed history', async () => {
   const { data, service, output } = await setup({ scrollback: 100, maxReplayBytes: 1024 });
@@ -125,7 +127,7 @@ it('limits scrollback and replay and discloses removed history', async () => {
   );
   await expect(service.configure({ scrollback: 99 })).rejects.toThrow();
 });
-it('reads the owned shell current cwd after cd and preserves it after Stop and inactive restoration', async () => {
+it('reads the owned shell cwd after cd for split and removes ended terminals', async () => {
   const { data, service, output } = await setup();
   const nested = join(data, 'nested folder 日本語');
   await mkdir(nested);
@@ -171,16 +173,10 @@ it('reads the owned shell current cwd after cd and preserves it after Stop and i
   const restored = new TerminalService(data);
   services.push(restored);
   await restored.open();
-  expect(restored.snapshot()).toHaveLength(2);
-  expect(
-    restored
-      .snapshot()
-      .every(
-        (record) =>
-          record.status === 'inactive' && record.cwd === canonical && record.pid === undefined,
-      ),
-  ).toBe(true);
-  expect(await restored.currentCwd(source.id)).toBe(canonical);
+  expect(restored.snapshot()).toEqual([]);
+  await expect(restored.currentCwd(source.id)).rejects.toMatchObject({
+    code: 'TERMINAL_NOT_FOUND',
+  });
 });
 it('applies smaller history limits immediately and discloses truncation without waiting for more output', async () => {
   const { data, service, output } = await setup();
@@ -234,8 +230,8 @@ it('does not persist launch arguments or environment credentials and deduplicate
   expect(disk).not.toContain('synthetic-auth-token');
   expect(disk).not.toContain('BLUEPRINT_FIXTURE_SECRET');
   expect(disk).not.toContain('"pid"');
-  expect((await service.create(input)).id).toBe(a.id);
-  expect(service.snapshot()).toHaveLength(1);
+  await expect(service.create(input)).rejects.toMatchObject({ code: 'TERMINAL_PROCESS_ENDED' });
+  expect(service.snapshot()).toEqual([]);
 });
 it('terminates both its PTY and a child process when Stop is requested', async () => {
   const { data, service, output } = await setup();
@@ -257,7 +253,7 @@ it('terminates both its PTY and a child process when Stop is requested', async (
   expect(() => process.kill(terminal.pid!, 0)).toThrow();
   expect(() => process.kill(child, 0)).toThrow();
   await service.stop(terminal.id);
-  expect(service.snapshot()[0].status).toBe('exited');
+  expect(service.snapshot()).toEqual([]);
 });
 it('rejects failed registry writes and keeps no live terminal or false successful result', async () => {
   const { data, service } = await setup();
@@ -302,4 +298,76 @@ it('binds the exact Codex session explicitly and rejects another session or shel
   await expect(service.bindSession(shell.id, 'exact-session-id')).rejects.toMatchObject({
     code: 'TERMINAL_KIND_INVALID',
   });
+});
+it('removes an exited PTY and its saved screen instead of retaining terminal history', async () => {
+  const { data, service, output } = await setup();
+  const terminal = await service.create({
+    projectId: 'project',
+    cwd: data,
+    kind: 'shell',
+    executable: '/bin/sh',
+    args: ['-c', 'stty -echo; printf "EXIT_READY\\n"; read line; exit 7'],
+    operationId: 'finished-process',
+  });
+  await until(() => output.some((event) => event.data.includes('EXIT_READY')));
+  service.resize(terminal.id, { cols: 80, rows: 24, viewId: 'pane', active: true });
+  service.input(terminal.id, '\r', 'pane');
+  await until(() => service.snapshot().length === 0);
+  await expect(readFile(join(data, 'terminals', `${terminal.id}.json`))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+  expect(
+    JSON.parse(await readFile(join(data, 'terminals', 'catalog.json'), 'utf8')).terminals,
+  ).toEqual([]);
+  await expect(
+    service.create({
+      projectId: 'project',
+      cwd: data,
+      kind: 'shell',
+      executable: '/bin/sh',
+      operationId: 'finished-process',
+    }),
+  ).rejects.toMatchObject({ code: 'TERMINAL_PROCESS_ENDED' });
+});
+it('drops legacy inactive and exited screens on startup without touching unrelated files', async () => {
+  const { data, service } = await setup();
+  await service.shutdown();
+  services.splice(services.indexOf(service), 1);
+  const id = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+  const directory = join(data, 'terminals');
+  await writeFile(
+    join(directory, 'catalog.json'),
+    JSON.stringify({
+      formatVersion: 1,
+      terminals: [
+        {
+          id,
+          projectId: 'project',
+          cwd: data,
+          kind: 'shell',
+          title: 'Shell',
+          createdAt: new Date().toISOString(),
+          status: 'inactive',
+          exitCode: null,
+          operationId: 'legacy-create',
+        },
+      ],
+    }),
+  );
+  await writeFile(join(directory, `${id}.json`), 'old screen');
+  await writeFile(join(data, 'unrelated.json'), 'preserve');
+  const restored = new TerminalService(data);
+  services.push(restored);
+  await restored.open();
+  expect(restored.snapshot()).toEqual([]);
+  await expect(readFile(join(directory, `${id}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(join(data, 'unrelated.json'), 'utf8')).toBe('preserve');
+  await expect(
+    restored.create({
+      projectId: 'project',
+      cwd: data,
+      kind: 'shell',
+      operationId: 'legacy-create',
+    }),
+  ).rejects.toMatchObject({ code: 'TERMINAL_PROCESS_ENDED' });
 });

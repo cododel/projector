@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, stat, realpath } from 'node:fs/promises';
+import { mkdir, readFile, stat, realpath, rm } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 import { atomicJson } from '../runtime/files';
@@ -52,15 +52,6 @@ const recordSchema = z.object({
   error: z.string().optional(),
   truncated: z.boolean().optional(),
 });
-const screenSchema = z.object({
-  id: z.string().uuid(),
-  generation: z.string().optional(),
-  seq: z.number().int().min(0),
-  cols: z.number().int().min(2).max(500),
-  rows: z.number().int().min(1).max(300),
-  content: z.string().max(8 * 1024 * 1024),
-  truncated: z.boolean(),
-});
 const resizeSchema = z.object({
   cols: z.number().int().min(2).max(500),
   rows: z.number().int().min(1).max(300),
@@ -92,6 +83,9 @@ interface Context {
   pendingBytes: number;
   paused: boolean;
   timer?: ReturnType<typeof setTimeout>;
+  retiring?: boolean;
+  removal?: Promise<void>;
+  processCleanup?: Promise<void>;
   exit?: Promise<void>;
   resolveExit?: () => void;
 }
@@ -103,6 +97,7 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 export class TerminalService {
   private contexts = new Map<string, Context>();
+  private endedOperations = new Set<string>();
   private creations = new Map<string, Promise<TerminalRecord>>();
   private options: Required<TerminalOptions>;
   private writing: Promise<void> = Promise.resolve();
@@ -131,33 +126,73 @@ export class TerminalService {
       throw new TerminalError('TERMINAL_STORAGE_FAILED', 'Terminal history could not be read.');
     }
     const parsed = z
-      .object({ formatVersion: z.literal(1), terminals: z.array(recordSchema).max(1000) })
+      .object({
+        formatVersion: z.literal(1),
+        terminals: z.array(recordSchema).max(1000),
+        endedOperations: z.array(z.string()).max(1000).optional(),
+      })
       .safeParse(catalog);
     if (!parsed.success)
       throw new TerminalError(
         'TERMINAL_STORAGE_FAILED',
         'Terminal history is incompatible or damaged.',
       );
+    this.endedOperations = new Set(parsed.data.endedOperations ?? []);
+    // A previous service cannot own a live PTY in this process. Do not resurrect
+    // ended processes as terminal history; keep only mutation receipts.
     for (const stored of parsed.data.terminals) {
-      const context = this.context({ ...stored, status: 'inactive' });
-      try {
-        const screen = screenSchema.parse(
-          JSON.parse(await readFile(this.screenPath(stored.id), 'utf8')),
-        );
-        if (screen.id !== stored.id) throw new Error('Screen identity mismatch');
-        context.terminal.resize(screen.cols, screen.rows);
-        await this.write(context, screen.content);
-        context.seq = screen.seq;
-        context.truncated = screen.truncated;
-        context.record.truncated = screen.truncated;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-          context.record.error = 'Saved terminal screen could not be restored.';
-      }
-      context.registered = true;
-      this.contexts.set(stored.id, context);
+      this.rememberEnded(stored.operationId);
+      await rm(this.screenPath(stored.id), { force: true });
     }
+    await this.catalog();
   }
+  private rememberEnded(operationId?: string) {
+    if (!operationId) return;
+    this.endedOperations.add(operationId);
+    if (this.endedOperations.size > 1000)
+      this.endedOperations.delete(this.endedOperations.values().next().value!);
+  }
+  private retire(context: Context): Promise<void> {
+    if (context.removal) return context.removal;
+    context.removal = (async () => {
+      if (context.timer) clearTimeout(context.timer);
+      context.timer = undefined;
+      await context.pending;
+      try {
+        await context.processCleanup;
+      } catch (error) {
+        context.record.status = 'error';
+        context.record.error =
+          'Terminal process ended, but descendant cleanup could not be verified. Retry Stop.';
+        context.processCleanup = undefined;
+        context.removal = undefined;
+        this.changed();
+        throw error;
+      }
+      delete context.record.pid;
+      await this.writing.catch(() => {});
+      this.rememberEnded(context.record.operationId);
+      context.retiring = true;
+      try {
+        await rm(this.screenPath(context.record.id), { force: true });
+        await this.catalog();
+      } catch (error) {
+        // Keep an actionable storage error, rather than claiming removal succeeded.
+        context.retiring = false;
+        context.record.error =
+          'Ended terminal could not be removed. Check local storage and retry Stop.';
+        this.contexts.set(context.record.id, context);
+        context.removal = undefined;
+        this.changed();
+        throw error;
+      }
+      this.contexts.delete(context.record.id);
+      context.terminal.dispose();
+      this.changed();
+    })();
+    return context.removal;
+  }
+
   snapshot(): TerminalRecord[] {
     return [...this.contexts.values()].map((c) => ({ ...c.record }));
   }
@@ -222,15 +257,18 @@ export class TerminalService {
   private catalog() {
     return this.atomic(join(this.directory, 'catalog.json'), {
       formatVersion: 1,
-      terminals: this.snapshot().map((record) => {
-        const persisted = { ...record };
-        delete persisted.pid;
-        return persisted;
-      }),
+      endedOperations: [...this.endedOperations],
+      terminals: this.snapshot()
+        .filter((record) => !this.contexts.get(record.id)?.retiring)
+        .map((record) => {
+          const persisted = { ...record };
+          delete persisted.pid;
+          return persisted;
+        }),
     });
   }
   private schedule(context: Context) {
-    if (context.timer || this.closed || !context.registered) return;
+    if (context.timer || this.closed || !context.registered || context.retiring) return;
     context.timer = setTimeout(() => {
       context.timer = undefined;
       void this.persistScreen(context).catch(() => {
@@ -316,22 +354,14 @@ export class TerminalService {
       context.pty.onData((data) => this.output(context, data));
       context.pty.onExit(({ exitCode, signal: exitSignal }) => {
         context.pty = undefined;
-        delete context.record.pid;
+        context.processCleanup ??= terminateOwnedProcessTree(context.record.pid!);
+        void context.processCleanup.catch(() => {});
         context.record.status = 'exited';
         context.record.exitCode = exitCode;
         context.record.signal = exitSignal;
         context.resolveExit?.();
         if (!context.registered) return;
-        this.changed();
-        void context.pending
-          .then(async () => {
-            await this.persistScreen(context);
-            await this.catalog();
-          })
-          .catch(() => {
-            context.record.error = 'Terminal exit state could not be saved.';
-            this.changed();
-          });
+        void this.retire(context).catch(() => {});
       });
     } catch {
       context.record.status = 'error';
@@ -357,6 +387,11 @@ export class TerminalService {
   private async createOnce(value: CreateTerminal): Promise<TerminalRecord> {
     this.available();
     const input = createSchema.parse(value);
+    if (input.operationId && this.endedOperations.has(input.operationId))
+      throw new TerminalError(
+        'TERMINAL_PROCESS_ENDED',
+        'This terminal creation already completed and its process ended. Start a new terminal explicitly.',
+      );
     if (input.operationId) {
       const prior = [...this.contexts.values()].find(
         (c) => c.record.operationId === input.operationId,
@@ -416,6 +451,13 @@ export class TerminalService {
       );
     }
     context.registered = true;
+    if (!context.pty && context.record.status === 'exited') {
+      await this.retire(context);
+      throw new TerminalError(
+        'TERMINAL_PROCESS_ENDED',
+        'The terminal process ended during startup.',
+      );
+    }
     this.schedule(context);
     this.changed();
     return { ...context.record };
@@ -524,10 +566,24 @@ export class TerminalService {
   }
   private async terminate(context: Context) {
     const pty = context.pty;
-    if (!pty) return;
+    if (!pty) {
+      if (context.record.pid) {
+        context.processCleanup ??= terminateOwnedProcessTree(context.record.pid);
+        try {
+          await context.processCleanup;
+        } catch (error) {
+          context.processCleanup = undefined;
+          throw error;
+        }
+        delete context.record.pid;
+      }
+      return;
+    }
     let failure: unknown;
-    await terminateOwnedProcessTree(pty.pid).catch((error) => {
+    context.processCleanup ??= terminateOwnedProcessTree(pty.pid);
+    await context.processCleanup.catch((error) => {
       failure = error;
+      context.processCleanup = undefined;
     });
     await Promise.race([context.exit, delay(2000)]);
     if (context.pty || failure)
@@ -536,6 +592,7 @@ export class TerminalService {
         'Terminal process termination or descendant cleanup was not confirmed.',
         failure ? { cause: failure } : undefined,
       );
+    delete context.record.pid;
   }
   private async liveCwd(context: Context): Promise<string> {
     const pty = context.pty;
@@ -608,13 +665,12 @@ export class TerminalService {
   }
   async stop(id: string) {
     this.available();
-    const context = this.get(id);
+    const context = this.contexts.get(id);
+    if (!context) return;
     await this.checkpointCwd(context);
     await this.terminate(context);
     await context.pending;
-    await this.persistScreen(context);
-    await this.catalog();
-    this.changed();
+    await this.retire(context);
     return { ...context.record };
   }
   async restart(id: string, options: Pick<CreateTerminal, 'executable' | 'args' | 'env'> = {}) {
@@ -659,11 +715,10 @@ export class TerminalService {
           await this.checkpointCwd(context);
           await this.terminate(context);
           await context.pending;
-          await this.persistScreen(context);
+          await this.retire(context);
         } catch (error) {
           errors.push(error);
         }
-        context.terminal.dispose();
       }
       await this.catalog().catch((error) => errors.push(error));
       await this.writing.catch(() => {});

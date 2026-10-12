@@ -30,6 +30,15 @@ test('offline guide, folder relocation and copy conflict preserve the original p
     );
   });
   let page = await app.firstWindow();
+  const utilities = page.getByRole('navigation', { name: 'Application utilities' });
+  await expect(utilities.getByRole('button')).toHaveCount(3);
+  await expect(utilities.getByRole('img', { name: 'Local runtime active' })).toBeVisible();
+  const footerBounds = (await utilities.boundingBox())!;
+  expect(footerBounds.height).toBeLessThanOrEqual(112);
+  const buttonBounds = await Promise.all(['Settings', 'Blueprint guide', 'MCP connection'].map(name => utilities.getByRole('button', { name, exact: true }).boundingBox()));
+  expect(buttonBounds.every(bounds => bounds!.x === buttonBounds[0]!.x && bounds!.height === 32)).toBe(true);
+  await page.screenshot({ path: '.tmp/tasks/sidebar-footer-20261012/footer.png' });
+
   await page.getByRole('button', { name: 'Blueprint guide', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Blueprint guide' })).toContainText(
     'Available offline',
@@ -129,6 +138,7 @@ test('offline guide, folder relocation and copy conflict preserve the original p
     };
   });
   await page.getByRole('button', { name: 'Project actions for project', exact: true }).click();
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Original plan', exact: true }).click();
   await expect(page.frameLocator('iframe').getByRole('textbox')).toHaveValue('PRIVATE retained');
   await cp(join(root, 'moved'), join(root, 'copy'), { recursive: true });
@@ -141,8 +151,8 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   );
   await page.getByRole('button', { name: '+ Open project folder' }).click();
   await expect(page.locator('.project-row')).toHaveCount(2);
-  await expect(page.getByRole('button', { name: 'Original plan', exact: true })).toHaveCount(1);
-  await expect(page.getByRole('heading', { name: 'No open tabs', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Original plan', exact: true })).toHaveCount(0);
+  await expect(page.getByText('No plans yet', {exact: true})).toBeVisible();
   const copied = await page.evaluate(async () => {
     const bridge = (window as unknown as {
       blueprint: { invoke(name: string): Promise<unknown> };
@@ -163,8 +173,9 @@ test('offline guide, folder relocation and copy conflict preserve the original p
     tabs: [],
   });
   expect(copied.runtime.artifacts.filter((item) => item.projectId === copiedProject.id)).toEqual([]);
-  // Creating a new empty project selects its standalone workspace. Returning to
+  // Creating a new empty project selects its dashboard. Returning to
   // the registered original must restore its own private answers.
+  await page.getByRole('button', { name: 'Open project moved', exact: true }).click();
   await page.getByRole('button', { name: 'Original plan', exact: true }).click();
   await expect(page.frameLocator('iframe').getByRole('textbox')).toHaveValue('PRIVATE retained');
 });
@@ -339,6 +350,7 @@ test('a failed Save retry remains bound to its own artifact when another plan is
   } finally {
     await chmod(plans[0].path, 0o755);
   }
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Plan B', exact: true }).click();
   await expect(page.frameLocator('iframe').getByRole('heading', { name: 'Plan B' })).toBeVisible();
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -351,6 +363,7 @@ test('a failed Save retry remains bound to its own artifact when another plan is
   expect(
     (await mcp.tool('read_artifact', { artifactId: plans[1].artifactId, part: 'state' })).content,
   ).toContain(String(plans[1].artifactId));
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
   await page.getByRole('button', { name: 'Plan A', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Retry Save', exact: true })).toBeVisible();
 });

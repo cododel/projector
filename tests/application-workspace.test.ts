@@ -38,6 +38,57 @@ async function store() {
   await workspace.load();
   return workspace;
 }
+it('creates an unclosable session view without launching or requiring a terminal', async () => {
+  const w = await store(); const key = w.select('p', 's');
+  const workspace = w.workspace(key);
+  expect(workspace.tabs).toHaveLength(1);
+  const tab = workspace.tabs[0], pane = paneLeaves(tab.root)[0];
+  expect(pane.content).toEqual({ kind: 'session', sessionId: 's' });
+  w.closeTab(key, tab.id); w.closePane(key, pane.id);
+  expect(w.workspace(key).tabs[0]).toEqual(tab);
+  await w.save();
+  const restored = new ApplicationWorkspace(join(directory, 'workspaces.json')); await restored.load();
+  expect(restored.snapshot()).toEqual(w.snapshot());
+});
+it('binds the primary session terminal without duplicating views, retaining plans when the process ends', async () => {
+  const w = await store(); const key = w.select('p', 's');
+  const primary = w.bindSessionTerminal(key, 'codex');
+  expect(w.terminal(key, 'codex').id).toBe(primary.id);
+  const plan = w.openPlan(key, 'a', { id: 'd', kind: 'document', revisionId: 'r' });
+  const tab = w.workspace(key).tabs[0];
+  expect(paneLeaves(tab.root).map(p => p.content.kind)).toEqual(['session', 'plan']);
+  w.closeTab(key, tab.id); w.closePane(key, primary.id);
+  expect(paneLeaves(tab.root)).toHaveLength(2);
+  expect(w.retainTerminals(new Set())).toBe(true);
+  expect(w.findPane(key, primary.id).content).toEqual({ kind: 'session', sessionId: 's' });
+  expect(w.findPane(key, plan.id).content.kind).toBe('plan');
+  w.closePane(key, plan.id);
+  expect(paneLeaves(tab.root)).toEqual([primary]);
+  expect(w.retainTerminals(new Set())).toBe(false);
+  expect(w.terminal(key, 'ordinary-shell').content.kind).toBe('terminal');
+  expect(w.workspace(key).tabs).toHaveLength(2);
+});
+it('migrates a legacy terminal split to the pinned session tab without losing active sibling or view state', async () => {
+  const w = await store(); const key = w.select('p', 's');
+  const terminal = w.terminal(key, 'codex');
+  const plan = w.openPlan(key, 'a', { id: 'd', kind: 'document', revisionId: 'r' });
+  w.view(key, plan.id, { scrollTop: 99, details: { retained: true } });
+  const legacy = w.snapshot();
+  legacy.workspaces[key].tabs.shift();
+  await writeFile(join(directory, 'workspaces.json'), JSON.stringify(legacy));
+  const restored = new ApplicationWorkspace(join(directory, 'workspaces.json')); await restored.load();
+  expect(restored.workspace(key).tabs).toHaveLength(2);
+  expect(restored.workspace(key).activePaneId).toBe(plan.id);
+  const bound = restored.bindSessionTerminal(key, 'codex');
+  expect(bound.id).toBe(terminal.id);
+  expect(restored.workspace(key).tabs).toHaveLength(1);
+  expect(restored.workspace(key).activePaneId).toBe(plan.id);
+  expect(restored.findPane(key, plan.id).content).toMatchObject({ scrollTop: 99, details: { retained: true } });
+  expect(bound.content).toEqual({ kind: 'session', sessionId: 's', terminalId: 'codex' });
+  await restored.save();
+  const twice = new ApplicationWorkspace(join(directory, 'workspaces.json')); await twice.load();
+  expect(twice.snapshot()).toEqual(restored.snapshot());
+});
 it('keeps per-session splits and project bottom terminals independent after restart', async () => {
   const w = await store();
   const one = w.select('project-a', 'session-one');
@@ -53,10 +104,11 @@ it('keeps per-session splits and project bottom terminals independent after rest
   const restored = new ApplicationWorkspace(join(directory, 'workspaces.json'));
   await restored.load();
   expect(restored.snapshot()).toEqual(w.snapshot());
-  expect(restored.workspace(one).tabs).toHaveLength(1);
-  expect(paneLeaves(restored.workspace(one).tabs[0].root).map(p => p.content.kind)).toEqual(['terminal', 'terminal', 'plan']);
-  expect(restored.workspace(two).tabs).toHaveLength(1);
-  expect(restored.workspace(other).tabs).toHaveLength(0);
+  expect(restored.workspace(one).tabs).toHaveLength(2);
+  expect(paneLeaves(restored.workspace(one).tabs[0].root).map(p => p.content.kind)).toEqual(['session']);
+  expect(paneLeaves(restored.workspace(one).tabs[1].root).map(p => p.content.kind)).toEqual(['terminal', 'terminal', 'plan']);
+  expect(restored.workspace(two).tabs).toHaveLength(2);
+  expect(restored.workspace(other).tabs).toHaveLength(1);
   expect(restored.snapshot().bottom['project-a'].tabs).toEqual(['dev-server']);
   expect(restored.snapshot().bottom['project-b'].tabs).toEqual(['other-server']);
 });
@@ -66,9 +118,9 @@ it('reuses an open plan and closing its pane retains siblings without stopping t
   const pane = w.openPlan(key, 'a', { id: 'd', kind: 'document', revisionId: 'r1' });
   const same = w.openPlan(key, 'a', { id: 'd2', kind: 'document', revisionId: 'r2' });
   expect(same.id).toBe(pane.id);
-  expect(w.workspace(key).tabs).toHaveLength(1);
+  expect(w.workspace(key).tabs).toHaveLength(2);
   w.closePane(key, pane.id);
-  expect(paneLeaves(w.workspace(key).tabs[0].root).map(p => p.content)).toEqual([{ kind: 'terminal', terminalId: 't' }]);
+  expect(paneLeaves(w.workspace(key).tabs[1].root).map(p => p.content)).toEqual([{ kind: 'terminal', terminalId: 't' }]);
 });
 it('isolates document view state while keeping artifact identity and never persists native browser IDs', async () => {
   const w = await store(); const one = w.select('p', 's1');
@@ -162,7 +214,7 @@ it('retains a renamed workspace and blocks mutations until metadata-only durabil
   const file = join(directory, 'workspaces.json');
   const bytes = await readFile(file, 'utf8');
   expect(bytes).not.toContain('native-process-only');
-  expect(JSON.parse(bytes).workspaces[key].tabs).toHaveLength(1);
+  expect(JSON.parse(bytes).workspaces[key].tabs).toHaveLength(2);
   expect(w.hasPendingConfirmation()).toBe(true);
   expect(w.snapshot()).toEqual(attempted);
   expect(() => w.restore(previous)).toThrow(/Retry confirmation/);
@@ -226,4 +278,50 @@ it('applies the same confirmation barrier to legacy workspace layout and tabs', 
   const restored = new Workspace(path);
   await restored.load();
   expect(restored.snapshot()).toEqual(w.snapshot());
+});
+it('removes ended terminal panes across sessions and bottom panels while retaining plans and live processes', async () => {
+  const w = await store();
+  const one = w.select('project-a', 'session-one');
+  const first = w.terminal(one, 'ended');
+  const plan = w.split(one, first.id, 'horizontal', { kind: 'plan', artifactId: 'plan', tab: { id: 'document', kind: 'document', revisionId: null } });
+  const two = w.select('project-a', 'session-two');
+  w.terminal(two, 'ended'); w.terminal(two, 'live');
+  w.bottomTerminal('project-a', 'ended'); w.bottomTerminal('project-a', 'live');
+  expect(w.retainTerminals(new Set(['live']))).toBe(true);
+  expect(w.workspace(one).tabs[1].root).toEqual(plan);
+  expect(w.workspace(one).activePaneId).toBe(plan.id);
+  expect(w.workspace(two).tabs).toHaveLength(2);
+  expect(w.snapshot().bottom['project-a'].tabs).toEqual(['live']);
+  await w.save();
+  expect(w.retainTerminals(new Set(['live']))).toBe(false);
+});
+it('persists local session pins without duplicates or changing the selected workspace', async () => {
+  const w = await store(); const key = w.select('project', 'session');
+  w.pinSession('other-session', true); w.pinSession('other-session', true);
+  expect(w.snapshot().pinnedSessionIds).toEqual(['other-session']);
+  expect(w.snapshot().selectedWorkspace).toBe(key);
+  await w.save(); const restored = new ApplicationWorkspace(join(directory, 'workspaces.json')); await restored.load();
+  expect(restored.snapshot().pinnedSessionIds).toEqual(['other-session']);
+  restored.pinSession('other-session', false); expect(restored.snapshot().pinnedSessionIds).toEqual([]);
+});
+
+it('persists the project panel without replacing session or project views and shared terminals', async () => {
+  const w = await store();
+  const session = w.select('project-a', 'session-one');
+  w.terminal(session, 'session-terminal');
+  const project = w.select('project-a', null);
+  w.openPlan(project, 'artifact-one', { id: 'doc-one', kind: 'document', revisionId: 'r1' });
+  w.bottomTerminal('project-a', 'project-terminal');
+  const views = structuredClone(w.snapshot().workspaces);
+  w.showProject('project-a');
+  expect(w.snapshot().selectedSurface).toBe('project');
+  expect(w.snapshot().workspaces).toEqual(views);
+  await w.save();
+  const restored = new ApplicationWorkspace(join(directory, 'workspaces.json'));
+  await restored.load();
+  expect(restored.snapshot()).toEqual(w.snapshot());
+  restored.select('project-a', 'session-one');
+  expect(restored.snapshot().selectedSurface).toBe('workspace');
+  expect(restored.snapshot().bottom['project-a'].tabs).toEqual(['project-terminal']);
+  expect(restored.snapshot().workspaces).toEqual(views);
 });

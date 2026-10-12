@@ -219,8 +219,9 @@ export class TerminalManager {
   async resize(id: string, dimensions: TerminalResize) {
     await this.request('resize', { id, ...dimensions });
   }
-  async stop(id: string): Promise<TerminalRecord> {
-    return record.parse(await this.request('stop', { id }));
+  async stop(id: string): Promise<void> {
+    await this.ensure();
+    await this.request('stop', { id });
   }
   async restart(
     id: string,
@@ -250,17 +251,13 @@ export class TerminalManager {
           failed = true;
         });
       }
-    this.records = this.records.map((entry) => {
-      const restored = { ...entry };
-      delete restored.pid;
-      if (entry.status === 'running') {
-        restored.status = failed ? 'error' : 'inactive';
-        restored.error = failed
-          ? 'Terminal service exited; process cleanup could not be verified.'
-          : 'Terminal service exited. The saved view is inactive; restart or Resume explicitly.';
-      }
-      return restored;
-    });
+    this.records = failed
+      ? this.records.map((entry) => ({
+          ...entry,
+          status: 'error' as const,
+          error: 'Terminal service exited; process cleanup could not be verified.',
+        }))
+      : [];
     this.callbacks.onChange?.(this.records);
   }
   private async ensure() {
@@ -268,6 +265,13 @@ export class TerminalManager {
     await this.recovering;
     if (this.closing) throw new Error('Terminal manager is shutting down.');
     if (this.worker) return;
+    if (this.records.some((record) => record.pid)) {
+      await this.recoverAfterExit();
+      if (this.records.some((record) => record.pid))
+        throw new Error(
+          'Terminal process cleanup is not confirmed. Retry Stop before starting another service.',
+        );
+    }
     const config = this.configuration;
     if (!config) throw new Error('Terminal service is unavailable.');
     await this.start(config.data, config.servicePath, config.options);

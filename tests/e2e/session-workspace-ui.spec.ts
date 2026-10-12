@@ -130,8 +130,9 @@ test('session document views share private answers and annotations while retaini
     .poll(() => frame.locator('body').evaluate(() => window.scrollY))
     .toBeGreaterThan(400);
   const firstWorkspace = (await snapshot(page)).selectedWorkspace!;
-  // Selecting another workspace finalizes all pending local writes before leaving the view.
-  await page.getByRole('button', { name: 'Shared review', exact: true }).click();
+  // Leave through the real renderer transition to drain comment and view writes.
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await command('select', { sessionId: 'ui-session-two' });
   await command('openPlan', { artifactId: plan.artifactId, revisionId: plan.first });
   await expect(frame.getByLabel('Shared answer', { exact: true })).toHaveValue(
@@ -141,7 +142,8 @@ test('session document views share private answers and annotations while retaini
   expect(await frame.locator('body').evaluate(() => window.scrollY)).toBe(0);
   await expect(page.locator('.annotation p')).toContainText('Shared private comment');
   await frame.getByLabel('Shared answer', { exact: true }).fill('Second private value');
-  await page.getByRole('button', { name: 'Shared review', exact: true }).click();
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await command('select', { key: firstWorkspace });
   await expect(frame.getByLabel('Shared answer', { exact: true })).toHaveValue(
     'Second private value',
@@ -154,8 +156,9 @@ test('session document views share private answers and annotations while retaini
     .getByRole('combobox', { name: 'Document version', exact: true })
     .selectOption(plan.second);
   await expect(frame.getByRole('heading', { name: 'Second revision', exact: true })).toBeAttached();
+  await page.getByRole('button', { name: 'Project overview', exact: true }).click();
+  await expect(page.locator('.project-dashboard')).toBeVisible();
   await command('select', { sessionId: 'ui-session-two' });
-  await page.getByRole('button', { name: 'Shared review', exact: true }).click();
   await expect(page.getByRole('combobox', { name: 'Document version', exact: true })).toHaveValue(
     plan.first,
   );
@@ -171,7 +174,7 @@ test('session document views share private answers and annotations while retaini
   expect(JSON.stringify(saved)).toContain('Second private value');
 });
 
-test('settings record shortcuts, protect edits and preserve inactive workspaces when restoration is disabled', async () => {
+test('settings record shortcuts, protect edits and preserve plan workspaces and remove ended terminals when restoration is disabled', async () => {
   const { page, projectId, command } = await setup();
   await command('select', { sessionId: null });
   await page.getByRole('button', { name: 'Toggle project terminals', exact: true }).click();
@@ -190,11 +193,18 @@ test('settings record shortcuts, protect edits and preserve inactive workspaces 
     const prototype = Object.getPrototypeOf(child);
     child.kill();
     const original = prototype.postMessage;
-    Object.assign(globalThis, { settingsTerminalInputCount: 0 });
+    Object.assign(globalThis, {
+      settingsTerminalInputCount: 0,
+      settingsTerminalInputs: [] as string[],
+    });
     prototype.postMessage = function (value: { method?: string }) {
-      if (value.method === 'input')
+      if (value.method === 'input') {
         (globalThis as unknown as { settingsTerminalInputCount: number })
           .settingsTerminalInputCount++;
+        (globalThis as unknown as { settingsTerminalInputs: string[] }).settingsTerminalInputs.push(
+          JSON.stringify(value),
+        );
+      }
       return Reflect.apply(original, this, [value]);
     };
   }, probe);
@@ -208,12 +218,19 @@ test('settings record shortcuts, protect edits and preserve inactive workspaces 
       ),
     )
     .toBeGreaterThan(0);
-  // Settle the earlier typing at the service boundary before resetting this
-  // phase's counter; old input is not evidence of a modal focus leak.
+  // A service round-trip alone cannot settle input still buffered by the renderer
+  // behind a resize. Confirm the complete earlier text at the actual PTY first.
+  await expect
+    .poll(
+      async () =>
+        (await invoke<{ content: string }>(page, 'terminalScreen', { id: terminal.id })).content,
+    )
+    .toContain('terminal-before-settings');
   await invoke(page, 'terminalScreen', { id: terminal.id });
   await app!.evaluate(() => {
     (globalThis as unknown as { settingsTerminalInputCount: number }).settingsTerminalInputCount =
       0;
+    (globalThis as unknown as { settingsTerminalInputs: string[] }).settingsTerminalInputs = [];
   });
   await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 800));
   await expect.poll(() => page.evaluate(() => innerWidth)).toBe(980);
@@ -224,13 +241,23 @@ test('settings record shortcuts, protect edits and preserve inactive workspaces 
     const bounds = element.getBoundingClientRect();
     const checkbox = element.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     const description = checkbox.previousElementSibling!.getBoundingClientRect();
-    const paintPoints = [element.querySelector('header')!, checkbox, element.querySelector('footer')!];
+    const paintPoints = [
+      element.querySelector('header')!,
+      checkbox,
+      element.querySelector('footer')!,
+    ];
     return {
-      insideViewport: bounds.left >= 24 && bounds.top >= 24 &&
-        bounds.right <= innerWidth - 24 && bounds.bottom <= innerHeight - 24,
+      insideViewport:
+        bounds.left >= 24 &&
+        bounds.top >= 24 &&
+        bounds.right <= innerWidth - 24 &&
+        bounds.bottom <= innerHeight - 24,
       aboveWorkspace: paintPoints.every((control) => {
         const rect = control.getBoundingClientRect();
-        const painted = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        const painted = document.elementFromPoint(
+          rect.x + rect.width / 2,
+          rect.y + rect.height / 2,
+        );
         return painted !== null && element.contains(painted);
       }),
       checkboxWidth: checkbox.getBoundingClientRect().width,
@@ -251,6 +278,12 @@ test('settings record shortcuts, protect edits and preserve inactive workspaces 
         (globalThis as unknown as { settingsTerminalInputCount: number })
           .settingsTerminalInputCount,
     ),
+    JSON.stringify(
+      await app!.evaluate(
+        () =>
+          (globalThis as unknown as { settingsTerminalInputs: string[] }).settingsTerminalInputs,
+      ),
+    ),
   ).toBe(0);
   await expect(dialog.getByRole('button', { name: 'General', exact: true })).toBeFocused();
   await page.keyboard.press('Shift+Tab');
@@ -260,11 +293,23 @@ test('settings record shortcuts, protect edits and preserve inactive workspaces 
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByRole('button', { name: 'Toggle project terminals', exact: true }).click();
   await expect(bottom).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Toggle project terminals', exact: true })).toBeEnabled();
+  await expect(
+    page.getByRole('button', { name: 'Toggle project terminals', exact: true }),
+  ).toBeEnabled();
   await page.keyboard.press('Meta+,');
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click();
   const record = dialog.getByRole('button', { name: 'Shortcut for New tab', exact: true });
+  await record.click();
+  await expect(record).toHaveText('Press combination…');
+  await record.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(record).toHaveText('Mod+T');
+  expect((await snapshot(page)).settings.shortcuts.newTab).toBe('Mod+T');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await page.keyboard.press('Meta+,');
+  await dialog.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click();
   await record.click();
   await expect(record).toHaveText('Press combination…');
   await record.press('Meta+j');
@@ -295,31 +340,50 @@ test('settings record shortcuts, protect edits and preserve inactive workspaces 
   await expect(page.getByRole('region', { name: 'Project terminals', exact: true })).toHaveCount(0);
   const plan = await publish(projectId);
   await command('openPlan', { artifactId: plan.artifactId, revisionId: plan.first });
-  await expect(page.frameLocator('iframe').getByLabel('Shared answer', { exact: true })).toBeVisible();
+  await expect(
+    page.frameLocator('iframe').getByLabel('Shared answer', { exact: true }),
+  ).toBeVisible();
   await page.keyboard.press('Meta+,');
   await dialog.getByLabel('Restore workspace', { exact: true }).uncheck();
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  const saved = await snapshot(page), savedKey = saved.selectedWorkspace!;
+  const saved = await snapshot(page),
+    savedKey = saved.selectedWorkspace!;
   expect(saved.settings.restoreWorkspace).toBe(false);
   mcp!.close();
   mcp = undefined;
   await app!.close();
-  app = await electron.launch({ args: [resolve('.')], env: { ...process.env,
-    BLUEPRINT_DATA: join(root, 'data'), BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
+  app = await electron.launch({
+    args: [resolve('.')],
+    env: {
+      ...process.env,
+      BLUEPRINT_DATA: join(root, 'data'),
+      BLUEPRINT_RUNTIME_DESCRIPTOR: join(root, 'runtime.json'),
+    },
+  });
   const restoredPage = await app.firstWindow();
-  await expect.poll(async () => (await snapshot(restoredPage)).settings.restoreWorkspace).toBe(false);
-  const restored = await invoke<ApplicationWorkspaceSnapshot & { terminals: { id: string; pid?: number; status: string }[] }>(restoredPage, 'applicationSnapshot');
+  await expect
+    .poll(async () => (await snapshot(restoredPage)).settings.restoreWorkspace)
+    .toBe(false);
+  const restored = await invoke<
+    ApplicationWorkspaceSnapshot & { terminals: { id: string; pid?: number; status: string }[] }
+  >(restoredPage, 'applicationSnapshot');
   expect(restored.selectedWorkspace).toBeNull();
   expect(restored.workspaces[savedKey]).toEqual(saved.workspaces[savedKey]);
-  expect(restored.bottom[projectId]).toEqual(saved.bottom[projectId]);
-  expect(restored.terminals).toContainEqual(expect.objectContaining({ id: terminal.id, status: 'inactive' }));
-  expect(restored.terminals.find(record => record.id === terminal.id)?.pid).toBeUndefined();
+  expect(restored.bottom[projectId]).toEqual({
+    ...saved.bottom[projectId],
+    tabs: [],
+    activeTerminalId: null,
+  });
+  expect(restored.terminals).toEqual([]);
   // Retained view records must not activate a document or shell on cold start.
   await expect(restoredPage.locator('iframe')).toHaveCount(0);
   await expect(restoredPage.locator('.terminal-pane')).toHaveCount(0);
-  await restoredPage.getByRole('button', { name: 'Shared review', exact: true }).click();
-  await expect(restoredPage.frameLocator('iframe').getByLabel('Shared answer', { exact: true })).toBeVisible();
+  await invoke(restoredPage, 'applicationCommand', {action:'select',projectId,key:savedKey});
+  await invoke(restoredPage, 'applicationCommand', {action:'openPlan',projectId,key:savedKey,artifactId:plan.artifactId,revisionId:plan.first});
+  await expect(
+    restoredPage.frameLocator('iframe').getByLabel('Shared answer', { exact: true }),
+  ).toBeVisible();
   expect((await snapshot(restoredPage)).selectedWorkspace).toBe(savedKey);
   expect((await snapshot(restoredPage)).workspaces[savedKey]).toEqual(saved.workspaces[savedKey]);
 });

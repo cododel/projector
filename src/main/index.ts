@@ -21,8 +21,9 @@ import { atomicJson } from '../runtime/files';
 import { getMcpSetup } from './mcp-setup';
 import { BrowserManager, type BrowserTab } from './browser';
 import { Workspace } from './workspace';
-import { ApplicationWorkspace } from './application-workspace';
+import { ApplicationWorkspace, applicationSettingsSchema } from './application-workspace';
 import { TerminalManager } from './terminals';
+import { HarnessSync } from './harness-sync';
 import { TerminalOutputDelivery } from './terminal-delivery';
 import { CodexManager } from './codex';
 import { paneLeaves } from '../shared/application-workspace';
@@ -40,6 +41,7 @@ const workspace = new Workspace(join(app.getPath('userData'), 'workspace.json'))
 const applicationWorkspace = new ApplicationWorkspace(join(app.getPath('userData'), 'application-workspace.json'));
 let mcpSetup: McpSetup | null = null;
 const runningTerminals = new Set<string>();
+const knownTerminals = new Set<string>();
 const terminalDelivery = new TerminalOutputDelivery(delivery => window?.webContents.send('blueprint:terminal-output', delivery));
 ipcMain.on('blueprint:terminal-output-ack', (event, deliveryId: unknown) => {
   if (window && event.sender === window.webContents && event.senderFrame === event.sender.mainFrame && typeof deliveryId === 'string')
@@ -47,11 +49,19 @@ ipcMain.on('blueprint:terminal-output-ack', (event, deliveryId: unknown) => {
 });
 const terminals = new TerminalManager({
   onChange: (records) => {
-    for (const record of records) {
-      if (record.status === 'running') runningTerminals.add(record.id);
-      else if (runningTerminals.delete(record.id))
-        void codex.terminalStopped(record.id).catch(() => {});
-    }
+    const live = new Set(records.filter(record => record.status === 'running').map(record => record.id));
+    const currentIds = new Set(records.map(record => record.id));
+    const removed = [...knownTerminals].filter(id => !currentIds.has(id));
+    knownTerminals.clear();
+    for (const id of currentIds) knownTerminals.add(id);
+    const ended = [...runningTerminals].filter(id => !live.has(id));
+    runningTerminals.clear();
+    for (const id of live) runningTerminals.add(id);
+    for (const id of ended) void codex.terminalStopped(id).catch(() => {});
+    if (removed.length && !quitting) void applicationMutation(async () => {
+      const current = await terminals.snapshot();
+      applicationWorkspace.retainTerminals(new Set(current.map(record => record.id)));
+    }).catch(error => console.error('Ended terminal views could not be removed', error));
     workspaceRefresh();
   },
   onOutput: (output) => {
@@ -59,7 +69,10 @@ const terminals = new TerminalManager({
   },
 });
 const codex = new CodexManager({
-  getExecutable: () => applicationWorkspace.snapshot().settings.codexExecutable,
+  getExecutable: () => {
+    const path = applicationWorkspace.snapshot().settings.codexExecutable;
+    return path === 'codex' ? process.env.BLUEPRINT_E2E_CODEX_EXECUTABLE ?? path : path;
+  },
   getProfile: () => applicationWorkspace.snapshot().settings.codexProfile || undefined,
   getMcpOverrides: () => {
     if (!mcpSetup) throw new Error('MCP setup is unavailable');
@@ -74,18 +87,35 @@ const codex = new CodexManager({
       await terminals.bindSession(terminalId, sessionId);
       const record = (await terminals.snapshot()).find(item => item.id === terminalId);
       if (!record) return;
+      const previousSurface = applicationWorkspace.snapshot().selectedSurface;
       const selected = applicationWorkspace.snapshot().selectedWorkspace;
       const old = selected ? applicationWorkspace.workspace(selected) : null;
       const wasFocused = old?.tabs.flatMap(tab => paneLeaves(tab.root)).some(pane =>
-        pane.id === old.activePaneId && pane.content.kind === 'terminal' && pane.content.terminalId === terminalId);
+        pane.id === old.activePaneId && (pane.content.kind === 'terminal' || pane.content.kind === 'session') && pane.content.terminalId === terminalId);
       const key = applicationWorkspace.select(record.projectId, sessionId);
-      applicationWorkspace.terminal(key, terminalId);
-      if (!wasFocused && selected) applicationWorkspace.restore({ ...applicationWorkspace.snapshot(), selectedWorkspace: selected });
+      applicationWorkspace.bindSessionTerminal(key, terminalId);
+      if ((!wasFocused || previousSurface === 'project') && selected) applicationWorkspace.restore({ ...applicationWorkspace.snapshot(), selectedWorkspace: selected, selectedSurface: previousSurface });
     }).catch(error => console.error('Session workspace could not be saved', error));
   },
   onChange: workspaceRefresh,
   onError: workspaceRefresh,
 });
+const harnessInterval = Number(process.env.BLUEPRINT_E2E_HARNESS_INTERVAL_MS);
+const harnessSync = new HarnessSync(async () => {
+  const state = await rpc('snapshot') as { projects: { id: string; path: string }[] };
+  await codex.discover(state.projects);
+}, Number.isFinite(harnessInterval) && harnessInterval >= 100 ? harnessInterval : 15000);
+let harnessChanges: Promise<unknown> = Promise.resolve();
+function harnessMutation<T>(action: () => Promise<T>): Promise<T> {
+  const operation = harnessChanges.catch(() => {}).then(async () => {
+    if (quitting) throw new Error('Blueprint is shutting down.');
+    harnessSync.stop(); await harnessSync.settled();
+    try { return await action(); }
+    finally { if (!quitting) harnessSync.start(); }
+  });
+  harnessChanges = operation;
+  return operation;
+}
 let applicationWrites: Promise<unknown> = Promise.resolve();
 let shortcutCapture = false;
 const editingScopes = new Set<string>();
@@ -123,7 +153,7 @@ async function activateApplicationPane(key: string, paneId: string) {
   const content = applicationWorkspace.findPane(key, paneId).content;
   applicationWorkspace.focus(key, paneId);
   await rpc('selectProject', { projectId: applicationWorkspace.workspace(key).projectId });
-  if (content.kind === 'terminal') { browser?.select(null); return; }
+  if (content.kind === 'terminal' || content.kind === 'session') { browser?.select(null); return; }
   const document = content.tab.kind === 'document' ? content : applicationWorkspace.workspace(key).tabs
     .flatMap(tab => paneLeaves(tab.root)).map(pane => pane.content)
     .find(pane => pane.kind === 'plan' && pane.artifactId === content.artifactId && pane.tab.kind === 'document');
@@ -334,7 +364,7 @@ function createWindow(background = false) {
     hasUnfinishedEditor: () => [...editingScopes].some(scope => scope !== 'browser'),
     onViewFocus: ({ viewId }) => {
       const key = applicationWorkspace.snapshot().selectedWorkspace;
-      if (!key || applicationWorkspace.workspace(key).activePaneId === viewId) return;
+      if (!key || applicationWorkspace.snapshot().selectedSurface === 'project' || applicationWorkspace.workspace(key).activePaneId === viewId) return;
       // Native pages cannot run the shell's document-editor drain themselves.
       // Route their focus request through the same acknowledged transition as tabs.
       window?.webContents.send('blueprint:focus-pane', { key, paneId: viewId });
@@ -378,6 +408,7 @@ function createWindow(background = false) {
         if (background && current) {
           const restored = applicationWorkspace.snapshot();
           restored.selectedWorkspace = previous.selectedWorkspace;
+          restored.selectedSurface = previous.selectedSurface;
           const before = previous.workspaces[key];
           if (before) { restored.workspaces[key].activeTabId = before.activeTabId; restored.workspaces[key].activePaneId = before.activePaneId; }
           applicationWorkspace.restore(restored);
@@ -482,6 +513,7 @@ app.on('before-quit', (event) => {
   void quitAfterCleanup();
 });
 async function quitAfterCleanup() {
+  harnessSync.stop();
   // Process ownership is independent of the artifact runtime. A live but
   // unresponsive runtime must not hold PTY cleanup behind an unanswered RPC.
   const ownedCleanup = Promise.allSettled([terminals.shutdown(), codex.stop()]);
@@ -681,6 +713,22 @@ void app
     await terminals.start(data, join(here, '../terminal/service.cjs'), {
       scrollback: applicationWorkspace.snapshot().settings.terminalScrollback,
     });
+    applicationWorkspace.retainTerminals(new Set((await terminals.snapshot()).map(record => record.id)));
+    for (const terminal of await terminals.snapshot()) {
+      if (terminal.kind !== 'codex' || !terminal.harnessSessionId) continue;
+      const key = `${terminal.projectId}/${terminal.harnessSessionId}`;
+      if (applicationWorkspace.snapshot().workspaces[key]) {
+        const previous = applicationWorkspace.snapshot();
+        applicationWorkspace.bindSessionTerminal(key, terminal.id);
+        const next = applicationWorkspace.snapshot();
+        next.selectedWorkspace = previous.selectedWorkspace;
+        next.selectedSurface = previous.selectedSurface;
+        if (next.workspaces[key].tabs.some(tab => tab.id === previous.workspaces[key].activeTabId)) next.workspaces[key].activeTabId = previous.workspaces[key].activeTabId;
+        if (next.workspaces[key].tabs.some(tab => paneLeaves(tab.root).some(pane => pane.id === previous.workspaces[key].activePaneId))) next.workspaces[key].activePaneId = previous.workspaces[key].activePaneId;
+        applicationWorkspace.restore(next);
+      }
+    }
+
     const restored = await rpc('snapshot') as { artifacts: { id: string; projectId: string }[]; projects: { id: string }[];
       selected: { artifactId: string; revisionId: string | null } | null };
     const restoredWorkspace = applicationWorkspace.snapshot();
@@ -726,9 +774,22 @@ void app
         workspaceRefresh();
         return { confirmed: true };
       }
+      if (name === 'harnessPin') {
+        const value = z.object({ sessionId: z.string().min(1), pinned: z.boolean() }).strict().parse(args);
+        if (!codex.snapshot().sessions.some(session => session.id === value.sessionId)) throw new Error('CODEX_SESSION_NOT_FOUND');
+        return applicationMutation(() => { applicationWorkspace.pinSession(value.sessionId, value.pinned); return { pinned: value.pinned }; });
+      }
+      if (name === 'harnessArchive') {
+        const value = z.object({ sessionId: z.string().min(1), archived: z.boolean(), executable: z.string(), profile: z.string() }).strict().parse(args);
+        return harnessMutation(async () => {
+          applicationWorkspace.assertConfirmed();
+          const settings = applicationWorkspace.snapshot().settings;
+          if (settings.codexExecutable !== value.executable || settings.codexProfile !== value.profile) throw new Error('CODEX_PROFILE_CHANGED: Switch back to the original profile before undoing this archive.');
+          return codex.setArchived(value.sessionId, value.archived);
+        });
+      }
       if (name === 'harnessRefresh') {
-        const snapshot = await rpc('snapshot') as { projects: { id: string; path: string }[] };
-        await codex.discover(snapshot.projects);
+        await harnessSync.refresh();
         workspaceRefresh();
         return codex.snapshot();
       }
@@ -765,14 +826,17 @@ void app
           annotationState: identity.revisionId ? await rpc('captureAnnotationState', { ...identity, view }) : null };
       }
       if (name === 'applicationSettings') {
+        const requested = applicationSettingsSchema.parse(args);
         return applicationMutation(async () => {
           const previous = applicationWorkspace.snapshot().settings;
-          applicationWorkspace.settings(args);
-          const current = applicationWorkspace.snapshot().settings;
-          await terminals.configure({ scrollback: applicationWorkspace.snapshot().settings.terminalScrollback });
-          if (previous.codexExecutable !== current.codexExecutable || previous.codexProfile !== current.codexProfile)
-            await codex.resetDiscovery();
-          return applicationWorkspace.snapshot();
+          const profileChanged = previous.codexExecutable !== requested.codexExecutable || previous.codexProfile !== requested.codexProfile;
+          const update = async () => {
+            applicationWorkspace.settings(requested);
+            await terminals.configure({ scrollback: requested.terminalScrollback });
+            if (profileChanged) await codex.resetDiscovery();
+            return applicationWorkspace.snapshot();
+          };
+          return profileChanged ? harnessMutation(update) : update();
         });
       }
       if (['terminalScreen', 'terminalReplay', 'terminalInput', 'terminalResize', 'terminalStop', 'terminalRestart'].includes(name)) {
@@ -803,7 +867,7 @@ void app
         return terminals.restart(value.id, { executable: settings.shell || undefined, args: settings.shellArgs });
       }
       if (name === 'applicationCommand') {
-        const value = z.object({ action: z.enum(['select', 'selectTab', 'focus', 'closeTab', 'closePane', 'newTerminal', 'showTerminal', 'newCodex', 'openPlan', 'openHome', 'address', 'openUrl', 'selectVersion', 'split', 'ratio', 'view', 'bottomToggle', 'bottomHeight', 'bottomSelect', 'bottomClose']),
+        const value = z.object({ action: z.enum(['projectOverview', 'select', 'selectTab', 'focus', 'closeTab', 'closePane', 'newTerminal', 'showTerminal', 'newCodex', 'openPlan', 'openHome', 'address', 'openUrl', 'selectVersion', 'split', 'ratio', 'view', 'bottomToggle', 'bottomHeight', 'bottomSelect', 'bottomClose']),
           projectId: z.string().min(1), sessionId: z.string().min(1).nullable().optional(),
           key: z.string().optional(), tabId: z.string().optional(), paneId: z.string().optional(),
           artifactId: z.string().optional(), revisionId: z.string().nullable().optional(), terminalId: z.string().optional(),
@@ -819,7 +883,12 @@ void app
           if (!project) throw new Error('PROJECT_NOT_FOUND');
           const key = value.key ?? applicationWorkspace.select(value.projectId, value.sessionId ?? null);
           if (applicationWorkspace.workspace(key).projectId !== project.id) throw new Error('WORKSPACE_PROJECT_MISMATCH');
-          if (value.action === 'select') {
+          if (value.action === 'focus' && applicationWorkspace.snapshot().selectedSurface === 'project') return applicationWorkspace.snapshot();
+          if (value.action === 'projectOverview') {
+            applicationWorkspace.showProject(project.id);
+            await rpc('selectProject', { projectId: project.id });
+            browser?.select(null);
+          } else if (value.action === 'select') {
             applicationWorkspace.select(project.id, applicationWorkspace.workspace(key).sessionId);
             await rpc('selectProject', { projectId: project.id });
             const selected = applicationWorkspace.workspace(key);
@@ -867,6 +936,9 @@ void app
               }
             }
           } else if (value.action === 'closeTab' || value.action === 'closePane') {
+            const candidate = applicationWorkspace.workspace(key).tabs.find(tab => tab.id === value.tabId);
+            if (value.action === 'closeTab' && candidate && paneLeaves(candidate.root).some(pane => pane.content.kind === 'session')) return { closed: false, pinned: true };
+            if (value.action === 'closePane' && value.paneId && applicationWorkspace.findPane(key, value.paneId).content.kind === 'session') return { closed: false, pinned: true };
             // Detect a failed local write before destroying the external page.
             await applicationWorkspace.save();
             const current = applicationWorkspace.workspace(key);
@@ -914,12 +986,13 @@ void app
             if (!terminal) {
               const active = applicationWorkspace.workspace(key).activePaneId;
               const content = value.paneId ? applicationWorkspace.findPane(key, value.paneId).content : active ? applicationWorkspace.findPane(key, active).content : null;
-              const cwd = content?.kind === 'terminal' ? await terminals.currentCwd(content.terminalId) : project.path;
+              const cwd = (content?.kind === 'terminal' || content?.kind === 'session') && content.terminalId ? await terminals.currentCwd(content.terminalId) : project.path;
               terminal = await terminals.create({ projectId: project.id, cwd, kind: 'shell', executable: settings.shell || undefined, args: settings.shellArgs, operationId: value.operationId });
             }
             if (value.area === 'bottom') applicationWorkspace.bottomTerminal(project.id, terminal.id);
             else if (value.action === 'split' && value.paneId)
               applicationWorkspace.split(key, value.paneId, value.axis ?? 'horizontal', { kind: 'terminal', terminalId: terminal.id });
+            else if (terminal.kind === 'codex' && applicationWorkspace.workspace(key).sessionId === terminal.harnessSessionId) applicationWorkspace.bindSessionTerminal(key, terminal.id);
             else applicationWorkspace.terminal(key, terminal.id);
             browser?.select(null);
           }
@@ -941,7 +1014,7 @@ void app
         return new Promise<{ action: 'new' | 'locate' | 'remove' | null }>((resolve) => {
           const menu = Menu.buildFromTemplate([
             {
-              label: 'New plan',
+              label: 'New session',
               enabled: project.available !== false,
               click: () => resolve({ action: 'new' }),
             },
@@ -959,28 +1032,22 @@ void app
           .object({ artifactId: z.string().min(1) })
           .strict()
           .parse(args);
-        await rpc('artifactProperties', { artifactId });
+        const properties = await rpc('artifactProperties', { artifactId }) as { archived?: boolean };
         if (!window || window.isDestroyed()) throw new Error('Plan window unavailable');
         const target = window;
-        return new Promise<{ action: 'rename' | null }>((resolve) => {
+        return new Promise<{ action: 'rename' | 'archive' | 'restore' | null }>((resolve) => {
           const menu = Menu.buildFromTemplate([
             { label: 'Rename plan', click: () => resolve({ action: 'rename' }) },
+            { label: properties.archived ? 'Restore plan' : 'Archive plan', click: () => resolve({ action: properties.archived ? 'restore' : 'archive' }) },
           ]);
           menu.popup({ window: target, callback: () => resolve({ action: null }) });
         });
       }
-      if (name === 'createEmptyPlan') {
-        const input = z
-          .object({ projectId: z.string().min(1), operationId: z.string().min(1) })
-          .strict()
-          .parse(args);
+      if (name === 'archivePlan') {
+        const input = z.object({ artifactId: z.string().min(1), archived: z.boolean(), operationId: z.uuid() }).strict().parse(args);
         await browser?.finishComment();
-        const result = (await rpc('createEmptyPlan', input)) as {
-          artifactId: string;
-          sourcePath: string;
-          sourceFile: string;
-        };
-        await applicationMutation(() => applicationPlan(result.artifactId, null));
+        const result = await rpc('archivePlan', input);
+        workspaceRefresh();
         return result;
       }
       if (name === 'renamePlan') {
@@ -1119,7 +1186,7 @@ void app
           active: z.boolean(), bounds: z.object({ x: z.number().finite(), y: z.number().finite(),
             width: z.number().finite().positive(), height: z.number().finite().positive() }) })).max(64) }).strict().parse(args);
         const key = applicationWorkspace.snapshot().selectedWorkspace;
-        if (!key) { browser.setVisibleViews([]); return { updated: true }; }
+        if (!key || applicationWorkspace.snapshot().selectedSurface === 'project') { browser.setVisibleViews([]); return { updated: true }; }
         const current = applicationWorkspace.workspace(key);
         const selected = current.tabs.find(tab => tab.id === current.activeTabId);
         const leaves = selected ? paneLeaves(selected.root) : [];
@@ -1369,10 +1436,9 @@ void app
         const registerAndSelect = (command: string, value: Record<string, unknown>) => applicationMutation(async () => {
           await browser?.finishComment();
           const project = await rpc(command, value) as { id: string };
-          const key = applicationWorkspace.select(project.id, null);
-          const selected = applicationWorkspace.workspace(key);
-          if (selected.activePaneId) await activateApplicationPane(key, selected.activePaneId);
-          else { await rpc('selectProject', { projectId: project.id }); browser?.select(null); }
+          applicationWorkspace.showProject(project.id);
+          await rpc('selectProject', { projectId: project.id }); browser?.select(null);
+          void harnessSync.refresh().catch(() => {});
           return project;
         });
         try {
@@ -1403,7 +1469,9 @@ void app
         const projectId = z.object({ projectId: z.string() }).parse(args).projectId;
         const result = await dialog.showOpenDialog(window!, { properties: ['openDirectory'] });
         if (result.canceled) return null;
-        return rpc('relocateProject', { projectId, path: result.filePaths[0] });
+        const relocated = await rpc('relocateProject', { projectId, path: result.filePaths[0] });
+        void harnessSync.refresh().catch(() => {});
+        return relocated;
       }
       if (name === 'removeProject') {
         const projectId = z.object({ projectId: z.string() }).parse(args).projectId;
@@ -1431,6 +1499,7 @@ void app
             await browser?.finishComment();
             const result = await rpc('removeProject', { projectId });
             removalAcknowledged = true;
+            void harnessSync.refresh().catch(() => {});
             deselect();
             const currentBrowser = browser?.snapshot();
             if (currentBrowser?.tabs.some(tab => tab.id === currentBrowser.activeTabId && tab.projectId === projectId))
@@ -1534,11 +1603,12 @@ void app
       const project = state.projects.find(project => project.id === active.projectId);
       // An unavailable folder must leave a recoverable workspace, rather than
       // making renderer startup depend on reading the missing document.
-      if (activeKey && active.activePaneId && project?.available !== false && project)
+      if (applicationWorkspace.snapshot().selectedSurface !== 'project' && activeKey && active.activePaneId && project?.available !== false && project)
         await activateApplicationPane(activeKey, active.activePaneId);
       else if (project) await rpc('selectProject', { projectId: active.projectId });
     }
     createWindow();
+    harnessSync.start();
   })
   .catch(async (error) => {
     console.error(error);

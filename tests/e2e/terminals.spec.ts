@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -222,12 +222,15 @@ test('real terminal tabs, nested splits and project terminals keep independent o
   await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
   const sessionA = (await snapshot(page)).selectedWorkspace!;
   await command(page, projectId, 'select', { sessionId: 'fixture-session-b' });
-  expect((await snapshot(page)).workspaces[(await snapshot(page)).selectedWorkspace!].tabs).toEqual(
-    [],
-  );
+  const sessionB = (await snapshot(page)).workspaces[(await snapshot(page)).selectedWorkspace!];
+  expect(sessionB.tabs).toHaveLength(1);
+  expect(paneLeaves(sessionB.tabs[0].root)[0].content).toEqual({
+    kind: 'session',
+    sessionId: 'fixture-session-b',
+  });
   expect((await snapshot(page)).bottom[projectId]).toMatchObject({ tabs: [bottomId], height: 330 });
   await command(page, projectId, 'select', { sessionId: 'fixture-session-a' });
-  expect((await snapshot(page)).workspaces[sessionA].tabs).toHaveLength(1);
+  expect((await snapshot(page)).workspaces[sessionA].tabs).toHaveLength(2);
   await command(page, projectId, 'bottomClose', { terminalId: bottomId });
   expect((await snapshot(page)).terminals.find((record) => record.id === bottomId)).toMatchObject({
     status: 'running',
@@ -246,7 +249,7 @@ test('real terminal tabs, nested splits and project terminals keep independent o
   });
 });
 
-test('renderer reload retains a live PID, Quit restores only saved screens, and Stop requires confirmation', async () => {
+test('renderer reload retains a live PID, Quit removes ended terminals, and Stop requires confirmation', async () => {
   const { page: initialPage, projectId, launch } = await setup();
   let page = initialPage;
   await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
@@ -269,26 +272,21 @@ test('renderer reload retains a live PID, Quit restores only saved screens, and 
   await expect
     .poll(async () => (await screen(page, terminal.id)).content)
     .toContain('\r\nAFTER_RELOAD\r\n');
-  value = await snapshot(page);
-  const layout = value.workspaces[key];
   await app!.close();
   app = undefined;
   await expect.poll(() => alive(terminal.pid!)).toBe(false);
   app = await launch();
   page = await app.firstWindow();
-  await expect(page.locator('.terminal-pane')).toHaveCount(1);
+  await expect(page.locator('.terminal-pane')).toHaveCount(0);
   value = await snapshot(page);
-  expect(value.workspaces[key]).toEqual(layout);
-  expect(value.terminals).toHaveLength(1);
-  expect(value.terminals[0]).toMatchObject({ id: terminal.id, status: 'inactive' });
-  expect(value.terminals[0].pid).toBeUndefined();
-  expect((await screen(page, terminal.id)).content).toContain('AFTER_RELOAD');
-  await expect(page.getByRole('button', { name: 'Restart terminal', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Restart terminal', exact: true }).click();
-  await expect.poll(async () => (await snapshot(page)).terminals[0].status).toBe('running');
+  expect(value.terminals).toEqual([]);
+  expect(value.workspaces[key].tabs).toEqual([]);
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
   const restarted = (await snapshot(page)).terminals[0];
+  const restartedPane = terminalPane(await snapshot(page), key, restarted.id);
+  expect(restarted.id).not.toBe(terminal.id);
   expect(restarted.pid).not.toBe(terminal.pid);
-  await input(page, restarted.id, pane.id, 'sleep 120 & printf "STOP_CHILD:"; jobs -p\r');
+  await input(page, restarted.id, restartedPane.id, 'sleep 120 & printf "STOP_CHILD:"; jobs -p\r');
   await expect
     .poll(async () => (await screen(page, restarted.id)).content)
     .toMatch(/STOP_CHILD:\d+/);
@@ -314,7 +312,8 @@ test('renderer reload retains a live PID, Quit restores only saved screens, and 
     dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
   });
   await page.getByRole('button', { name: 'Stop terminal', exact: true }).click();
-  await expect.poll(async () => (await snapshot(page)).terminals[0].status).toBe('exited');
+  await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
+  await expect(page.locator('.terminal-pane')).toHaveCount(0);
   expect(alive(restarted.pid!)).toBe(false);
   expect(alive(child)).toBe(false);
 });
@@ -421,7 +420,7 @@ test('terminal screen write failure stays visible and recovered saving plus live
   expect((await screen(page, streaming.id)).content).not.toContain('LIVE_HISTORY:0000');
 });
 
-test('utility crash restores a confirmed screen and explicit restart renews real xterm input and viewport', async () => {
+test('utility crash removes ended processes and an explicit new terminal receives real xterm input', async () => {
   const { page, projectId } = await setup();
   await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
   const value = await snapshot(page),
@@ -440,32 +439,28 @@ test('utility crash restores a confirmed screen and explicit restart renews real
     if (!helper) throw new Error('Missing dedicated terminal utility service');
     process.kill(helper.pid, 'SIGKILL');
   });
-  await expect.poll(async () => (await snapshot(page)).terminals[0].status).toBe('inactive');
+  await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
   await expect.poll(() => alive(terminal.pid!)).toBe(false);
-  await page.getByRole('button', { name: 'Restart terminal', exact: true }).click();
-  await expect
-    .poll(
-      async () =>
-        (await snapshot(page)).terminals.find((record) => record.id === terminal.id)?.status,
-    )
-    .toBe('running');
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+  const fresh = (await snapshot(page)).terminals[0];
+  expect(fresh.id).not.toBe(terminal.id);
   await page.locator('.terminal-pane .xterm-helper-textarea').focus();
   // Use real xterm input, without the test helper that explicitly claims activeView.
   await page.keyboard.insertText('stty -echo; printf "\\n%s\\n" "AFTER_SERVICE_RESTART_🙂"');
   await page.keyboard.press('Enter');
   await expect
-    .poll(async () => (await screen(page, terminal.id)).content)
+    .poll(async () => (await screen(page, fresh.id)).content)
     .toContain('\r\nAFTER_SERVICE_RESTART_🙂\r\n');
   await expect(page.locator('.terminal-pane .xterm-rows')).toContainText(
     'AFTER_SERVICE_RESTART_🙂',
   );
   expect((await snapshot(page)).terminals[0].pid).not.toBe(terminal.pid);
-  const current = await screen(page, terminal.id);
+  const current = await screen(page, fresh.id);
   expect(current.cols).toBeGreaterThan(2);
   expect(current.rows).toBeGreaterThan(1);
 });
 
-test('manual split follows the source shell current cwd after cd and persists it for inactive restoration', async () => {
+test('manual split follows source cwd and Quit removes both ended terminals', async () => {
   const { page, projectId, launch } = await setup();
   const folder = join(root, 'project', 'nested folder 日本語');
   await mkdir(folder);
@@ -502,13 +497,238 @@ test('manual split follows the source shell current cwd after cd and persists it
   app = undefined;
   app = await launch();
   const restoredPage = await app.firstWindow();
-  await expect.poll(async () => (await snapshot(restoredPage)).terminals.length).toBe(2);
-  const restored = (await snapshot(restoredPage)).terminals;
-  expect(restored).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ id: source.id, cwd: canonical, status: 'inactive' }),
-      expect.objectContaining({ id: split.id, cwd: canonical, status: 'inactive' }),
-    ]),
+  await expect.poll(async () => (await snapshot(restoredPage)).terminals).toEqual([]);
+  expect((await snapshot(restoredPage)).workspaces[key].tabs).toEqual([]);
+});
+
+test('failed terminal removal offers Retry cleanup and retires the view after storage recovers', async () => {
+  const { page, projectId } = await setup();
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+  const terminal = (await snapshot(page)).terminals[0];
+  const catalog = join(root, 'data', 'terminals', 'catalog.json');
+  await app!.evaluate(({ dialog }) => {
+    dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+  });
+  await rm(catalog);
+  await mkdir(catalog);
+  await page.getByRole('button', { name: 'Stop terminal', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Retry terminal cleanup', exact: true }),
+  ).toBeVisible();
+  expect(alive(terminal.pid!)).toBe(false);
+  expect((await snapshot(page)).terminals[0]).toMatchObject({
+    id: terminal.id,
+    error: expect.stringContaining('removed'),
+  });
+  await rm(catalog, { recursive: true });
+  await page.getByRole('button', { name: 'Retry terminal cleanup', exact: true }).click();
+  await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
+  await expect(page.locator('.terminal-pane')).toHaveCount(0);
+});
+
+test('real xterm forwards standard control and navigation chords to a raw PTY and Ctrl+D exits it', async () => {
+  const { page, projectId } = await setup();
+  const settings = (await snapshot(page)).settings;
+  await invoke(page, 'applicationSettings', {
+    ...settings,
+    shell: resolve('tests/fixtures/terminal-keyboard.mjs'),
+    shellArgs: [],
+  });
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+  const value = await snapshot(page),
+    terminal = value.terminals[0];
+  await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('KEY_READY');
+  const keyboard = page.locator('.terminal-pane .xterm-helper-textarea');
+  await keyboard.focus();
+  let expectedKeys = '';
+  for (const [chord, hex] of [
+    ['Control+c', '03'],
+    ['Control+a', '01'],
+    ['Control+e', '05'],
+    ['Control+b', '02'],
+    ['Control+f', '06'],
+    ['Control+u', '15'],
+    ['Control+k', '0b'],
+    ['Control+w', '17'],
+    ['Control+r', '12'],
+    ['Control+l', '0c'],
+    ['Control+z', '1a'],
+    ['Control+s', '13'],
+    ['Control+q', '11'],
+    ['Control+g', '07'],
+    ['Control+h', '08'],
+    ['Control+i', '09'],
+    ['Control+j', '0a'],
+    ['Control+m', '0d'],
+    ['Control+n', '0e'],
+    ['Control+o', '0f'],
+    ['Control+p', '10'],
+    ['Control+t', '14'],
+    ['Control+v', '16'],
+    ['Control+y', '19'],
+    ['Control+[', '1b'],
+    ['Control+\\', '1c'],
+
+    ['ArrowLeft', '1b5b44'],
+    ['ArrowRight', '1b5b43'],
+    ['ArrowUp', '1b5b41'],
+    ['ArrowDown', '1b5b42'],
+    ['Home', '1b5b48'],
+    ['End', '1b5b46'],
+    ['Delete', '1b5b337e'],
+    ['Backspace', '7f'],
+    ['Tab', '09'],
+    ['Enter', '0d'],
+  ]) {
+    await keyboard.press(chord);
+    expectedKeys += hex;
+    await expect
+      .poll(
+        async () =>
+          [...(await screen(page, terminal.id)).content.matchAll(/KEY:([0-9a-f]+)/g)]
+            .map((match) => match[1])
+            .join(''),
+        { message: chord },
+      )
+      .toBe(expectedKeys);
+  }
+  await keyboard.press('Control+d');
+  await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
+  expect(alive(terminal.pid!)).toBe(false);
+});
+
+test('Ctrl+C interrupts a real foreground command; Ctrl+D provides EOF then exits the idle shell', async () => {
+  const { page, projectId } = await setup();
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+  const terminal = (await snapshot(page)).terminals[0];
+  const keyboard = page.locator('.terminal-pane .xterm-helper-textarea');
+  await keyboard.focus();
+  await page.keyboard.insertText('stty -echo; echo SHELL_READY');
+  await keyboard.press('Enter');
+  await expect
+    .poll(async () => (await screen(page, terminal.id)).content)
+    .toContain('\r\nSHELL_READY\r\n');
+  await page.keyboard.insertText(
+    'node -e \'process.on("SIGINT",()=>process.exit(130)); console.log("INTERRUPT_WAITING"); setInterval(()=>{},1000)\'; echo INTERRUPT_RESULT:$?',
   );
-  expect(restored.every((record) => record.pid === undefined)).toBe(true);
+  await keyboard.press('Enter');
+  await expect
+    .poll(async () => (await screen(page, terminal.id)).content)
+    .toContain('INTERRUPT_WAITING');
+  await keyboard.press('Control+c');
+  await expect
+    .poll(async () => (await screen(page, terminal.id)).content)
+    .toContain('INTERRUPT_RESULT:130');
+  expect(alive(terminal.pid!)).toBe(true);
+  await page.keyboard.insertText('printf "\\nCAT_WAITING\\n"; cat; echo EOF_RETURNED');
+  await keyboard.press('Enter');
+  await expect.poll(async () => (await screen(page, terminal.id)).content).toContain('CAT_WAITING');
+  await keyboard.press('Control+d');
+  await expect
+    .poll(async () => (await screen(page, terminal.id)).content)
+    .toContain('\r\nEOF_RETURNED\r\n');
+  await keyboard.press('Control+d');
+  await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
+});
+
+test('control input survives a pending real PTY resize acknowledgement without replay or loss', async () => {
+  const { page, projectId } = await setup();
+  const settings = (await snapshot(page)).settings;
+  await invoke(page, 'applicationSettings', {
+    ...settings,
+    shell: resolve('tests/fixtures/terminal-keyboard.mjs'),
+    shellArgs: [],
+  });
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+  const terminal = (await snapshot(page)).terminals[0];
+  await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('KEY_READY');
+  const keyboard = page.locator('.terminal-pane .xterm-helper-textarea');
+  await keyboard.focus();
+  const servicePid = await app!.evaluate(({ app }) => {
+    const service = app.getAppMetrics().find((entry) => entry.name === 'Blueprint Terminals');
+    if (!service) throw new Error('Missing owned terminal service');
+    return service.pid;
+  });
+  const pressDuringResize = async (chord: string, afterPress?: () => Promise<void>) => {
+    process.kill(servicePid, 'SIGSTOP');
+    try {
+      await page.locator('.xterm-container').evaluate(async (el) => {
+        el.style.width = `${el.clientWidth - 60}px`;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      });
+      await keyboard.press(chord);
+      await afterPress?.();
+    } finally {
+      process.kill(servicePid, 'SIGCONT');
+    }
+  };
+  await pressDuringResize('Control+c');
+  await expect.poll(async () => (await screen(page, terminal.id)).content).toContain('KEY:03');
+  expect((await screen(page, terminal.id)).content.match(/KEY:03/g)).toHaveLength(1);
+  // A renderer reload cancels unsent input; restoring its view must not inject it later.
+  await pressDuringResize('Control+a', async () => {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.terminal-pane')).toHaveCount(0);
+  });
+  expect((await screen(page, terminal.id)).content).not.toContain('KEY:01');
+  await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('KEY:03');
+  await keyboard.focus();
+  await pressDuringResize('Control+d');
+  await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
+});
+
+test('native-backed files drop into an inactive terminal as quoted paths without Enter or duplicate input', async () => {
+  const { page, projectId } = await setup();
+  await invoke(page, 'applicationSettings', {
+    ...(await snapshot(page)).settings,
+    shell: resolve('tests/fixtures/terminal-keyboard.mjs'),
+    shellArgs: [],
+  });
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+  await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('KEY_READY');
+  await command(page, projectId, 'split', {
+    axis: 'horizontal',
+    paneId: (await snapshot(page)).workspaces[(await snapshot(page)).selectedWorkspace!]
+      .activePaneId,
+    operationId: randomUUID(),
+  });
+  await expect(page.locator('.terminal-pane')).toHaveCount(2);
+  await expect(page.locator('.terminal-pane').nth(1).locator('.xterm-rows')).toContainText(
+    'KEY_READY',
+  );
+  const paths = [join(root, 'image with spaces.png'), join(root, "quoted'$(noop).txt")];
+  await Promise.all(paths.map((path) => writeFile(path, 'local fixture')));
+  await page.evaluate(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.id = 'native-drop-files';
+    input.hidden = true;
+    document.body.append(input);
+  });
+  await page.locator('#native-drop-files').setInputFiles(paths);
+  await page
+    .locator('.terminal-pane')
+    .first()
+    .evaluate((element) => {
+      const files = (document.querySelector('#native-drop-files') as HTMLInputElement).files!;
+      const dataTransfer = new DataTransfer();
+      for (const file of files) dataTransfer.items.add(file);
+      element.dispatchEvent(
+        new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }),
+      );
+      element.dispatchEvent(
+        new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }),
+      );
+    });
+  const first = page.locator('.terminal-pane').first();
+  await expect(first).toHaveClass(/active/);
+  const expected = paths.map((path) => "'" + path.replaceAll("'", "'\"'\"'") + "'").join(' ') + ' ';
+  await expect(first.locator('.xterm-rows')).toContainText(
+    'KEY:' + Buffer.from(expected).toString('hex'),
+  );
+  await expect(first.locator('.xterm-helper-textarea')).toBeFocused();
+  const second = page.locator('.terminal-pane').nth(1);
+  await expect(second.locator('.xterm-rows')).not.toContainText('KEY:');
+  expect(await page.url()).toContain('blueprint://');
 });

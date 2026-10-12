@@ -214,9 +214,14 @@ class DiscoveryClient {
       if (!pending) return;
       this.pending.delete(value.id);
       clearTimeout(pending.timer);
-      if (value.error !== undefined)
-        pending.reject(new Error('CODEX_RPC_FAILED: ' + JSON.stringify(value.error)));
-      else pending.resolve(value.result);
+      if (value.error !== undefined) {
+        const error = z.object({ code: z.number(), message: z.string() }).safeParse(value.error);
+        const activeWriter = error.success && error.data.code === -32600 &&
+          /^thread \S+ already has an active writer$/.test(error.data.message);
+        pending.reject(new Error(activeWriter
+          ? 'CODEX_SESSION_IN_USE: This session is already in use by another Codex process. Return to the existing launch, or retry after it releases the session. Blueprint will not take it over.'
+          : 'CODEX_RPC_FAILED: ' + JSON.stringify(value.error)));
+      } else pending.resolve(value.result);
     } catch {
       this.fail(new Error('CODEX_PROTOCOL_INVALID_MESSAGE'));
     }
@@ -264,6 +269,7 @@ class DiscoveryClient {
 export class CodexManager {
   private sessions = new Map<string, HarnessSession>();
   private projects: HarnessProject[] = [];
+  private listedIds = new Set<string>();
   private compatibility: CodexCompatibility | null = null;
   private error: string | null = null;
   private discovery: DiscoveryClient | null = null;
@@ -308,7 +314,7 @@ export class CodexManager {
   snapshot(): HarnessSnapshot {
     return structuredClone({
       sessions: [...this.sessions.values()]
-        .filter((session) => !session.isSubAgent)
+        .filter((session) => !session.isSubAgent && !session.archived)
         .sort((a, b) => b.updatedAt - a.updatedAt),
       compatibility: this.compatibility,
       error: this.error,
@@ -478,6 +484,7 @@ export class CodexManager {
           if (cursor) cursors.add(cursor);
         } while (cursor);
       }
+      this.listedIds = new Set(found.keys());
       // A live new thread can precede its persisted listing; do not drop that identity.
       for (const session of this.sessions.values())
         if (session.launchId && this.launches.has(session.launchId) && !found.has(session.id))
@@ -506,6 +513,45 @@ export class CodexManager {
       this.failed(error);
       throw error;
     }
+  }
+  async setArchived(sessionId: string, archived: boolean) {
+    z.string().min(1).max(512).parse(sessionId);
+    await this.read(sessionId);
+    try {
+      const client = await this.discoveryClient();
+      const result = await client.call(archived ? 'thread/archive' : 'thread/unarchive', {
+        threadId: sessionId,
+      });
+      if (archived) z.object({}).parse(result);
+      else {
+        const restored = z.object({ thread: threadSchema }).parse(result);
+        if (restored.thread.id !== sessionId) throw new Error('CODEX_THREAD_ID_MISMATCH');
+        this.sessions.set(sessionId, await this.session(restored.thread));
+      }
+    } catch (error) {
+      // Never resend a mutation after a lost acknowledgement. Reconcile by
+      // reading the authoritative archived/non-archived listings instead.
+      if (!(error instanceof Error) || !/^CODEX_(RPC_|CONNECTION_|BACKEND_)/.test(error.message)) {
+        this.failed(error);
+        throw error;
+      }
+      let confirmed = false;
+      try {
+        await this.discover(this.projects);
+        confirmed =
+          this.listedIds.has(sessionId) && this.sessions.get(sessionId)?.archived === archived;
+      } catch {
+        /* A failed read cannot confirm a mutation. */
+      }
+      if (!confirmed) {
+        this.failed(error);
+        throw error;
+      }
+    }
+    const session = this.sessions.get(sessionId);
+    if (session) session.archived = archived;
+    this.changed();
+    return { sessionId, archived };
   }
   launchNew(projectId: string, cwd: string) {
     return this.launch(projectId, cwd);

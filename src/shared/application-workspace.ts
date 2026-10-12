@@ -1,6 +1,7 @@
 import type { WorkspaceTab } from './workspace';
 
 export type PaneContent =
+  | { kind: 'session'; sessionId: string; terminalId?: string }
   | { kind: 'terminal'; terminalId: string }
   | {
       kind: 'plan';
@@ -60,6 +61,8 @@ export interface ApplicationWorkspaceSnapshot {
   formatVersion: 1;
   settings: ApplicationSettings;
   selectedWorkspace: string | null;
+  selectedSurface?: 'project' | 'workspace';
+  pinnedSessionIds?: string[];
   workspaces: Record<string, SessionWorkspace>;
   bottom: Record<string, BottomTerminals>;
 }

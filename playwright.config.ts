@@ -1,9 +1,14 @@
 import { defineConfig } from '@playwright/test';
+import { resolve } from 'node:path';
 import { availableParallelism } from 'node:os';
 
 // Direct `playwright test` and opt-in Codex tests use the same safe default.
 process.env.BLUEPRINT_E2E_BACKGROUND = process.env.BLUEPRINT_E2E_VISIBLE === '1' ? '0' : '1';
 const background = process.env.BLUEPRINT_E2E_BACKGROUND === '1';
+
+// Automatic discovery uses an isolated protocol peer, never the operator profile.
+process.env.BLUEPRINT_E2E_CODEX_EXECUTABLE = resolve('tests/fixtures/codex-cli.mjs');
+process.env.CODEX_FIXTURE_EMPTY = '1';
 
 export default defineConfig({
   testDir: 'tests/e2e',

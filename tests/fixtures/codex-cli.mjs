@@ -7,14 +7,14 @@ import { spawn } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { WebSocket, WebSocketServer } from 'ws';
 const args = process.argv.slice(2);
 const flag = (name) => args[args.indexOf(name) + 1];
 const cwd = process.env.CODEX_FIXTURE_PROJECT || process.cwd();
 const id = process.env.CODEX_FIXTURE_ID || 'thread-exact-fixture';
-const metadata = JSON.parse(process.env.CODEX_FIXTURE_SESSION_METADATA || '{}');
+let metadata = JSON.parse(process.env.CODEX_FIXTURE_SESSION_METADATA || '{}');
 const thread = (threadId = id, path = cwd) => ({
   id: threadId,
   sessionId: 'root-exact-fixture',
@@ -25,6 +25,7 @@ const thread = (threadId = id, path = cwd) => ({
   status: { type: 'notLoaded' },
   ephemeral: false,
   parentThreadId: process.env.CODEX_FIXTURE_PARENT_THREAD || null,
+  archived: threadId === 'archived-exact-fixture',
   threadSource: 'user',
   ...metadata[threadId],
 });
@@ -109,6 +110,12 @@ if (args.includes('--remote')) {
       case 'initialized':
         return;
       case 'thread/list':
+        if (process.env.CODEX_FIXTURE_METADATA_FILE)
+          metadata = JSON.parse(readFileSync(process.env.CODEX_FIXTURE_METADATA_FILE, 'utf8'));
+        if (process.env.CODEX_FIXTURE_EMPTY === '1') {
+          result = { data: [], nextCursor: null };
+          break;
+        }
         result = value.params?.archived
           ? { data: [thread('archived-exact-fixture')], nextCursor: null }
           : value.params?.cursor
@@ -122,7 +129,9 @@ if (args.includes('--remote')) {
                 nextCursor: null,
               }
             : {
-                data: [thread(id), { ...thread('temporary-title'), ephemeral: true }],
+                data: [thread(id), { ...thread('temporary-title'), ephemeral: true }].filter(
+                  (entry) => !entry.archived,
+                ),
                 nextCursor: 'page-two',
               };
         if (!value.params?.cursor)
@@ -130,13 +139,53 @@ if (args.includes('--remote')) {
             ...Object.entries(metadata)
               .filter(
                 ([key, entry]) =>
-                  ![id, 'other-worktree', 'archived-exact-fixture'].includes(key) &&
+                  !result.data.some((entry) => entry.id === key) &&
+                  (key !== 'other-worktree' || value.params?.archived) &&
                   Boolean(entry.archived) === Boolean(value.params?.archived),
               )
-              .map(([key]) => thread(key)),
+              .map(([key]) =>
+                thread(
+                  key,
+                  key === 'other-worktree' ? process.env.CODEX_FIXTURE_OTHER_PROJECT || cwd : cwd,
+                ),
+              ),
           );
+        result.data = result.data.filter(
+          (entry) => Boolean(entry.archived) === Boolean(value.params?.archived),
+        );
         break;
+      case 'thread/archive':
+      case 'thread/unarchive': {
+        const key = value.params.threadId;
+        if (process.env.CODEX_FIXTURE_ARCHIVE_FAILURE === 'before') {
+          send({ id: value.id, error: { code: -32603, message: 'Archive refused' } });
+          return;
+        }
+        metadata[key] = { ...metadata[key], archived: value.method === 'thread/archive' };
+        if (process.env.CODEX_FIXTURE_METADATA_FILE) {
+          const path = process.env.CODEX_FIXTURE_METADATA_FILE;
+          writeFileSync(path + '.tmp', JSON.stringify(metadata));
+          renameSync(path + '.tmp', path);
+        }
+        if (process.env.CODEX_FIXTURE_ARCHIVE_FAILURE === 'after') {
+          send({ id: value.id, error: { code: -32603, message: 'Acknowledgement lost' } });
+          return;
+        }
+        result =
+          value.method === 'thread/archive'
+            ? {}
+            : {
+                thread: thread(
+                  process.env.CODEX_FIXTURE_WRONG_UNARCHIVE === '1' ? 'wrong-id' : key,
+                ),
+              };
+        break;
+      }
       case 'thread/read':
+        if (process.env.CODEX_FIXTURE_ACTIVE_WRITER === value.params.threadId) {
+          send({ id: value.id, error: { code: -32600, message: `thread ${value.params.threadId} already has an active writer` } });
+          return;
+        }
         result = {
           thread: thread(
             process.env.CODEX_FIXTURE_WRONG_READ === '1' ? 'wrong-id' : value.params.threadId,
