@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { test, expect, _electron as electron } from '@playwright/test';
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, cp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, cp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -43,6 +43,13 @@ test('relocated packaged app uses its own stdio helper without system Node and p
       CFBundleName: 'Projector',
       CFBundleIdentifier: 'dev.cododel.projector',
     });
+    const license = await readFile(resolve('LICENSE'), 'utf8');
+    const appResources = join(source, 'Contents', 'Resources');
+    expect(await readFile(join(appResources, 'app', 'LICENSE'), 'utf8')).toBe(license);
+    expect(await readFile(join(appResources, 'mcp', 'PROJECTOR-LICENSE'), 'utf8')).toBe(license);
+    expect(
+      JSON.parse(await readFile(join(appResources, 'app', 'package.json'), 'utf8')).license,
+    ).toBe('SEE LICENSE IN LICENSE');
     const relocated = join(root, 'Moved app with spaces', 'Projector.app');
     await mkdir(join(root, 'Moved app with spaces'));
     // Framework symlinks must stay relative when an application bundle is relocated.

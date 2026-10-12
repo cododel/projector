@@ -158,3 +158,16 @@ New installs use `Projector` application data and new projects use `.projector`.
 Current setup uses the `projector` MCP entry, `projector-mcp` packaged helper and `PROJECTOR_*` variables. Legacy `BLUEPRINT_*` environment values remain fallbacks; new values win. Legacy `get_blueprint_guide` / `get_blueprint_context` calls and `kind: "blueprint"` artifact records remain supported. New guide/context names are `get_projector_guide` / `get_projector_context`; new artifacts use `kind: "projector"`. Published revisions, saved states and historical evidence are not rewritten.
 
 After installing the renamed app, copy its new setup configuration and reconnect your client. Projector does not rename an installed app, edit personal Codex configuration or rewrite old configured executable paths automatically. Do not run both brands against the same data simultaneously.
+
+## License
+
+Projector is licensed under the custom **Projector Source-Available License 1.0**, with `Copyright (c) 2026 Cododel`. See [LICENSE](LICENSE). It is not MIT, GPL, Apache or an OSI-approved open-source license.
+
+- **Free use:** individuals and organizations of any size, including commercial and client work. Internal modifications may stay private.
+- **Free distribution:** original versions and forks must include complete corresponding source publicly available to everyone, retain copyright and LICENSE, and use the same terms for derivatives.
+- **Paid services:** installation, support and commissioned modifications are allowed when the program itself is supplied free of charge; distribution conditions still apply.
+- **Independent extensions:** plugins, harness adapters and integrations containing no Projector code may be sold under their own licenses. Public API use and UI integration alone are unrestricted.
+- **Separate agreement:** selling program copies, licensing derivatives for a fee and paid hosted access to Projector/forks. Copying Projector code into another standalone product requires separate permission; free forks remain allowed.
+- **Excluded:** user projects and outputs; third-party components retain their own licenses. Permanent UI branding or advertising attribution is not required.
+
+The license text was prepared from the owner's agreed policy and has **not been legally reviewed**. Obtain legal review before publication. The license includes standard warranty and liability disclaimers.

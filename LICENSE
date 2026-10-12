@@ -1,0 +1,121 @@
+Projector Source-Available License
+Version 1.0
+
+Copyright (c) 2026 Cododel
+
+1. Scope and definitions
+
+"Copyright Holder" means the individual holding the covered rights and
+identified by the pseudonym "Cododel" in the copyright notice above.
+"Program" means the Projector code and other Projector materials to which
+this License is applied, excluding separately licensed third-party components.
+A "Fork" is a modified version of the Program, including a renamed version.
+A "Distribution" is supplying copies of the Program or a Fork to others
+outside your own internal use. Internal use includes use within an
+organization or team for its own operations.
+
+"Complete Corresponding Source" means the preferred editable source for the
+exact version distributed: the Program, all modifications, and the build
+files, configuration and scripts needed to build and install that version,
+including dependency declarations. Unmodified general-purpose build tools
+and operating-system components may be obtained separately. Third-party
+components remain subject to their own licenses and source obligations.
+
+2. Free use and internal modification
+
+Subject to this License, the Copyright Holder grants individuals and
+organizations of any size a worldwide, non-exclusive, royalty-free
+permission to use, run, copy and modify the Program.
+
+Commercial work and work performed for clients are permitted. There are no
+limits based on revenue, number of employees or size of an organization.
+Using the Program to produce work for which you are paid does not itself
+require a separate commercial agreement.
+
+You may create and use internal corporate or team versions without payment.
+Modifications that are not distributed to others do not have to be disclosed.
+
+3. Free distribution and corresponding source
+
+You may distribute the original Program and Forks without charging for the
+Program or Fork, provided that:
+
+(a) you provide the Complete Corresponding Source for the version distributed
+    and make that source publicly available to everyone, not only recipients;
+(b) you preserve existing copyright notices and include the full text of this
+    License with the distributed copies and source; and
+(c) you distribute the Program and your modifications under these same terms,
+    so that recipients receive the same permissions and restrictions.
+
+Renaming a Fork does not remove these conditions. Separately licensed
+third-party components retain their own terms; this License does not purport
+to relicense them.
+
+4. Activities requiring a separate agreement
+
+A separate agreement with the Copyright Holder is required to:
+
+(a) sell copies of the Program or a Fork;
+(b) license a derivative version of the Program for a fee; or
+(c) provide paid cloud access to the Program or a Fork.
+
+Paid cloud access means charging others for hosted access to the Program or
+Fork itself or its functionality. These restrictions do not prohibit using
+Projector in your own commercial work or selling your independent work
+products merely because Projector was used to create them.
+
+You may charge for installation, support and commissioned modification,
+provided that the Program or Fork itself is supplied free of charge. These
+service fees do not authorize charging for copies, derivative licenses or
+cloud access described above. When a Program or Fork is distributed, the
+source, notice and same-license conditions in Section 3 still apply.
+
+5. Independent extensions and other products
+
+Independent plugins, harness adapters and integrations that do not include
+Projector code may be distributed and sold under their own licenses without
+a separate agreement with the Copyright Holder. Use of public APIs or
+integration into a user interface does not, by itself, impose this License
+on such independent software or require a separate agreement.
+
+Copying parts of Projector code into a different standalone product requires
+separate permission from the Copyright Holder. This does not revoke the
+permission in Section 3 to distribute free Forks under this License, including
+renamed Forks. Calling an API is not, by itself, copying Projector code.
+
+6. Notices and attribution
+
+Existing copyright notices and this License must be preserved. You may add
+accurate notices for your own contributions without removing existing notices.
+A permanent Projector label in the user interface and additional advertising
+attribution are not required.
+
+7. User materials and third-party components
+
+This License governs the Program, not projects, documents, code or other
+results created or processed by users with it. Such materials do not become
+subject to this License merely because the Program was used to create or
+process them. This does not independently authorize copying Projector code
+into user outputs contrary to Section 5.
+
+Licenses, copyright notices and other applicable requirements of third-party
+components remain in force. The Copyright Holder grants no rights to those
+components beyond rights the Copyright Holder is authorized to grant.
+
+8. No warranty; limitation of liability
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE PROGRAM IS PROVIDED "AS IS"
+WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, COPYRIGHT HOLDERS AND CONTRIBUTORS
+ARE NOT LIABLE FOR CLAIMS, DAMAGES OR OTHER LIABILITY ARISING FROM USE OF,
+INABILITY TO USE, OR OTHER DEALINGS IN THE PROGRAM, WHETHER IN CONTRACT,
+TORT OR OTHERWISE, INCLUDING DIRECT, INDIRECT OR CONSEQUENTIAL LOSS.
+
+9. License identity
+
+This is a custom source-available license. It is not MIT, GPL, Apache or an
+OSI-approved open-source license. It contains no automatic transition to a
+different license, revenue or employee threshold, registration requirement
+or activation-key requirement.

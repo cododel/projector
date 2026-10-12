@@ -75,10 +75,13 @@ export async function packageMac({ output = resolve('dist'), node = process.exec
     await mkdir(helper);
     await cp('out', join(source, 'out'), { recursive: true });
     await copyTerminalPayload(source);
+    await copyFile('LICENSE', join(source, 'LICENSE'));
+    await copyFile('LICENSE', join(helper, 'PROJECTOR-LICENSE'));
     await writeFile(
       join(source, 'package.json'),
       JSON.stringify({
         name: metadata.name,
+        license: metadata.license,
         version: metadata.version,
         type: 'module',
         main: metadata.main,
