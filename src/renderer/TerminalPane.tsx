@@ -1,3 +1,4 @@
+import { terminalWheelController } from './terminal-wheel-controller';
 import { terminalFilePaths } from './terminal-drop';
 import { Icon } from './Icon';
 import React, { useEffect, useRef, useState } from 'react';
@@ -48,6 +49,7 @@ export function TerminalPane({
   const pendingDrop = useRef<string | null>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const resizeSequence = useRef(0);
+  const wheelReset = useRef<() => void>(() => {});
   const flushInput = useRef<() => void>(() => {});
   const focusAfterResize = useRef(false);
   const initializedRef = useRef(false);
@@ -93,6 +95,25 @@ export function TerminalPane({
     let disposed = false;
     let initialized = false;
     initializedRef.current = false;
+    let batchingWheel = false;
+    const wheel = terminalWheelController(terminal, {
+      ready: () =>
+        !disposed &&
+        initializedRef.current &&
+        activeRef.current &&
+        runningRef.current &&
+        inputReady.current,
+      batch: (action) => {
+        batchingWheel = true;
+        try {
+          action();
+        } finally {
+          batchingWheel = false;
+          flushInput.current();
+        }
+      },
+    });
+    wheelReset.current = wheel.reset;
     const write = (data: string) => new Promise<void>((resolve) => terminal.write(data, resolve));
     const reader = new TerminalOutputReader({
       screen: async () =>
@@ -100,6 +121,7 @@ export function TerminalPane({
       replay: async (afterSeq) =>
         (await bridge.invoke('terminalReplay', { id: record.id, afterSeq })) as TerminalReplay,
       reset: async (screen) => {
+        wheel.reset();
         terminal.reset();
         terminal.resize(screen.cols, screen.rows);
         await write(screen.content);
@@ -175,7 +197,7 @@ export function TerminalPane({
         return;
       }
       pendingInput.current += data;
-      flushInput.current();
+      if (!batchingWheel) flushInput.current();
     });
     return () => {
       disposed = true;
@@ -189,6 +211,8 @@ export function TerminalPane({
       inputReady.current = false;
       unsubscribe?.();
       observer.disconnect();
+      wheel.dispose();
+      wheelReset.current = () => {};
       input.dispose();
       terminal.dispose();
       terminalRef.current = null;
@@ -198,6 +222,7 @@ export function TerminalPane({
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) return;
+    wheelReset.current();
     terminal.options.fontFamily = settings.terminalFont;
     terminal.options.fontSize = settings.terminalFontSize;
     terminal.options.scrollback = settings.terminalScrollback;

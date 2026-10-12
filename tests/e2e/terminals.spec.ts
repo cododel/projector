@@ -732,3 +732,308 @@ test('native-backed files drop into an inactive terminal as quoted paths without
   await expect(second.locator('.xterm-rows')).not.toContainText('KEY:');
   expect(await page.url()).toContain('blueprint://');
 });
+
+for (const mode of ['mouse', 'arrows'])
+  test(`wheel magnitude survives xterm ${mode} TUI protocol with fractional accumulation and no duplicates`, async () => {
+    const { page, projectId } = await setup();
+    await invoke(page, 'applicationSettings', {
+      ...(await snapshot(page)).settings,
+      shell: resolve('tests/fixtures/terminal-wheel.mjs'),
+      shellArgs: [mode],
+    });
+    await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+    const rows = page.locator('.terminal-pane .xterm-rows');
+    await expect(rows).toContainText('WHEEL_READY');
+    await page.locator('.xterm-helper-textarea').focus();
+    const wheel = (deltaY: number, deltaMode = 1) =>
+      page.locator('.xterm-screen').evaluate(
+        (element, delta) => {
+          const rect = element.getBoundingClientRect();
+          element.dispatchEvent(
+            new WheelEvent('wheel', {
+              bubbles: true,
+              cancelable: true,
+              deltaY: delta.deltaY,
+              deltaMode: delta.deltaMode,
+              clientX: rect.x + 40,
+              clientY: rect.y + 40,
+            }),
+          );
+        },
+        { deltaY, deltaMode },
+      );
+    await wheel(-5);
+    await expect(rows).toContainText('SCROLL_UP=5 DOWN=0');
+    await wheel(10);
+    await expect(rows).toContainText('SCROLL_UP=5 DOWN=10');
+    const height = await page
+      .locator('.xterm-rows > div')
+      .first()
+      .evaluate((el) => el.getBoundingClientRect().height);
+    for (let i = 0; i < 4; i++) await wheel(height / 4, 0);
+    await expect(rows).toContainText('SCROLL_UP=5 DOWN=11');
+    await observeWheelPackets();
+    const rowCount = await page.locator('.xterm-rows > div').count();
+    await wheel(100000);
+    await expect(rows).toContainText(`SCROLL_UP=5 DOWN=${11 + 2 * rowCount}`);
+    const packets = await wheelPackets();
+    const lengths = packets.map((packet) => packet.data.split('\x1b').length - 1);
+    expect(lengths.reduce((a, b) => a + b, 0)).toBe(2 * rowCount);
+    expect(lengths.every((length) => length > 0 && length <= 16)).toBe(true);
+    expect(packets).toHaveLength(Math.ceil((2 * rowCount) / 16));
+    await page.locator('.xterm-screen').evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      for (const deltaY of [-50, 3])
+        element.dispatchEvent(
+          new WheelEvent('wheel', {
+            bubbles: true,
+            cancelable: true,
+            deltaY,
+            deltaMode: 1,
+            clientX: rect.x + 40,
+            clientY: rect.y + 40,
+          }),
+        );
+    });
+    await expect(rows).toContainText(`SCROLL_UP=5 DOWN=${14 + 2 * rowCount}`);
+    await page.locator('.xterm-screen').evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      element.dispatchEvent(
+        new WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          deltaY: -1,
+          deltaMode: 1,
+          altKey: true,
+          clientX: rect.x + 40,
+          clientY: rect.y + 40,
+        }),
+      );
+    });
+    await expect(rows).toContainText(`SCROLL_UP=10 DOWN=${14 + 2 * rowCount}`);
+  });
+
+async function observeWheelPackets() {
+  const probe = join(root, 'wheel-ipc-probe.cjs');
+  await writeFile(probe, 'process.parentPort.on("message", () => {});');
+  await app!.evaluate(({ utilityProcess }, path) => {
+    const probe = utilityProcess.fork(path, [], { stdio: 'ignore' });
+    const prototype = Object.getPrototypeOf(probe);
+    const original = prototype.postMessage;
+    const state = globalThis as unknown as { wheelPackets: { data: string; at: number }[] };
+    state.wheelPackets = [];
+    prototype.postMessage = function (
+      message: { method?: string; args?: { data?: string } },
+      ...rest: unknown[]
+    ) {
+      if (message.method === 'input' && message.args?.data)
+        state.wheelPackets.push({ data: message.args.data, at: Date.now() });
+      return Reflect.apply(original, this, [message, ...rest]);
+    };
+    probe.kill();
+  }, probe);
+}
+const wheelPackets = () =>
+  app!.evaluate(
+    () => (globalThis as unknown as { wheelPackets: { data: string; at: number }[] }).wheelPackets,
+  );
+
+test('warmed wheel input is batched and measured through real PTY and DOM paint; normal scrollback never sends input', async () => {
+  const testInfo = test.info();
+  const { page, projectId } = await setup();
+  await invoke(page, 'applicationSettings', {
+    ...(await snapshot(page)).settings,
+    shell: resolve('tests/fixtures/terminal-wheel.mjs'),
+    shellArgs: ['mouse'],
+  });
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+  await expect(page.locator('.xterm-rows')).toContainText('WHEEL_READY');
+  await page.locator('.xterm-helper-textarea').focus();
+  await observeWheelPackets();
+  const latencies: number[] = [],
+    outputLatencies: number[] = [],
+    renderLatencies: number[] = [];
+  let up = 0,
+    down = 0;
+  for (let index = 0; index < 110; index++) {
+    const delta = index % 2 ? 5 : -5;
+    if (delta < 0) up += 5;
+    else down += 5;
+    const latency = await page.locator('.xterm-screen').evaluate(
+      (element, values) =>
+        new Promise<{ totalMs: number; outputMs: number; renderMs: number }>((resolve, reject) => {
+          const start = performance.now();
+          let outputAt = start;
+          const stopOutput = (
+            window as unknown as {
+              blueprint: { onTerminalOutput(callback: () => void): () => void };
+            }
+          ).blueprint.onTerminalOutput(() => {
+            outputAt = performance.now();
+          });
+          const observer = new MutationObserver(() => {
+            if (element.querySelector('.xterm-rows')?.textContent?.includes(values.expected)) {
+              observer.disconnect();
+              clearTimeout(timeout);
+              stopOutput();
+              const end = performance.now();
+              resolve({
+                totalMs: end - start,
+                outputMs: outputAt - start,
+                renderMs: end - outputAt,
+              });
+            }
+          });
+          const timeout = setTimeout(() => {
+            observer.disconnect();
+            stopOutput();
+            reject(new Error('Wheel result was not painted'));
+          }, 5000);
+          observer.observe(element, { subtree: true, childList: true, characterData: true });
+          const rect = element.getBoundingClientRect();
+          element.dispatchEvent(
+            new WheelEvent('wheel', {
+              bubbles: true,
+              cancelable: true,
+              deltaY: values.delta,
+              deltaMode: 1,
+              clientX: rect.x + 40,
+              clientY: rect.y + 40,
+            }),
+          );
+        }),
+      { delta, expected: `SCROLL_UP=${up} DOWN=${down}` },
+    );
+    expect(latency.outputMs).toBeGreaterThan(0);
+    if (index >= 10) {
+      latencies.push(latency.totalMs);
+      outputLatencies.push(latency.outputMs);
+      renderLatencies.push(latency.renderMs);
+    }
+  }
+  const packets = await wheelPackets();
+  expect(packets).toHaveLength(110);
+  expect(packets.every((packet) => packet.data.split('\x1b[<').length - 1 === 5)).toBe(true);
+  latencies.sort((a, b) => a - b);
+  outputLatencies.sort((a, b) => a - b);
+  renderLatencies.sort((a, b) => a - b);
+  await writeFile(
+    testInfo.outputPath('wheel-measurements.json'),
+    JSON.stringify(
+      {
+        environment: 'isolated hidden Electron, real PTY observer TUI',
+        warmup: 10,
+        actions: 100,
+        normalizedRows: 500,
+        inputIpcPackets: packets.length - 10,
+        p95WheelToPtyOutputMs: outputLatencies[94],
+        p95PtyOutputToDomMs: renderLatencies[94],
+        p50WheelToDomMs: latencies[49],
+        p95WheelToDomMs: latencies[94],
+        maxWheelToDomMs: latencies[99],
+        latencyBoundary:
+          'wheel dispatch to renderer PTY output notification and rendered xterm DOM mutation, not physical screen presentation',
+        metrics: await app!.evaluate(({ app }) =>
+          app.getAppMetrics().map((metric) => ({
+            type: metric.type,
+            name: metric.name,
+            cpu: metric.cpu,
+            memory: metric.memory,
+          })),
+        ),
+      },
+      null,
+      2,
+    ),
+  );
+
+  await testInfo.attach('wheel measurements', {
+    path: testInfo.outputPath('wheel-measurements.json'),
+    contentType: 'application/json',
+  });
+
+  await invoke(page, 'applicationSettings', {
+    ...(await snapshot(page)).settings,
+    shellArgs: ['normal'],
+  });
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+  const normal = page.locator('.terminal-pane.active');
+  await expect(normal.locator('.xterm-rows')).toContainText('WHEEL_READY');
+  const before = await normal.locator('.xterm-rows').textContent(),
+    count = (await wheelPackets()).length;
+  const rect = await normal.locator('.xterm-screen').boundingBox();
+  await page.mouse.move(rect!.x + 40, rect!.y + 40);
+  await page.mouse.wheel(0, -250);
+  await expect(normal.locator('.xterm-rows')).not.toHaveText(before!);
+  expect((await wheelPackets()).length).toBe(count);
+});
+
+test('wheel fractions reset across mouse mode changes and inactive panes cannot steal input or focus', async () => {
+  const { page, projectId } = await setup();
+  await invoke(page, 'applicationSettings', {
+    ...(await snapshot(page)).settings,
+    shell: resolve('tests/fixtures/terminal-wheel.mjs'),
+    shellArgs: ['mouse'],
+  });
+  await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
+  const first = page.locator('.terminal-pane').first();
+  await expect(first.locator('.xterm-rows')).toContainText('WHEEL_READY');
+  await first.locator('.xterm-helper-textarea').focus();
+  await observeWheelPackets();
+  const wheel = (deltaY: number) =>
+    first.locator('.xterm-screen').evaluate((element, deltaY) => {
+      const rect = element.getBoundingClientRect();
+      element.dispatchEvent(
+        new WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          deltaMode: 1,
+          deltaY,
+          clientX: rect.x + 40,
+          clientY: rect.y + 40,
+        }),
+      );
+    }, deltaY);
+  const tick = () =>
+    page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+  await wheel(0.5);
+  await first.locator('.xterm-helper-textarea').press('o');
+  await expect(first.locator('.xterm-rows')).toContainText('MOUSE_OFF');
+  await first.locator('.xterm-helper-textarea').press('i');
+  await expect(first.locator('.xterm-rows')).toContainText('MOUSE_ON');
+  await wheel(0.5);
+  await tick();
+  expect((await wheelPackets()).filter((packet) => packet.data.includes('\x1b[<'))).toEqual([]);
+  await wheel(0.5);
+  await expect(first.locator('.xterm-rows')).toContainText('SCROLL_UP=0 DOWN=1');
+  await wheel(0.5);
+  await first.locator('.xterm-helper-textarea').press('t');
+  await expect(first.locator('.xterm-rows')).toContainText('MOUSE_CYCLE');
+  const beforeCycle = (await wheelPackets()).length;
+  await wheel(0.5);
+  await tick();
+  expect((await wheelPackets()).length).toBe(beforeCycle);
+  await wheel(0.5);
+  await expect(first.locator('.xterm-rows')).toContainText('SCROLL_UP=0 DOWN=2');
+  const value = await snapshot(page);
+  await command(page, projectId, 'split', {
+    axis: 'horizontal',
+    paneId: value.workspaces[value.selectedWorkspace!].activePaneId,
+    operationId: randomUUID(),
+  });
+  const second = page.locator('.terminal-pane').nth(1);
+  await expect(second.locator('.xterm-rows')).toContainText('WHEEL_READY');
+  await second.locator('.xterm-helper-textarea').focus();
+  const before = (await wheelPackets()).length;
+  await wheel(30);
+  await tick();
+  expect((await wheelPackets()).length).toBe(before);
+  await expect(second).toHaveClass(/active/);
+  await expect(second.locator('.xterm-helper-textarea')).toBeFocused();
+  await expect(first.locator('.xterm-rows')).toContainText('SCROLL_UP=0 DOWN=2');
+});
