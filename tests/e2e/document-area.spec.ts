@@ -120,26 +120,39 @@ test('document area capture stays private until Save and opens its numbered froz
     const leftDragBounds = (await leftResize.boundingBox())!;
     const x = leftDragBounds.x + 3;
     const y = leftDragBounds.y + 150;
+    // Observe before triggering the 250 ms transition. Sampling only after the
+    // mouse RPC returns can miss the entire animation on a busy visible desktop.
+    await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+    await page.locator('.app').evaluate((el) => {
+      const result = new Promise<{ duration: string; offset: number }[]>((resolve) => {
+        const samples: { duration: string; offset: number }[] = [];
+        const sample = () => {
+          if (el.classList.contains('sidebar-animating')) {
+            const handle = el.querySelector('[aria-label="Resize projects sidebar"]')!.getBoundingClientRect();
+            const panel = el.querySelector('.sidebar-viewport')!.getBoundingClientRect();
+            samples.push({
+              duration: getComputedStyle(el).transitionDuration,
+              offset: Math.abs(handle.x + handle.width / 2 - panel.right),
+            });
+          } else if (samples.length) {
+            resolve(samples);
+            return;
+          }
+          requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      });
+      Object.assign(window, { sidebarDragProbe: result });
+    });
     await page.mouse.move(x, y);
     await page.mouse.down();
     await page.mouse.move(x - 111, y, { steps: 4 });
-    expect(
-      await page.locator('.app').evaluate((el) => getComputedStyle(el).transitionDuration),
-    ).toBe('0.25s');
-    const edgeOffsets = await page.locator('.app').evaluate(async (el) => {
-      const offsets: number[] = [];
-      while (el.classList.contains('sidebar-animating')) {
-        const handle = el
-          .querySelector('[aria-label="Resize projects sidebar"]')!
-          .getBoundingClientRect();
-        const panel = el.querySelector('.sidebar-viewport')!.getBoundingClientRect();
-        offsets.push(Math.abs(handle.x + handle.width / 2 - panel.right));
-        await new Promise(requestAnimationFrame);
-      }
-      return offsets;
-    });
-    expect(edgeOffsets.length).toBeGreaterThan(0);
-    expect(Math.max(...edgeOffsets)).toBeLessThan(1);
+    const samples = await page.evaluate(() =>
+      (window as unknown as { sidebarDragProbe: Promise<{ duration: string; offset: number }[]> }).sidebarDragProbe,
+    );
+    expect(samples.length).toBeGreaterThan(0);
+    expect(samples.every(sample => sample.duration === '0.25s')).toBe(true);
+    expect(Math.max(...samples.map(sample => sample.offset))).toBeLessThan(1);
     await expect(page.locator('.sidebar')).toBeHidden();
     await page.mouse.move(x - 109, y);
     await expect(page.locator('.sidebar')).toBeVisible();
