@@ -237,6 +237,27 @@ test('settings record shortcuts, protect edits and preserve plan workspaces and 
   await page.keyboard.press('Meta+,');
   const dialog = page.getByRole('dialog', { name: 'Settings', exact: true });
   await expect(dialog).toBeVisible();
+  // Retain protection through opening as well: only protocol replies are allowed
+  // during resize/activation; even the opening shortcut must not leak user input.
+  await invoke(page, 'terminalScreen', { id: terminal.id });
+  const openingInputs = await app!.evaluate(() =>
+    (globalThis as unknown as { settingsTerminalInputs: string[] }).settingsTerminalInputs,
+  );
+  const escape = String.fromCharCode(27);
+  const reply = new RegExp(
+    String.raw`^(?:${escape}\]11;rgb:[0-9a-f]+/[0-9a-f]+/[0-9a-f]+(?:${String.fromCharCode(7)}|${escape}\\)|${escape}\[[?>][0-9;]+c)+$`,
+    'i',
+  );
+  expect(
+    openingInputs.every(value => reply.test((JSON.parse(value) as {args: {data: string}}).args.data)),
+    JSON.stringify(openingInputs),
+  ).toBe(true);
+  // From the visible modal onwards require zero PTY input of any kind.
+  await app!.evaluate(() => {
+    (globalThis as unknown as { settingsTerminalInputCount: number }).settingsTerminalInputCount =
+      0;
+    (globalThis as unknown as { settingsTerminalInputs: string[] }).settingsTerminalInputs = [];
+  });
   const layout = await dialog.evaluate((element) => {
     const bounds = element.getBoundingClientRect();
     const checkbox = element.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
