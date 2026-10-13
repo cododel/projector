@@ -332,9 +332,11 @@ test('unfinished private annotation survives restart and cannot approve the docu
   await app.close();
   app = await launch();
   page = await app.firstWindow();
-  await openProjectOverview(page);
-  await page.getByRole('button', { name: 'Access policy planning', exact: true }).click();
+  // Inspect the restored editor before navigation. Opening the project overview
+  // intentionally finishes a nonempty comment (UI-03), so doing that here races
+  // restoration and tests navigation completion instead of unfinished recovery.
   frame = page.frameLocator('iframe');
+  await expect(frame.getByRole('heading', { name: 'Access policy planning' })).toBeVisible();
   await expect(frame.getByLabel('Annotation comment')).toHaveValue('Keep this unfinished comment');
   await expect(
     page.getByRole('button', { name: 'Approve this version', exact: true }),
