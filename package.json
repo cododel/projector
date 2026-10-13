@@ -21,7 +21,8 @@
     "check:full": "node scripts/testing/full.mjs",
     "hooks:install": "node scripts/testing/install-hook.mjs",
     "test:performance": "pnpm build && node scripts/testing/stage-performance.mjs",
-    "postinstall": "node scripts/prepare-terminal.mjs"
+    "postinstall": "node scripts/prepare-terminal.mjs",
+    "storyboard:notifications": "node scripts/notifications-storyboard.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
