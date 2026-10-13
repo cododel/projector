@@ -35,9 +35,10 @@ test('background startup and second-instance handling keep the native window hid
           throttled: window.webContents.getBackgroundThrottling(),
         })),
       ),
-    ).toEqual([{ visible: false, focused: false, focusable: false, throttled: false }]);
+    ).toEqual([{ visible: false, focused: false, focusable: false, throttled: false },
+      { visible: false, focused: false, focusable: false, throttled: false }]);
     const image = await app.evaluate(async ({ BrowserWindow }) => {
-      const capture = await BrowserWindow.getAllWindows()[0].webContents.capturePage();
+      const capture = await BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.capturePage();
       return { empty: capture.isEmpty(), size: capture.getSize() };
     });
     expect(image.empty).toBe(false);

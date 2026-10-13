@@ -23,6 +23,7 @@ import { getGuide } from '../guide';
 import { atomicJson } from '../runtime/files';
 import { getMcpSetup } from './mcp-setup';
 import { BrowserManager, type BrowserTab } from './browser';
+import { NotificationOverlay } from './notifications';
 import { Workspace } from './workspace';
 import { ApplicationWorkspace, applicationSettingsSchema } from './application-workspace';
 import { TerminalManager } from './terminals';
@@ -268,6 +269,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 let window: BrowserWindow | null = null;
+let notifications: import('./notifications').NotificationOverlay | null = null;
 let worker: Electron.UtilityProcess | null = null;
 const stoppedRuntimeWorkers = new WeakSet<Electron.UtilityProcess>();
 let runtimeReady = false;
@@ -280,11 +282,13 @@ const requests = new Map<
     resolve: (v: unknown) => void;
     reject: (e: Error) => void;
     timer: ReturnType<typeof setTimeout>;
+    name: string;
   }
 >();
 function failRpcRequests(): void {
-  for (const pending of requests.values()) {
+  for (const [operationId, pending] of requests) {
     clearTimeout(pending.timer);
+    window?.webContents.send('projector:operation-status', { waiting: false, operationId, operation: pending.name, error: 'Runtime disconnected. Reconcile the operation before retrying.' });
     pending.reject(
       new Error(
         'UNKNOWN_RESULT: Projector runtime disconnected. An operation may have completed; reconcile before retrying. Restart Projector and reconnect MCP.',
@@ -292,7 +296,6 @@ function failRpcRequests(): void {
     );
   }
   requests.clear();
-  window?.webContents.send('projector:operation-status', { waiting: false });
 }
 const rpcSettlements = new Set<Promise<void>>();
 function rpc(name: string, args: unknown = {}): Promise<unknown> {
@@ -303,9 +306,9 @@ function rpc(name: string, args: unknown = {}): Promise<unknown> {
     }
     const id = randomUUID();
     const timer = setTimeout(() => {
-      window?.webContents.send('projector:operation-status', { waiting: true, operation: name });
+      window?.webContents.send('projector:operation-status', { waiting: true, operationId: id, operation: name });
     }, 10000);
-    requests.set(id, { resolve, reject, timer });
+    requests.set(id, { resolve, reject, timer, name });
     try {
       worker.postMessage({ type: 'operator', id, name, args });
     } catch {
@@ -374,6 +377,7 @@ function createWindow(background = false) {
       },
     }),
   );
+  notifications = new NotificationOverlay(window, join(here, '../preload/notifications.cjs'));
   browser = new BrowserManager(window, {
     onShortcut: applicationShortcut,
     hasUnfinishedEditor: () => [...editingScopes].some(scope => scope !== 'browser'),
@@ -499,6 +503,8 @@ function createWindow(background = false) {
       event.preventDefault();
   });
   window.on('closed', () => {
+    notifications?.dispose();
+    notifications = null;
     terminalDelivery.clear();
     shortcutCapture = false;
     browser?.dispose();
@@ -525,6 +531,8 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
+  notifications?.dispose();
+  notifications = null;
   if (window && !window.isDestroyed()) window.webContents.send('projector:shutdown');
   void quitAfterCleanup();
 });
@@ -677,7 +685,8 @@ void app
           if (!pending) return;
           clearTimeout(pending.timer);
           requests.delete(response.id);
-          window?.webContents.send('projector:operation-status', { waiting: false });
+          window?.webContents.send('projector:operation-status', { waiting: false, operationId: response.id, operation: pending.name,
+            ...(response.error ? { error: response.error.code + ': ' + response.error.message } : {}) });
           if (response.error)
             pending.reject(
               Object.assign(new Error(response.error.code + ': ' + response.error.message), {
@@ -775,7 +784,7 @@ void app
       const trusted =
         (source.hostname === 'app' && source.protocol === 'projector:') ||
         (Boolean(developmentUrl) && event.senderFrame?.url.startsWith(developmentUrl!));
-      if (!trusted || event.senderFrame !== event.sender.mainFrame)
+      if (!trusted || event.sender !== window?.webContents || event.senderFrame !== event.sender.mainFrame)
         throw new Error('Untrusted IPC sender');
       try {
       if (quitting) return { __projectorLifecycle: 'shutdown', code: 'SHUTTING_DOWN', message: 'Projector is shutting down.' };

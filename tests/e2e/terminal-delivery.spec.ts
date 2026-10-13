@@ -29,7 +29,7 @@ test('lost renderer acknowledgements bound IPC output while PTY persists and sub
     await invoke('terminalResize', { id: terminal.id, viewId, cols: 90, rows: 24, active: true });
     await app.evaluate(({ ipcMain, BrowserWindow }) => {
       const output = { count: 0, bytes: 0, blocked: true, held: [] as unknown[][] };
-      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      const contents = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents;
       const send = contents.send.bind(contents), emit = ipcMain.emit.bind(ipcMain);
       contents.send = (channel, ...args) => {
         if (channel === 'projector:terminal-output') {

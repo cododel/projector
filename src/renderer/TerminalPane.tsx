@@ -1,6 +1,7 @@
+import { useErrorReporter } from './useNotifications';
+import { notifications } from './notifications';
 import { terminalWheelController } from './terminal-wheel-controller';
 import { terminalFilePaths } from './terminal-drop';
-import { Icon } from './Icon';
 import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -53,7 +54,14 @@ export function TerminalPane({
   const flushInput = useRef<() => void>(() => {});
   const focusAfterResize = useRef(false);
   const initializedRef = useRef(false);
-  const [error, setError] = useState('');
+  const setError = useErrorReporter('terminal', record.id);
+  useEffect(() => {
+    const existing = notifications.find('terminal-status', record.id, record.id);
+    if (record.error) {
+      if (existing) notifications.update(existing.id, { level: 'error', body: record.error, lifetime: 'sticky' });
+      else notifications.push({ source: 'terminal-status', context: record.id, operation: record.id, level: 'error', title: 'Terminal needs attention', body: record.error });
+    } else if (existing) notifications.update(existing.id, { level: 'info', title: 'Terminal saving recovered', body: 'Local saving is confirmed.', lifetime: 'visible' });
+  }, [record.id, record.error]);
   const [truncated, setTruncated] = useState(false);
   activeRef.current = active;
   const running = record.status === 'running';
@@ -376,17 +384,6 @@ export function TerminalPane({
         <p className="terminal-inactive-note">
           This is a saved screen. Resume starts Codex only by the recorded exact session ID.
         </p>
-      )}
-      {(error || record.error) && (
-        <div className="error-banner" role="alert">
-          {record.error}
-          {error && <span>{error}</span>}
-          {error && (
-            <button aria-label="Dismiss terminal input error" onClick={() => setError('')}>
-              <Icon name="close" />
-            </button>
-          )}
-        </div>
       )}
       <div className="xterm-container" ref={container} />
     </section>

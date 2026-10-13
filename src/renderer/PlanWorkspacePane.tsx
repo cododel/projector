@@ -1,3 +1,4 @@
+import { notifications, notifyError } from './notifications';
 import React, { useEffect, useRef, useState } from 'react';
 import type { PaneContent } from '../shared/application-workspace';
 
@@ -37,7 +38,6 @@ export function PlanDocumentPane({
   message: string;
 }): React.JSX.Element {
   const [waiting, setWaiting] = useState(false);
-  const [error, setError] = useState('');
   const frame = useRef<HTMLIFrameElement>(null);
   const revisionId = content.tab.kind === 'document' ? content.tab.revisionId : null;
   useEffect(() => {
@@ -51,7 +51,7 @@ export function PlanDocumentPane({
           setWaiting(!data.revision && !data.source && !data.preview);
         })
         .catch((error) => {
-          if (alive) setError(String(error));
+          if (alive) notifyError(error, 'document-load', JSON.stringify([workspaceKey, paneId, content.artifactId, revisionId]));
         });
     };
     read();
@@ -90,11 +90,6 @@ export function PlanDocumentPane({
     );
   return (
     <>
-      {error && (
-        <div role="alert" className="error-banner">
-          {error}
-        </div>
-      )}
       <iframe
         ref={frame}
         data-pane-id={paneId}
@@ -135,13 +130,16 @@ export function BrowserWorkspacePane({
     register(paneId, element.current ? { nativeId, element: element.current } : null);
     return () => register(paneId, null);
   }, [paneId, nativeId, register]);
+  useEffect(() => {
+    const context = nativeId ?? paneId;
+    const existing = notifications.find('browser', context, 'load');
+    if (error) {
+      if (existing) notifications.update(existing.id, { body: error });
+      else notifications.push({ source: 'browser', context, operation: 'load', level: 'error', title: 'Browser could not load', body: error });
+    }
+  }, [error, nativeId, paneId]);
   return (
     <>
-      {error && (
-        <div className="error-banner" role="alert">
-          {error}
-        </div>
-      )}
       <div
         className="browser-area"
         ref={element}

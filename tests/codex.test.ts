@@ -602,6 +602,7 @@ it.each(['before', 'after'])(
       ).toBe(true);
     } else {
       await expect(operation).resolves.toEqual({
+        status: 'completed',
         sessionId: 'thread-exact-fixture',
         archived: true,
       });
@@ -690,4 +691,26 @@ it('reconciles an unavailable empty session without hiding failures for persiste
   diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'test',message:'CODEX_RPC_FAILED: {"code":-32600,"message":"thread not loaded: thread-exact-fixture"}',count:1});
   await expect(persisted.manager.read('thread-exact-fixture')).rejects.toThrow('thread not loaded');
   expect(persisted.manager.snapshot().sessions.some(session => session.id === 'thread-exact-fixture')).toBe(true);
+});
+
+it('returns an ordinary blocked Archive result for an active writer without poisoning metadata or mutating the thread', async () => {
+  const { manager, project, audit } = await setup({ CODEX_FIXTURE_ACTIVE_WRITER: 'thread-exact-fixture' });
+  await manager.discover([{ id: 'project', path: project }]);
+  await expect(manager.setArchived('thread-exact-fixture', true)).resolves.toEqual({
+    status: 'blocked', reason: 'session-in-use', sessionId: 'thread-exact-fixture',
+  });
+  expect(manager.snapshot().error).toBeNull();
+  expect(manager.snapshot().sessions.some(session => session.id === 'thread-exact-fixture')).toBe(true);
+  expect((await auditRequests(audit)).some(request => ['thread/archive', 'thread/start', 'thread/resume'].includes(request.method ?? ''))).toBe(false);
+});
+
+it('returns a normal warning if a writer appears between Archive validation and mutation', async () => {
+  const { manager, project, audit } = await setup({ CODEX_FIXTURE_ARCHIVE_FAILURE: 'busy' });
+  await manager.discover([{ id: 'project', path: project }]);
+  await expect(manager.setArchived('thread-exact-fixture', true)).resolves.toEqual({
+    status: 'blocked', reason: 'session-in-use', sessionId: 'thread-exact-fixture',
+  });
+  expect(manager.snapshot().error).toBeNull();
+  expect(manager.snapshot().sessions.some(session => session.id === 'thread-exact-fixture')).toBe(true);
+  expect((await auditRequests(audit)).filter(request => request.method === 'thread/archive')).toHaveLength(1);
 });

@@ -16,8 +16,14 @@ import { captureTextSelection, anchorRange } from './anchors';
 import { annotationClip } from './annotation-visibility';
 import { RefreshQueue } from './refresh-queue';
 import { TerminalPane } from './TerminalPane';
-import { SessionActions, ArchiveNotice, type ArchivedChat } from './SessionActions';
 import { ProjectSessionRow } from './ProjectSessionRow';
+import { SessionActions, type ArchivedChat } from './SessionActions';
+import { notifications, notifyError } from './notifications';
+import { useNotificationHost, useErrorReporter } from './useNotifications';
+import { useDocumentError } from './document-notifications';
+import { NotificationAccess } from './NotificationAccess';
+import type { NotificationTransport } from '../shared/notifications';
+import type { HarnessArchiveResult } from '../shared/harness';
 import { WorkspaceSplit } from './WorkspaceSplit';
 import { ProjectDashboard } from './ProjectDashboard';
 import { ApplicationSettings } from './ApplicationSettings';
@@ -151,9 +157,10 @@ interface BrowserSnapshot {
   downloads?: { id: string; tabId: string; filename: string; status: string }[];
 }
 interface Bridge {
+  notifications?: NotificationTransport;
   invoke(method: string, params?: Record<string, unknown>): Promise<unknown>;
   onOperationStatus?(
-    callback: (status: { waiting: boolean; operation?: string }) => void,
+    callback: (status: { waiting: boolean; operationId: string; operation: string; error?: string }) => void,
   ): () => void;
   onRefresh(callback: () => void): (() => void) | void;
   isShuttingDown?(): boolean;
@@ -280,7 +287,13 @@ function App(): React.JSX.Element {
   const workspaceMenuChanged = (label: string, open: boolean) => suspendBrowser(`menu:${label}`, open);
   const sessionChanges = useRef(new Set<string>());
   const [pendingSessions, setPendingSessions] = useState<string[]>([]);
-  const [archivedChats, setArchivedChats] = useState<ArchivedChat[]>([]);
+  const notificationFocusRequested = useRef<string | null>(null);
+  const notificationCount = useNotificationHost(bridge.notifications, snapshot => {
+    if (notificationFocusRequested.current && snapshot.some(notice => notice.id === notificationFocusRequested.current)) {
+      notificationFocusRequested.current = null;
+      bridge.notifications?.focus();
+    }
+  });
   const [sessionMetadata, setSessionMetadata] = useState<HarnessSession | null>(null);
   const [bottomFocused, setBottomFocused] = useState(false);
   const [bottomHeightPreview, setBottomHeightPreview] = useState<number | null>(null);
@@ -290,6 +303,7 @@ function App(): React.JSX.Element {
     startHeight: number;
     height: number;
   } | null>(null);
+  const documentNoticeRequests = useRef(new Map<string, { target: Window; id: string; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>());
   const documentFrames = useRef(new Map<string, DocumentFrame>());
   const browserProjection = useRef<FullApplicationSnapshot | null>(null);
   const editingFrames = useRef(new Set<string>());
@@ -335,9 +349,16 @@ function App(): React.JSX.Element {
     },
     [],
   );
-  const [error, setError] = useState('');
-  const [waiting, setWaiting] = useState(false);
-  useEffect(() => bridge.onOperationStatus?.((value) => setWaiting(value.waiting)), []);
+  const setError = useErrorReporter('application', currentKey ?? projectId);
+  useEffect(() => bridge.onOperationStatus?.(value => {
+    const existing = notifications.find('storage', value.operation, value.operationId);
+    if (value.waiting) notifications.push({ source: 'storage', context: value.operation, operation: value.operationId,
+      level: 'warning', title: 'Waiting for local storage', pending: true,
+      body: 'The operation may complete. Do not repeat it until its result is reconciled.' });
+    else if (existing) notifications.update(existing.id, { pending: false,
+      level: value.error ? 'error' : 'info', title: value.error ? 'Storage operation needs attention' : 'Operation completed',
+      body: value.error ?? value.operation, lifetime: value.error ? 'sticky' : 'visible' });
+  }), []);
   const [busy, setBusy] = useState(false);
   const [setup, setSetup] = useState<import('../shared/protocol').McpSetup | null>(null);
   const informationBrowser = useRef<string | null>(null);
@@ -461,7 +482,34 @@ function App(): React.JSX.Element {
       }
     >(),
   );
-  const [retryTransition, setRetryTransition] = useState<(() => Promise<void>) | null>(null);
+  useEffect(() => {
+    if (!runtimeNotice) return;
+    if (!notifications.find('runtime', 'window', 'close-not-quit')) notifications.push({
+      source: 'runtime', context: 'window', operation: 'close-not-quit', level: 'info', title: 'Closing keeps Projector running',
+      body: 'Closing this window keeps the local runtime running. Use Quit Projector to stop it.',
+      actions: [{ label: 'Got it', run: async () => { await invoke('dismissRuntimeNotice'); setRuntimeNotice(false); return 'dismiss' as const; } }],
+    });
+  }, [runtimeNotice]);
+  useEffect(() => {
+    const notice = notifications.find('workspace', 'local-storage', 'confirmation');
+    if (application?.metadataPending) {
+      if (!notice) workspaceConfirmationNotice();
+    } else if (notice) notifications.resolve(notice.id);
+  }, [application?.metadataPending]);
+  function workspaceConfirmationNotice(): string {
+    return notifications.find('workspace', 'local-storage', 'confirmation')?.id ?? notifications.push({
+      source: 'workspace', context: 'local-storage', operation: 'confirmation',
+      level: 'warning', title: 'Local workspace storage needs confirmation',
+      body: 'Confirm the existing write. This does not repeat the action.',
+      actions: [{ label: 'Confirm local write', run: async () => { await confirmWorkspaceWrite(); return 'keep' as const; } }],
+    });
+  }
+  function reviewPendingWrite(): void {
+    const id = workspaceConfirmationNotice();
+    notificationFocusRequested.current = id;
+    notifications.update(id, {});
+  }
+
   const frame = useRef<HTMLIFrameElement>(null);
   const saveIntents = useRef(new Map<string, Record<string, unknown>>());
   const browserArea = useRef<HTMLDivElement>(null);
@@ -792,18 +840,47 @@ function App(): React.JSX.Element {
   function pinOrder(a: HarnessSession, b: HarnessSession): number {
     return Number(pinnedSessions.includes(b.id)) - Number(pinnedSessions.includes(a.id));
   }
+  async function archiveSession(chat: ArchivedChat, repeatedEvent = false): Promise<void> {
+    if (sessionChanges.current.has(chat.id)) return;
+    sessionChanges.current.add(chat.id);
+    setPendingSessions([...sessionChanges.current]);
+    try {
+      const result = await invoke<HarnessArchiveResult>('harnessArchive', {
+        sessionId: chat.id, archived: true, executable: chat.executable, profile: chat.profile,
+      });
+      const context = JSON.stringify([chat.id, chat.executable, chat.profile]);
+      const blocked = result.status === 'blocked';
+      const input = { level: blocked ? 'warning' as const : 'info' as const,
+        title: blocked ? 'Session is in use' : 'Archived chat',
+        body: blocked ? `Close its current Codex process, then try archiving again.\n${chat.title}` : chat.title,
+        actions: [{ label: blocked ? 'Retry' : 'Undo', pendingLabel: blocked ? 'Retrying…' : 'Undoing…', run: async () => {
+          if (blocked) { await archiveSession(chat); return 'keep' as const; }
+          await invoke('harnessArchive', { sessionId: chat.id, archived: false,
+            executable: chat.executable, profile: chat.profile });
+          await reload(); return 'dismiss' as const;
+        } }], lifetime: 'sticky' as const };
+      const existing = notifications.find('session-archive', context, 'archive');
+      if (existing && !repeatedEvent) notifications.update(existing.id, input);
+      else notifications.push({ source: 'session-archive', context, operation: 'archive', ...input });
+      await reload();
+    } finally {
+      sessionChanges.current.delete(chat.id);
+      setPendingSessions([...sessionChanges.current]);
+    }
+  }
   async function changeSession(session: HarnessSession, archive: boolean): Promise<void> {
     if (sessionChanges.current.has(session.id)) return;
+    if (archive) {
+      try {
+        await archiveSession({ notificationId: crypto.randomUUID(), id: session.id, title: session.title,
+          executable: currentSettings.codexExecutable, profile: currentSettings.codexProfile }, true);
+      } catch (failure) { setError(message(failure)); }
+      return;
+    }
     sessionChanges.current.add(session.id);
     setPendingSessions([...sessionChanges.current]);
     try {
-      if (archive) {
-        const chat = { notificationId: crypto.randomUUID(), id: session.id, title: session.title, executable: currentSettings.codexExecutable, profile: currentSettings.codexProfile };
-        await invoke('harnessArchive', { sessionId: chat.id, archived: true, executable: chat.executable, profile: chat.profile });
-        setArchivedChats(previous => [...previous, chat]);
-      } else {
-        await invoke('harnessPin', { sessionId: session.id, pinned: !pinnedSessions.includes(session.id) });
-      }
+      await invoke('harnessPin', { sessionId: session.id, pinned: !pinnedSessions.includes(session.id) });
       await reload();
     } catch (failure) { setError(message(failure)); }
     finally {
@@ -1039,8 +1116,13 @@ function App(): React.JSX.Element {
     callback: () => Promise<unknown>,
     retry = false,
     backgroundRefresh = false,
+    rejectWhenBusy = false,
+    retryNoticeId?: string,
   ): Promise<void> {
-    if (transitioning.current) return;
+    if (transitioning.current) {
+      if (rejectWhenBusy) throw new Error('Another workspace operation is still in progress. Wait before retrying.');
+      return;
+    }
     transitioning.current = true;
     const resume = refreshQueue.pause();
     setBusy(true);
@@ -1052,23 +1134,20 @@ function App(): React.JSX.Element {
       resume();
       if (backgroundRefresh) refreshQueue.invalidate();
       else await reload();
-      setRetryTransition(null);
     } catch (error) {
-      setError(message(error));
+      const noticeId = retryNoticeId ?? setError(message(error));
       if (bridge.isShuttingDown?.()) return;
+      let retryAction: () => Promise<void>;
       try {
         const confirmation = await invoke<{ pending: boolean }>('applicationConfirmation');
-        setRetryTransition(() =>
-          confirmation.pending
-            ? confirmWorkspaceWrite
-            : () => transition(callback, true, backgroundRefresh),
-        );
+        retryAction = confirmation.pending ? confirmWorkspaceWrite : () => transition(callback, true, backgroundRefresh, true, noticeId ?? undefined);
       } catch (confirmationError) {
-        setError(`${message(error)}\nWorkspace confirmation failed: ${message(confirmationError)}`);
-        // An unavailable confirmation does not prove that the operation failed.
-        // Retry reconciliation, never replay the original mutation.
-        setRetryTransition(() => confirmWorkspaceWrite);
+        if (noticeId) notifications.update(noticeId, { body: `${message(error)}\nWorkspace confirmation failed: ${message(confirmationError)}` });
+        // Unknown outcome requires reconciliation, never replay of the original mutation.
+        retryAction = confirmWorkspaceWrite;
       }
+      if (noticeId) notifications.update(noticeId, { actions: [{ label: 'Retry', run: async () => { await retryAction(); return 'dismiss' as const; } }] });
+      if (retryNoticeId) throw error;
     } finally {
       resume();
       transitioning.current = false;
@@ -1080,10 +1159,6 @@ function App(): React.JSX.Element {
     try {
       await invoke('confirmWorkspaceWrite');
       await reload();
-      setError('');
-      setRetryTransition(null);
-    } catch (error) {
-      setError(message(error));
     } finally {
       setBusy(false);
     }
@@ -1202,6 +1277,35 @@ function App(): React.JSX.Element {
         typeof event.data !== 'object'
       )
         return;
+      if (event.data.type === 'projector-notice' && typeof event.data.id === 'string' && typeof event.data.body === 'string' && event.data.id.length <= 2000) {
+        const identity = owner ?? selected;
+        if (!identity || event.data.artifactId !== identity.artifactId || event.data.revisionId !== identity.revisionId || event.data.body.length > 100000) return;
+        const target = event.source as Window;
+        const sourceFrame = owner?.frame ?? frame.current;
+        const context = JSON.stringify([identity.artifactId, identity.revisionId, owner?.paneId ?? 'legacy']);
+        const operation = event.data.id;
+        const input = { level: 'error' as const, title: 'Document operation failed', body: event.data.body,
+          actions: [{ label: 'Retry autosave', run: () => {
+            if (!sourceFrame?.isConnected || sourceFrame.contentWindow !== target || (owner && (() => { const current = documentFrames.current.get(owner.paneId); return !current || current.frame !== sourceFrame || current.key !== owner.key || current.artifactId !== owner.artifactId || current.revisionId !== owner.revisionId; })()))
+              throw new Error('The original document is no longer open.');
+            const requestId = crypto.randomUUID();
+            return new Promise<'dismiss'>((resolve, reject) => {
+              const timer = setTimeout(() => { documentNoticeRequests.current.delete(requestId); reject(new Error('The original document did not confirm retry.')); }, 10000);
+              documentNoticeRequests.current.set(requestId, { target, id: operation, timer, reject, resolve: () => resolve('dismiss') });
+              target.postMessage({ type: 'projector-notice-action', id: operation, requestId }, 'projector://document');
+            });
+          } }] };
+        notifications.push({ source: 'document', context, operation, ...input });
+        return;
+      }
+      if (event.data.type === 'projector-notice-result' && typeof event.data.requestId === 'string') {
+        const pending = documentNoticeRequests.current.get(event.data.requestId);
+        if (pending && pending.target === event.source && pending.id === event.data.id) {
+          clearTimeout(pending.timer); documentNoticeRequests.current.delete(event.data.requestId);
+          if (typeof event.data.error === 'string') pending.reject(new Error(event.data.error)); else pending.resolve();
+        }
+        return;
+      }
       if (event.data.type === 'projector-focus' && owner) {
         focusPane(owner.paneId);
         return;
@@ -1796,6 +1900,9 @@ function App(): React.JSX.Element {
       />
     );
   }
+  useEffect(() => {
+    if (activeBrowser?.error) notifyError(activeBrowser.error, 'browser', activeBrowser.id);
+  }, [activeBrowser?.id, activeBrowser?.error]);
   return (
     <div
       style={
@@ -1808,10 +1915,6 @@ function App(): React.JSX.Element {
       }
       className={`app ${sidebarAnimating ? 'sidebar-animating' : ''} ${!leftSidebarVisible ? 'left-sidebar-hidden' : ''} ${!rightSidebarVisible ? 'right-sidebar-hidden' : ''}`}
     >
-      {archivedChats[0] && <ArchiveNotice key={archivedChats[0].notificationId} chat={archivedChats[0]} onDismiss={() => setArchivedChats(previous => previous.slice(1))} onUndo={async chat => {
-        await invoke('harnessArchive', { sessionId: chat.id, archived: false, executable: chat.executable, profile: chat.profile });
-        await reload();
-      }} />}
       <header className="window-titlebar" role="toolbar" aria-label="Window toolbar">
         {leftSidebarVisible && (
           <div className="titlebar-section titlebar-left">
@@ -1977,6 +2080,7 @@ function App(): React.JSX.Element {
               }))},
             ]} />
           </div>}
+          {(notificationCount > 0 || application?.metadataPending) && <button className="notification-access" onClick={() => application?.metadataPending ? reviewPendingWrite() : bridge.notifications?.focus()}>Notifications · {notificationCount}</button>}
           {!rightSidebarVisible && sidebarToggle('right')}
         </div>
         {rightSidebarVisible && (
@@ -2348,59 +2452,6 @@ function App(): React.JSX.Element {
             )}
           </header>
         )}
-        {waiting && (
-          <div className="runtime-notice" role="status">
-            Waiting for local storage. The operation may complete; do not repeat it until its result
-            is reconciled.
-          </div>
-        )}
-        {runtimeNotice && (
-          <div className="runtime-notice" role="status">
-            <span>
-              Closing this window keeps the local runtime running. Use Quit Projector to stop it.
-            </span>
-            <button
-              onClick={() =>
-                void action(async () => {
-                  await invoke('dismissRuntimeNotice');
-                  setRuntimeNotice(false);
-                })
-              }
-            >
-              Got it
-            </button>
-          </div>
-        )}
-        {error && (
-          <div role="alert" className="error-banner">
-            {error}
-            {retryTransition && (
-              <>
-                <button onClick={() => void retryTransition()}>Retry</button>
-                <button
-                  onClick={() => {
-                    setRetryTransition(null);
-                    setError('');
-                  }}
-                >
-                  Cancel
-                </button>
-              </>
-            )}
-            <button onClick={() => setError('')} aria-label="Dismiss error">
-<Icon name="close" />
-</button>
-          </div>
-        )}
-        {application?.metadataPending && !settingsOpen && (
-          <div className="runtime-notice" role="status">
-            Local workspace storage needs confirmation. Retry confirms the existing write and does
-            not repeat the action.
-            <button disabled={busy} onClick={() => void confirmWorkspaceWrite()}>
-              Confirm local write
-            </button>
-          </div>
-        )}
         {projectOverview ? (
           <ProjectDashboard
             project={snapshot.projects.find(item => item.id === sessionWorkspace?.projectId)}
@@ -2459,11 +2510,6 @@ function App(): React.JSX.Element {
           <>
             {activeBrowser ? (
               <>
-                {activeBrowser.error && (
-                  <div role="alert" className="error-banner">
-                    {activeBrowser.error}
-                  </div>
-                )}
                 {activeBrowser.loading && <small>Loading…</small>}
                 <div ref={browserArea} className="browser-area" />
               </>
@@ -3075,6 +3121,7 @@ function App(): React.JSX.Element {
                 </p>
               )}
               <label htmlFor="plan-name">Plan name</label>
+              <NotificationAccess />
               <input
                 id="plan-name"
                 disabled={renameBusy}
@@ -3123,10 +3170,7 @@ function App(): React.JSX.Element {
           }}
           onShortcutCapture={shortcutCapture}
           metadataPending={Boolean(application?.metadataPending)}
-          onConfirm={async () => {
-            await invoke('confirmWorkspaceWrite');
-            await reload();
-          }}
+          onReviewPendingWrite={reviewPendingWrite}
         />
       )}
       {sessionMetadata && (
@@ -3373,7 +3417,8 @@ function DocumentSurface(): React.JSX.Element {
   const scrollRestored = useRef(false);
   const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [data, setData] = useState<DocumentResult | null>(null);
-  const [error, setError] = useState('');
+  const retryNotice = useRef<() => Promise<void>>(async () => {});
+  const setError = useDocumentError({ artifactId, revisionId, paneId }, documentShellOrigin(), async () => retryNotice.current());
   useEffect(() => {
     let shortcuts = DEFAULT_SETTINGS.shortcuts;
     const receive = (event: MessageEvent) => {
@@ -3509,6 +3554,7 @@ function DocumentSurface(): React.JSX.Element {
   const composer = useRef<CommentComposerHandle>(null);
   const saves = useRef(Promise.resolve());
   const failedTasks = useRef(new Map<string, () => Promise<unknown>>());
+  const lastAutosaveError = useRef('');
   const generation = useRef(0);
   const restored = useRef(false);
   const article = useRef<HTMLElement>(null);
@@ -3536,7 +3582,7 @@ function DocumentSurface(): React.JSX.Element {
     [artifactId, revisionId],
   );
   const refreshQueue = useMemo(
-    () => new RefreshQueue(readView, (error) => setError(message(error))),
+    () => new RefreshQueue(readView, (error) => setError(message(error), 'load')),
     [readView],
   );
   const reload = useCallback(() => refreshQueue.request(), [refreshQueue]);
@@ -3555,7 +3601,8 @@ function DocumentSurface(): React.JSX.Element {
               setSaveStatus('Saved locally');
             }
           } catch (e) {
-            setError(message(e));
+            lastAutosaveError.current = message(e);
+            setError(lastAutosaveError.current, `autosave:${key}`);
             failedTasks.current.set(key, task);
             setSaveStatus('Save failed');
           } finally {
@@ -3566,6 +3613,11 @@ function DocumentSurface(): React.JSX.Element {
     },
     [refreshQueue],
   );
+  retryNotice.current = async () => {
+    for (const [key, task] of failedTasks.current) await queue(task, key);
+    await reload();
+    if (failedTasks.current.size) throw new Error(lastAutosaveError.current || 'Local autosave still needs attention.');
+  };
   useEffect(() => {
     if (!paneId || !data || scrollRestored.current) return;
     const id = requestAnimationFrame(() => {
@@ -4167,23 +4219,6 @@ function DocumentSurface(): React.JSX.Element {
   }
   return (
     <div className="surface">
-      {error && (
-        <div className="error-banner" role="alert">
-          {error}
-          {failedTasks.current.size > 0 && (
-            <button
-              onClick={() => {
-                for (const [key, task] of failedTasks.current) void queue(task, key);
-              }}
-            >
-              Retry autosave
-            </button>
-          )}
-          <button onClick={() => setError('')}>
-<Icon name="close" />
-</button>
-        </div>
-      )}
       {data?.error && (
         <section className="draft-diagnostic">
           <div role="alert" className="error-banner">

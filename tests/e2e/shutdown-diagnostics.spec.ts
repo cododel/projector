@@ -74,7 +74,7 @@ for (const mode of ['notification', 'queued invoke'] as const) {
         if (queuedInvoke) {
           // Reach the queued-request boundary before the renderer receives the
           // lifecycle notification, rather than testing only its local guard.
-          const contents = BrowserWindow.getAllWindows()[0].webContents;
+          const contents = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents;
           const send = contents.send.bind(contents);
           contents.send = (channel, ...args) => {
             if (channel !== 'projector:shutdown') send(channel, ...args);
@@ -123,7 +123,7 @@ for (const mode of ['notification', 'queued invoke'] as const) {
       await app.evaluate(({ BrowserWindow }) => {
         // A queued notification arriving after the lifecycle message must not
         // restart a refresh subscription, even if its producer races shutdown.
-        BrowserWindow.getAllWindows()[0].webContents.send('projector:refresh');
+        BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.send('projector:refresh');
       });
       const state = await page.evaluate(
         () =>

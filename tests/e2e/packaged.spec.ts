@@ -256,7 +256,10 @@ test('relocated packaged app uses its own stdio helper without system Node and p
       path: terminalImage,
       contentType: 'image/png',
     });
-    await page.close();
+    const owner = await app.browserWindow(page);
+    await owner.evaluate(window => window.close());
+    await expect.poll(() => page.isClosed()).toBe(true);
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(0);
     expect(
       await app.evaluate((_, pid) => {
         try {

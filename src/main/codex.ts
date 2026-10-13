@@ -15,9 +15,18 @@ import type {
   HarnessProject,
   HarnessSession,
   HarnessSessionStatus,
+  HarnessArchiveResult,
   HarnessSnapshot,
   HarnessMcpStartup,
 } from '../shared/harness';
+
+function sessionInUse(error: unknown, sessionId: string): boolean {
+  const rpc = z.object({ code: z.number(), message: z.string() }).safeParse(
+    error instanceof Error ? error.cause : undefined,
+  );
+  return rpc.success && rpc.data.code === -32600 &&
+    rpc.data.message === `thread ${sessionId} already has an active writer`;
+}
 
 class CodexShutdownError extends Error {
   constructor() { super('CODEX_MANAGER_STOPPED'); }
@@ -555,7 +564,7 @@ export class CodexManager {
       throw error;
     }
   }
-  async read(sessionId: string): Promise<HarnessSession> {
+  async read(sessionId: string, options: { reportSessionConflict?: boolean } = {}): Promise<HarnessSession> {
     try {
       const client = await this.discoveryClient();
       const result = z
@@ -578,13 +587,19 @@ export class CodexManager {
           throw new Error('CODEX_SESSION_UNAVAILABLE: This session is no longer available in Codex. Start a new session.', { cause: error });
         }
       }
-      this.failed(error);
+      if (options.reportSessionConflict !== false || !sessionInUse(error, sessionId)) this.failed(error);
       throw error;
     }
   }
-  async setArchived(sessionId: string, archived: boolean) {
+  async setArchived(sessionId: string, archived: boolean): Promise<HarnessArchiveResult> {
     z.string().min(1).max(512).parse(sessionId);
-    await this.read(sessionId);
+    const blocked = (): HarnessArchiveResult => ({ status: 'blocked', sessionId, reason: 'session-in-use' });
+    try {
+      await this.read(sessionId, { reportSessionConflict: !archived });
+    } catch (error) {
+      if (archived && sessionInUse(error, sessionId)) return blocked();
+      throw error;
+    }
     try {
       const client = await this.discoveryClient();
       const result = await client.call(archived ? 'thread/archive' : 'thread/unarchive', {
@@ -597,6 +612,7 @@ export class CodexManager {
         this.sessions.set(sessionId, await this.session(restored.thread));
       }
     } catch (error) {
+      if (archived && sessionInUse(error, sessionId)) return blocked();
       // Never resend a mutation after a lost acknowledgement. Reconcile by
       // reading the authoritative archived/non-archived listings instead.
       if (!(error instanceof Error) || !/^CODEX_(RPC_|CONNECTION_|BACKEND_)/.test(error.message)) {
@@ -619,7 +635,7 @@ export class CodexManager {
     const session = this.sessions.get(sessionId);
     if (session) session.archived = archived;
     this.changed();
-    return { sessionId, archived };
+    return { status: 'completed', sessionId, archived };
   }
   launchNew(projectId: string, cwd: string) {
     return this.launch(projectId, cwd);

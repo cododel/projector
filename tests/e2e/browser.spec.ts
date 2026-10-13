@@ -272,7 +272,7 @@ test('area annotation uses frozen viewport, private composer, and numbered captu
 
 async function nativeMarkerBounds() {
   return app.evaluate(({ BrowserWindow, WebContentsView }) => {
-    const owner = BrowserWindow.getAllWindows()[0];
+    const owner = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!;
     return owner.contentView.children.flatMap((view) => {
       if (!(view instanceof WebContentsView)) return [];
       const url = view.webContents.getURL();
@@ -288,7 +288,7 @@ async function nativeMarkerBounds() {
 
 async function nativeMarkerTips() {
   return app.evaluate(async ({ BrowserWindow, WebContentsView }) => {
-    const owner = BrowserWindow.getAllWindows()[0];
+    const owner = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!;
     const views = owner.contentView.children.filter(
       (view) =>
         view instanceof WebContentsView &&
@@ -451,7 +451,7 @@ test('queued overlay pointer traffic retires when selection closes without actin
   const external = await pageAt(page => page.url() === url);
   await expect(external.getByRole('heading', { name: 'External page', exact: true })).toBeVisible();
   const activate = () => app.evaluate(async ({ BrowserWindow }, id) => {
-    const [width, height] = BrowserWindow.getAllWindows()[0].getContentSize();
+    const [width, height] = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.getContentSize();
     // The fixture shell's load can still be finishing when its first window
     // becomes observable. Project real native bounds explicitly before Annotate.
     globalThis.browserTest.manager.setVisibleViews([{ viewId: 'queued-pointer-pane',

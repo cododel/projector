@@ -57,3 +57,8 @@ export interface CodexLaunch {
   env: Record<string, string>;
   cwd: string;
 }
+
+/** An active writer is an expected Archive refusal, not an IPC failure. */
+export type HarnessArchiveResult =
+  | { status: 'completed'; sessionId: string; archived: boolean }
+  | { status: 'blocked'; sessionId: string; reason: 'session-in-use' };

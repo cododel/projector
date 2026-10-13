@@ -157,6 +157,10 @@ if (args.includes('--remote')) {
       case 'thread/archive':
       case 'thread/unarchive': {
         const key = value.params.threadId;
+        if (process.env.CODEX_FIXTURE_ARCHIVE_FAILURE === 'busy') {
+          send({ id: value.id, error: { code: -32600, message: `thread ${key} already has an active writer` } });
+          return;
+        }
         if (process.env.CODEX_FIXTURE_ARCHIVE_FAILURE === 'before') {
           send({ id: value.id, error: { code: -32603, message: 'Archive refused' } });
           return;
@@ -186,7 +190,8 @@ if (args.includes('--remote')) {
           send({ id: value.id, error: { code: -32600, message: `thread not loaded: ${value.params.threadId}` } });
           return;
         }
-        if (process.env.CODEX_FIXTURE_ACTIVE_WRITER === value.params.threadId) {
+        if (process.env.CODEX_FIXTURE_ACTIVE_WRITER === value.params.threadId ||
+          (process.env.CODEX_FIXTURE_ACTIVE_WRITER_FILE && readFileSync(process.env.CODEX_FIXTURE_ACTIVE_WRITER_FILE, 'utf8').trim() === value.params.threadId)) {
           send({ id: value.id, error: { code: -32600, message: `thread ${value.params.threadId} already has an active writer` } });
           return;
         }

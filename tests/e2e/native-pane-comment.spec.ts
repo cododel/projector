@@ -1,3 +1,4 @@
+import { notificationWindow } from './notification-window';
 import {
   test,
   expect,
@@ -162,12 +163,18 @@ test('native pane first click drains the sibling comment without acting on the s
   await expect(writeFile(join(editorDirectory, 'permission-probe'), 'must fail')).rejects
     .toMatchObject({ code: 'EACCES' });
   diagnostics.phase('private-write-denied');
-  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'private-write-denied', message: /^Error occurred in handler for 'projector:invoke': Error: EACCES: Access to the storage location was denied\. Restore access and retry\.\n[\s\S]*$/, count: 1 });
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'private-write-denied', message: /^Error occurred in handler for 'projector:invoke': Error: EACCES: Access to the storage location was denied\. Restore access and retry\.\n[\s\S]*$/, count: 2 });
   await editor.fill('Private text after write failure');
-  await expect(frame.getByRole('alert')).toContainText('EACCES');
+  await expect((await notificationWindow(app!)).getByRole('alert').filter({ hasText: 'EACCES' })).toContainText('EACCES');
+  const notices = await notificationWindow(app!);
+  const failedSave = notices.locator('.notification-alert').filter({ hasText: 'EACCES' });
+  await failedSave.getByRole('button', { name: 'Retry autosave', exact: true }).click();
+  await expect(failedSave.getByRole('button', { name: 'Retry autosave', exact: true })).toBeEnabled();
+  await expect(failedSave).toHaveCount(1);
+  await expect(failedSave.locator('.alert-repeat')).toHaveText('×2');
   const beforeSite = await siteState(url);
   await nativeClick(url);
-  await expect(page.locator('.error-banner').filter({ hasText: 'Local save failed. Retry or cancel before leaving.' }))
+  await expect((await notificationWindow(app!)).locator('.notification-alert').filter({ hasText: 'Local save failed. Retry or cancel before leaving.' }))
     .toBeVisible();
   expect((await snapshot(page)).workspaces[key].activePaneId).toBe(documentPane.id);
   await expect(editor).toHaveValue('Private text after write failure');

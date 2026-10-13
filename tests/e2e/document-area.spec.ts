@@ -46,7 +46,7 @@ test('document area capture stays private until Save and opens its numbered froz
     ).toBe('no-drag');
     expect(
       await app.evaluate(({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows()[0].getWindowButtonPosition(),
+        BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.getWindowButtonPosition(),
       ),
     ).toEqual({ x: 14, y: 13 });
     await page.screenshot({ path: resolve('.tmp/tasks/titlebar-20261010/welcome.png') });
@@ -220,7 +220,7 @@ test('document area capture stays private until Save and opens its numbered froz
       path: resolve('.tmp/tasks/titlebar-20261010/production.png'),
     });
 
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 700));
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.setSize(980, 700));
     for (let i = 0; i < 9; i++) {
       await newBrowserTab(page);
       await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeFocused();
@@ -244,7 +244,7 @@ test('document area capture stays private until Save and opens its numbered froz
     for (let i = 0; i < 9; i++) {
       await titlebar.getByRole('button', { name: 'Close new tab tab', exact: true }).last().click();
     }
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1360, 900));
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.setSize(1360, 900));
 
     await page.getByRole('button', { name: 'Annotate document', exact: true }).click();
     const bounds = await frame.getByLabel('Select annotation area').boundingBox();
@@ -367,7 +367,7 @@ test('document area capture stays private until Save and opens its numbered froz
     expect(clicked.annotations[1].source.capture.rect.width).toBeCloseTo(paragraph.width, 0);
     expect(clicked.annotations[1].source.stateContext.stateHash).toMatch(/^[a-f0-9]{64}$/);
     await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0].setSize(1100, 750);
+      BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.setSize(1100, 750);
     });
     await page.locator('.annotation-jump').first().click();
     await expect

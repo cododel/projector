@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from '../support/process';
 import { promisify } from 'node:util';
+import { notificationWindow } from './notification-window';
 import type { ApplicationWorkspaceSnapshot } from '../../src/shared/application-workspace';
 
 let app: ElectronApplication | undefined, root: string;
@@ -75,14 +76,17 @@ test('session pin persists; archive and undo preserve workspaces and use exact p
   await page.getByRole('button', { name: 'Second chat', exact: true }).hover();
   await page.getByRole('button', { name: 'Archive Second chat', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Second chat', exact: true })).toHaveCount(0);
-  const notice = page.locator('.archive-notice');
+  const notifications = await notificationWindow(app);
+  const notice = notifications.locator('.notification-alert').filter({ hasText: 'Archived chat' });
   await expect(notice).toContainText('Archived chat');
   await expect(notice.getByRole('button', { name: 'View', exact: true })).toHaveCount(0);
   await expect(notice).toHaveCSS('opacity', '1');
-  const noticeBounds = await notice.boundingBox();
-  const toolbarBounds = await page.getByRole('toolbar', { name: 'Window toolbar', exact: true }).boundingBox();
-  expect(noticeBounds!.y).toBeGreaterThanOrEqual(toolbarBounds!.y + toolbarBounds!.height);
-  expect(noticeBounds!.y).toBeLessThanOrEqual(toolbarBounds!.y + toolbarBounds!.height + 8);
+  const native = await app.evaluate(({ BrowserWindow }) => {
+    const overlay = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().includes('/notifications.html'))!;
+    return { parent: overlay.getParentWindow()?.id, alwaysOnTop: overlay.isAlwaysOnTop() };
+  });
+  expect(native.parent).toBeTruthy();
+  expect(native.alwaysOnTop).toBe(false);
   await page.screenshot({ path: '.tmp/tasks/session-actions-20261012/archive-notice.png' });
   await notice.getByRole('button', { name: 'Undo', exact: true }).click();
   await expect(notice).toHaveCount(0);
@@ -209,4 +213,69 @@ test('project session title fades and scrolls only during hover or focus', async
     'none',
   );
   await page.screenshot({ path: '.tmp/tasks/session-row-20261013/pinned.png' });
+});
+
+test('busy Archive updates a deduplicated alert, retries without takeover and retains Undo after release', async () => {
+  root = await realpath(await mkdtemp(join(tmpdir(), 'bp-busy-archive-')));
+  const project = join(root, 'project'); await mkdir(project);
+  const audit = join(root, 'audit.jsonl'), writer = join(root, 'writer.txt');
+  await writeFile(writer, 'thread-exact-fixture');
+  app = await electron.launch({ args: [resolve('.')], env: {
+    ...process.env, PROJECTOR_DATA: join(root, 'data'), CODEX_HOME: join(root, 'home'),
+    PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'), CODEX_FIXTURE_PROJECT: project,
+    CODEX_FIXTURE_EMPTY: '0', CODEX_FIXTURE_ACTIVE_WRITER_FILE: writer,
+    CODEX_FIXTURE_AUDIT: audit, PROJECTOR_E2E_HARNESS_INTERVAL_MS: '200',
+  } });
+  const page = await app.firstWindow();
+  await app.evaluate(({ dialog }, project) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] });
+  }, project);
+  await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();
+  const row = page.locator('.project-session-row').filter({ has: page.getByRole('button', { name: 'Exact fixture session', exact: true }) });
+  await row.hover();
+  await row.getByRole('button', { name: 'Archive Exact fixture session', exact: true }).click();
+  const notifications = await notificationWindow(app);
+  const island = notifications.locator('.notification-alert').filter({ hasText: 'Session is in use' });
+  await expect(island).toContainText('Session is in use');
+  await expect(island).toContainText('Close its current Codex process');
+  await expect(page.locator('.error-banner')).toHaveCount(0);
+  const state = () => page.evaluate(() => (window as unknown as { projector: { invoke(name: string): Promise<{ harnesses: { error: string | null }; terminals: unknown[]; selectedWorkspace: string | null }> } }).projector.invoke('applicationSnapshot'));
+  expect((await state()).harnesses.error).toBeNull();
+  const before = await state();
+  await row.hover();
+  await row.getByRole('button', { name: 'Archive Exact fixture session', exact: true }).click();
+  await expect(island).toHaveCount(1);
+  await island.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(island.getByRole('button', { name: 'Retry', exact: true })).toBeEnabled();
+  await expect(island).toContainText('Session is in use');
+  expect((await state()).selectedWorkspace).toBe(before.selectedWorkspace);
+  expect((await state()).terminals).toEqual([]);
+  await expect(page.locator('.error-banner')).toHaveCount(0);
+  await page.screenshot({ path: '.tmp/tasks/notification-island-20261013/warning.png' });
+  await notifications.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(island).toHaveCSS('transition-duration', '0s');
+  await island.getByRole('button', { name: 'Dismiss Session is in use', exact: true }).click();
+  await expect(island).toHaveCount(0);
+  await row.hover();
+  await row.getByRole('button', { name: 'Archive Exact fixture session', exact: true }).click();
+  await expect(island).toContainText('Session is in use');
+  await notifications.emulateMedia({ reducedMotion: 'no-preference' });
+  const warningHeight = (await island.boundingBox())!.height;
+  await writeFile(writer, '');
+  await island.getByRole('button', { name: 'Retry', exact: true }).click();
+  const archived = notifications.locator('.notification-alert').filter({ hasText: 'Archived chat' });
+  await expect(archived).toContainText('Archived chat');
+  await expect(archived.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
+  await expect(row).toHaveCount(0);
+  await expect.poll(async () => (await archived.boundingBox())!.height).toBeLessThan(warningHeight);
+  await page.screenshot({ path: '.tmp/tasks/notification-island-20261013/success.png' });
+  await archived.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(archived).toHaveCount(0);
+  await expect(row).toBeVisible();
+  // Dismiss removes the single updated warning, with no duplicate hiding behind it.
+  const calls = (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { method?: string });
+  expect(calls.some(call => ['thread/start', 'thread/resume'].includes(call.method ?? ''))).toBe(false);
+  expect(calls.filter(call => call.method === 'thread/archive')).toHaveLength(1);
+  expect(calls.filter(call => call.method === 'thread/unarchive')).toHaveLength(1);
+  await expect(row).toBeVisible();
 });

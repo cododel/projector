@@ -1,3 +1,5 @@
+import { notifyError } from './notifications';
+import { NotificationAccess } from './NotificationAccess';
 import { Icon } from './Icon';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -27,7 +29,7 @@ export function ApplicationSettings({
   onCheck,
   onShortcutCapture,
   metadataPending,
-  onConfirm,
+  onReviewPendingWrite,
   onClose,
 }: {
   settings: Settings;
@@ -36,7 +38,7 @@ export function ApplicationSettings({
   onCheck(): Promise<void>;
   onShortcutCapture(active: boolean): void;
   metadataPending: boolean;
-  onConfirm(): Promise<void>;
+  onReviewPendingWrite(): void;
   onClose(): void;
 }): React.JSX.Element {
   const [section, setSection] = useState('General');
@@ -154,12 +156,13 @@ export function ApplicationSettings({
             setBusy(true);
             void onSave({ ...draft, shellArgs: args })
               .then(onClose)
-              .catch((error) => setError(error instanceof Error ? error.message : String(error)))
+              .catch((error) => { notifyError(error, 'settings', JSON.stringify(draft)); })
               .finally(() => setBusy(false));
           }}
         >
           <header>
             <h2>{section}</h2>
+            <NotificationAccess />
             <button type="button" onClick={onClose} disabled={busy} aria-label="Close settings">
               <Icon name="close" />
             </button>
@@ -303,7 +306,7 @@ export function ApplicationSettings({
                   onClick={() => {
                     setBusy(true);
                     void onCheck()
-                      .catch((error) => setError(String(error)))
+                      .catch((error) => { notifyError(error, 'settings', JSON.stringify(draft)); })
                       .finally(() => setBusy(false));
                   }}
                 >
@@ -385,26 +388,9 @@ export function ApplicationSettings({
               {error}
             </p>
           )}
-          {metadataPending && (
-            <div className="runtime-notice" role="status">
-              Confirm the existing local write before saving another change.
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setBusy(true);
-                  void onConfirm()
-                    .then(onClose)
-                    .catch((error) => setError(String(error)))
-                    .finally(() => setBusy(false));
-                }}
-              >
-                Confirm local settings write
-              </button>
-            </div>
-          )}
           <footer>
             <small>{dirty ? 'Unsaved changes' : 'Settings are saved locally'}</small>
+            {metadataPending && <button type="button" onClick={onReviewPendingWrite}>Review pending write</button>}
             <button type="button" onClick={onClose} disabled={busy}>
               Cancel
             </button>

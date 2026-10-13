@@ -16,10 +16,11 @@ export default defineConfig({
         input: {
           index: 'src/preload/index.ts',
           'browser-overlay': 'src/preload/browser-overlay.ts',
+          notifications: 'src/preload/notifications.ts',
         },
         output: { format: 'cjs', entryFileNames: '[name].cjs' },
       },
     },
   },
-  renderer: { plugins: [react()], build: { rollupOptions: { input: 'src/renderer/index.html' } } },
+  renderer: { plugins: [react()], build: { rollupOptions: { input: { index: 'src/renderer/index.html', notifications: 'src/renderer/notifications.html' } } } },
 });

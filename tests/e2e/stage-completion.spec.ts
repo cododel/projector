@@ -49,7 +49,7 @@ test('offline guide, folder relocation and copy conflict preserve the original p
     .selectOption('topic:annotations');
   await expect(page.locator('.guide-content')).toContainText('stateHash');
   await app.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1.25),
+    BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.setZoomFactor(1.25),
   );
   await expect(page.getByRole('combobox', { name: 'Guide topic or reference' })).toBeVisible();
   await expect(
@@ -64,14 +64,14 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   expect(guideBounds!.x + guideBounds!.width).toBeLessThanOrEqual(viewport.width + 1);
   await expect(page.getByRole('dialog', { name: 'Projector guide' })).toHaveCSS('opacity', '1');
   const guideImage = await app.evaluate(async ({ BrowserWindow }) =>
-    (await BrowserWindow.getAllWindows()[0].webContents.capturePage()).toPNG().toString('base64'),
+    (await BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.capturePage()).toPNG().toString('base64'),
   );
   await writeFile(
     resolve('.tmp/tasks/stage-completion-20261011/guide-enlarged.png'),
     Buffer.from(guideImage, 'base64'),
   );
   await app.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1),
+    BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.setZoomFactor(1),
   );
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: 'Projector guide' })).toHaveCount(0);
@@ -263,7 +263,7 @@ test('version summary and approval revocation are visible and separate from Save
       ({ dialog, BrowserWindow }) =>
         new Promise<void>((resolve) => {
           dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
-          const target = BrowserWindow.getAllWindows()[0];
+          const target = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!;
           target.webContents.once('did-finish-load', () => resolve());
           target.webContents.forcefullyCrashRenderer();
         }),
@@ -274,7 +274,7 @@ test('version summary and approval revocation are visible and separate from Save
     await expect
       .poll(() =>
         app.evaluate(({ BrowserWindow }) =>
-          BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(
+          BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.executeJavaScript(
             "document.querySelector('.annotations')?.textContent ?? ''",
           ),
         ),
@@ -283,7 +283,7 @@ test('version summary and approval revocation are visible and separate from Save
     await expect
       .poll(() =>
         app.evaluate(({ BrowserWindow }) => {
-          const shell = BrowserWindow.getAllWindows()[0].webContents;
+          const shell = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents;
           const document = shell.mainFrame.frames.find((frame) =>
             frame.url.startsWith('projector://document'),
           );

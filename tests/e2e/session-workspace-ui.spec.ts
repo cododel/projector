@@ -1,3 +1,4 @@
+import { notificationWindow } from './notification-window';
 import { openProjectOverview, workspaceAction } from './workspace-ui';
 import {
   test,
@@ -233,7 +234,7 @@ test('settings record shortcuts, protect edits and preserve plan workspaces and 
       0;
     (globalThis as unknown as { settingsTerminalInputs: string[] }).settingsTerminalInputs = [];
   });
-  await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 800));
+  await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.setSize(980, 800));
   await expect.poll(() => page.evaluate(() => innerWidth)).toBe(980);
   await page.keyboard.press('Meta+,');
   const dialog = page.getByRole('dialog', { name: 'Settings', exact: true });
@@ -338,7 +339,7 @@ test('settings record shortcuts, protect edits and preserve plan workspaces and 
   await record.press('Meta+j');
   await expect(record).toHaveText('Mod+J');
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(dialog.getByRole('alert')).toContainText('SHORTCUT_CONFLICT');
+  await expect((await notificationWindow(app!)).getByRole('alert').filter({ hasText: 'SHORTCUT_CONFLICT' })).toContainText('SHORTCUT_CONFLICT');
   await page.mouse.click(5, 100);
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
@@ -437,7 +438,7 @@ test('native browser and nested shell panels retain actual geometry and obey bef
   const bounds = await browserPane.boundingBox();
   if (!bounds) throw Error('Missing browser DOM bounds');
   const nativeBounds = await app!.evaluate(({ BrowserWindow }, expectedUrl) => {
-    const view = BrowserWindow.getAllWindows()[0].contentView.children.find(
+    const view = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.contentView.children.find(
       (view) =>
         'webContents' in view &&
         (view as import('electron').WebContentsView).webContents.getURL() === expectedUrl,

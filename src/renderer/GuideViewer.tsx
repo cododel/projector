@@ -1,3 +1,5 @@
+import { notifyError } from './notifications';
+import { NotificationAccess } from './NotificationAccess';
 import React, { useEffect, useRef, useState } from 'react';
 import type { GuideResponse } from '../guide';
 const topics = ['overview', 'planning', 'authoring', 'widgets', 'annotations', 'all'];
@@ -9,7 +11,6 @@ export function GuideViewer({
   close: () => void;
 }): React.JSX.Element {
   const [guide, setGuide] = useState<GuideResponse | null>(null);
-  const [error, setError] = useState('');
   const [selection, setSelection] = useState('topic:overview');
   const heading = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -22,11 +23,10 @@ export function GuideViewer({
       .then((response) => {
         if (active) {
           setGuide(response);
-          setError('');
         }
       })
       .catch((cause) => {
-        if (active) setError(String(cause));
+        if (active) notifyError(cause, 'guide', selection);
       });
     return () => {
       active = false;
@@ -68,6 +68,7 @@ export function GuideViewer({
       >
         <div className="modal-heading">
           <h2>Projector guide</h2>
+          <NotificationAccess />
           <button ref={heading} onClick={close}>
             Close
           </button>
@@ -93,11 +94,7 @@ export function GuideViewer({
             ))}
           </optgroup>
         </select>
-        {error ? (
-          <p role="alert">{error}</p>
-        ) : (
-          <pre className="guide-content">{guide?.content}</pre>
-        )}
+        <pre className="guide-content">{guide?.content}</pre>
       </section>
     </div>
   );

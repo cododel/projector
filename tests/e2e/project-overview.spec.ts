@@ -129,7 +129,7 @@ test('project overview owns plans and archives without changing history; project
   await expect(page.locator('.feedback-panel')).toBeHidden();
   await page.getByRole('button',{name:'Show feedback sidebar',exact:true}).click();
   await expect(page.locator('.feedback-panel')).toBeVisible();
-  await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setSize(980,800));
+  await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.setSize(980,800));
   await page.getByRole('button',{name:'Workspace actions',exact:true}).click();
   const menuBounds = (await page.getByRole('menu',{name:'Workspace actions',exact:true}).boundingBox())!;
   expect(menuBounds.x).toBeGreaterThanOrEqual(0);

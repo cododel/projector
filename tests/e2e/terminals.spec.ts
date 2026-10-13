@@ -1,3 +1,4 @@
+import { notificationWindow } from './notification-window';
 import { newTerminal, workspaceAction } from './workspace-ui';
 import {
   test,
@@ -377,7 +378,7 @@ test('terminal screen write failure stays visible and recovered saving plus live
         (await snapshot(page)).terminals.find((record) => record.id === terminal.id)?.error,
     )
     .toBe('Terminal screen could not be saved. Check local storage.');
-  await expect(page.locator('.terminal-pane').getByRole('alert')).toContainText(
+  await expect((await notificationWindow(app!)).getByRole('alert').filter({ hasText: 'Terminal screen could not be saved.' })).toContainText(
     'Terminal screen could not be saved. Check local storage.',
   );
   expect(
@@ -389,7 +390,7 @@ test('terminal screen write failure stays visible and recovered saving plus live
   await expect
     .poll(async () => await readFile(savedScreen, 'utf8').catch(() => ''))
     .toContain('SAVING_RECOVERED');
-  await expect(page.locator('.terminal-pane').getByRole('alert')).toHaveCount(0);
+  await expect((await notificationWindow(app!)).getByRole('alert').filter({ hasText: 'Terminal screen could not be saved.' })).toHaveCount(0);
   await invoke(page, 'applicationSettings', {
     ...(await snapshot(page)).settings,
     terminalScrollback: 500,
@@ -1105,7 +1106,7 @@ test('wheel input survives a pending real PTY resize acknowledgement as one pack
 
 test('legacy xterm mouse reports preserve high coordinate bytes through binary IPC and a real PTY', async () => {
   const {page,projectId} = await setup();
-  await app!.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setSize(1800,900));
+  await app!.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.setSize(1800,900));
   await invoke(page,'applicationSettings',{...(await snapshot(page)).settings,shell:resolve('tests/fixtures/terminal-wheel.mjs'),shellArgs:['binary']});
   await command(page,projectId,'newTerminal',{operationId:randomUUID()});
   await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);

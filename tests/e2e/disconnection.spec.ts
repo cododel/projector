@@ -2,6 +2,7 @@ import { test, expect, electron } from './test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { notificationWindow } from './notification-window';
 
 test('operator IPC loss after send rejects without an uncaught exception or replay', async ({ diagnostics }) => {
   const root = await mkdtemp(join(tmpdir(), 'bp-disconnect-'));
@@ -15,12 +16,14 @@ test('operator IPC loss after send rejects without an uncaught exception or repl
   try {
     const page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: 'Make decisions before implementation' })).toBeVisible();
+    const notifications = await notificationWindow(app);
+    await expect(notifications.locator('.notification-alert')).toContainText('Closing keeps Projector running');
     // Isolate this IPC boundary from the shell's asynchronous startup refresh.
     // The production preload, trusted origin and main/runtime handlers remain.
     await app.evaluate(async ({ protocol, BrowserWindow }) => {
       protocol.unhandle('projector');
       protocol.handle('projector', () => new Response('<!doctype html><title>IPC boundary probe</title>', { headers: { 'Content-Type': 'text/html' } }));
-      await BrowserWindow.getAllWindows()[0].loadURL('projector://app/ipc-probe');
+      await BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.loadURL('projector://app/ipc-probe');
     });
     await page.evaluate(() => (window as unknown as {projector:{invoke(name:string):Promise<unknown>}}).projector.invoke('snapshot'));
     await app.evaluate(({ utilityProcess }, file) => {

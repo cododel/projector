@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { TerminalOutput } from '../shared/terminal';
 import type { ShortcutAction } from '../shared/application-workspace';
+import type { Notification, NotificationCommand } from '../shared/notifications';
 const terminalListeners = new Set<(output: TerminalOutput) => void>();
 let shuttingDown = false;
 const shutdownListeners = new Set<() => void>();
@@ -21,6 +22,15 @@ ipcRenderer.on('projector:terminal-output', (_event, delivery: { deliveryId: str
   } finally { ipcRenderer.send('projector:terminal-output-ack', delivery.deliveryId); }
 });
 contextBridge.exposeInMainWorld('projector', {
+  notifications: {
+    publish: (notifications: Notification[]) => shuttingDown ? Promise.resolve() : ipcRenderer.invoke('projector:notifications-publish', notifications),
+    focus: () => { if (!shuttingDown) ipcRenderer.send('projector:notifications-focus'); },
+    onCommand: (callback: (command: NotificationCommand) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, command: NotificationCommand) => { if (!shuttingDown) callback(command); };
+      ipcRenderer.on('projector:notification-action', listener);
+      return () => ipcRenderer.removeListener('projector:notification-action', listener);
+    },
+  },
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   invoke: async (method: string, params: unknown = {}) => {
     if (shuttingDown) throw shutdownError();
@@ -39,10 +49,10 @@ contextBridge.exposeInMainWorld('projector', {
     if (shuttingDown) callback();
     return () => shutdownListeners.delete(callback);
   },
-  onOperationStatus: (callback: (status: { waiting: boolean; operation?: string }) => void) => {
+  onOperationStatus: (callback: (status: { waiting: boolean; operationId: string; operation: string; error?: string }) => void) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
-      status: { waiting: boolean; operation?: string },
+      status: { waiting: boolean; operationId: string; operation: string; error?: string },
     ) => callback(status);
     ipcRenderer.on('projector:operation-status', listener);
     return () => ipcRenderer.removeListener('projector:operation-status', listener);

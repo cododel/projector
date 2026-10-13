@@ -196,7 +196,7 @@ test('refreshes arriving during a plan load coalesce and retain a later MCP publ
   });
   await mcp!.tool('show_artifact', { artifactId: b.artifactId, revisionId: next.revisionId });
   await app.evaluate(({ BrowserWindow }) => {
-    const contents = BrowserWindow.getAllWindows()[0].webContents;
+    const contents = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents;
     for (let index = 0; index < 5; index++) contents.send('projector:refresh');
   });
   // IPC round-trip is a barrier after the delivered shell events, not a sleep.

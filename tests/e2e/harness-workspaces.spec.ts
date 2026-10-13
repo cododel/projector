@@ -1,3 +1,4 @@
+import { notificationWindow } from './notification-window';
 import { expectNewTerminalEnabled, openProjectOverview } from './workspace-ui';
 import { test, expect, electron, type ElectronApplication, type Page } from './test';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, rename } from 'node:fs/promises';
@@ -280,7 +281,7 @@ test('Resume reports an active writer without starting a terminal or taking over
   diagnostics.expect({role:'codex-manager',kind:'adapter-error',phase:'active-writer',message:'CODEX_SESSION_IN_USE: This session is already in use by another Codex process. Return to the existing launch, or retry after it releases the session. Projector will not take it over.',count:1});
   diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'active-writer', message: /^Error occurred in handler for 'projector:invoke': Error: CODEX_SESSION_IN_USE: This session is already in use by another Codex process\. Return to the existing launch, or retry after it releases the session\. Projector will not take it over\.\n[\s\S]*$/, count: 1 });
   await page.getByRole('button', { name: 'Resume', exact: true }).click();
-  const error = page.locator('.error-banner');
+  const error = (await notificationWindow(app!)).locator('.notification-alert').filter({ hasText: 'This session is already in use' });
   await expect(error).toContainText('This session is already in use by another Codex process.');
   await expect(error).toContainText('Return to the existing launch, or retry after it releases the session.');
   await expect(error).not.toContainText('CODEX_RPC_FAILED');

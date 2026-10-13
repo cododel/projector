@@ -1,3 +1,4 @@
+import { notificationWindow } from './notification-window';
 import { newBrowserTab } from './workspace-ui';
 import {
   test,
@@ -204,7 +205,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toBeVisible();
   const toolbar = page.locator('.plan-header');
   await expect(toolbar.getByRole('textbox', { name: 'Browser address' })).toBeVisible();
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 700));
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.setSize(980, 700));
   for (const [left, right] of [
     [true, true],
     [false, true],
@@ -267,7 +268,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
     });
   }
   await page.getByRole('button', { name: 'Show feedback sidebar' }).click();
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1360, 900));
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.setSize(1360, 900));
   await page.getByRole('button', { name: 'MCP connection', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'MCP connection' })).toBeVisible();
   await page.locator('.modal-backdrop').click({ position: { x: 350, y: 70 } });
@@ -495,7 +496,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
   const probeFile = join(root, 'annotation-fault-probe.cjs');
   await writeFile(probeFile, 'process.parentPort.on("message",()=>{});');
   diagnostics.phase('annotation-write-failure');
-  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'annotation-write-failure', message: /^Error occurred in handler for 'projector:invoke': Error: DISK_WRITE_FAILED: Injected isolated write failure\n[\s\S]*$/, count: 1 });
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'annotation-write-failure', message: /^Error occurred in handler for 'projector:invoke': Error: DISK_WRITE_FAILED: Injected isolated write failure\n[\s\S]*$/, count: 2 });
   const tabsBeforeFailedWrite = await tabs(page).count();
   await app.evaluate(({ utilityProcess }, file) => {
     const probe = utilityProcess.fork(file, [], { stdio: 'ignore' });
@@ -508,9 +509,8 @@ test('project Plans workspaces, local comments, browser close and restart preser
       transfer?: Electron.MessagePortMain[],
     ) {
       if (request.type === 'operator' && request.name === 'addAnnotation') {
-        prototype.postMessage = original;
-        (globalThis as unknown as { workspaceAnnotationFaults: number })
-          .workspaceAnnotationFaults++;
+        const attempts = ++(globalThis as unknown as { workspaceAnnotationFaults: number }).workspaceAnnotationFaults;
+        if (attempts === 2) prototype.postMessage = original;
         // Fail before forwarding the mutation, matching a known failed write.
         // Sending then losing the reply would be UNKNOWN_RESULT, a separate oracle.
         queueMicrotask(() =>
@@ -526,7 +526,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
     };
   }, probeFile);
   await newBrowserTab(page);
-  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+  await expect((await notificationWindow(app!)).getByRole('button', { name: 'Retry', exact: true }).last()).toBeVisible();
   await expect(frame.getByLabel('Annotation comment', { exact: true })).toHaveValue(
     'Retry this comment',
   );
@@ -537,8 +537,17 @@ test('project Plans workspaces, local comments, browser close and restart preser
         (globalThis as unknown as { workspaceAnnotationFaults: number }).workspaceAnnotationFaults,
     ),
   ).toBe(1);
+  const retryOverlay = await notificationWindow(app!);
+  const failedNotice = retryOverlay.locator('.notification-alert:not(.leaving)').filter({ hasText: 'DISK_WRITE_FAILED', has: retryOverlay.getByRole('button', { name: 'Retry', exact: true }) });
+  const originalNoticeId = await failedNotice.getAttribute('data-notification-id');
+  await failedNotice.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect.poll(() => app.evaluate(() => (globalThis as unknown as { workspaceAnnotationFaults: number }).workspaceAnnotationFaults)).toBe(2);
+  await expect(retryOverlay.locator('.notification-alert:not(.leaving)').filter({ hasText: 'DISK_WRITE_FAILED', has: retryOverlay.getByRole('button', { name: 'Retry', exact: true }) })).toHaveCount(1);
+  await expect(failedNotice).toHaveAttribute('data-notification-id', originalNoticeId!);
+  await expect(failedNotice.getByRole('button', { name: 'Retry', exact: true })).toBeEnabled();
+  await expect(frame.getByLabel('Annotation comment', { exact: true })).toHaveValue('Retry this comment');
   diagnostics.phase('test');
-  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await failedNotice.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeVisible();
   await expect(page.locator('.annotation p').filter({ hasText: 'Retry this comment' })).toHaveCount(
     1,
@@ -560,7 +569,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await page
     .getByRole('tab', { name: 'Local browser page', exact: true })
     .click({ button: 'middle' });
-  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+  await expect((await notificationWindow(app!)).getByRole('button', { name: 'Retry', exact: true }).last()).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toBeVisible();
   expect(
     await app.evaluate(
@@ -572,7 +581,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
   diagnostics.phase('test');
   await rm(metadata, { recursive: true });
   await rename(backup, metadata);
-  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await (await notificationWindow(app!)).getByRole('button', { name: 'Retry', exact: true }).last().click();
   await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toHaveCount(0);
   expect(c.artifact.artifactId).not.toBe(a.artifact.artifactId);
 });

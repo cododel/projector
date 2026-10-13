@@ -69,7 +69,7 @@ test('a background refresh during a pending sidebar write does not drop the next
       )
       .toBe(true);
     await app.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].webContents.send('projector:refresh'),
+      BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.send('projector:refresh'),
     );
     await expect(resize).toHaveAttribute('aria-valuenow', '250');
     await resize.press('ArrowLeft');

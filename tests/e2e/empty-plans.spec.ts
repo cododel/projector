@@ -221,11 +221,11 @@ test('agent-created unpublished plan has native project actions and retains priv
   // Keep the shell's old preview mounted while the real main process switches
   // the pane to the first publication. This controls timing, never document data.
   await app.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows()[0].webContents.send('projector:refresh'),
+    BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.send('projector:refresh'),
   );
   await expect(page.frameLocator('iframe').getByLabel('Decision', { exact: true })).toBeDisabled();
   await app.evaluate(({ BrowserWindow }) => {
-    const contents = BrowserWindow.getAllWindows()[0].webContents;
+    const contents = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents;
     const send = contents.send.bind(contents);
     contents.send = (channel, ...args) => {
       if (channel !== 'projector:refresh') send(channel, ...args);

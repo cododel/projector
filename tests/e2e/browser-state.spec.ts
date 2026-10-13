@@ -139,7 +139,7 @@ test('application browser composer survives restart, remains private, and Save e
     height: Math.round(height),
   });
   const host = await app.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows()[0].getContentSize(),
+    BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.getContentSize(),
   );
   const geometry = async () => {
     // Read both current surfaces on every attempt. A DOM snapshot captured halfway
@@ -147,7 +147,7 @@ test('application browser composer survives restart, remains private, and Save e
     const shell = await page.locator('.browser-area').boundingBox();
     if (!shell) throw new Error('Missing browser pane bounds');
     const native = await app.evaluate(({ BrowserWindow, WebContentsView }, url) => {
-      const view = BrowserWindow.getAllWindows()[0].contentView.children.find(
+      const view = BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.contentView.children.find(
         (view) => view instanceof WebContentsView && view.webContents.getURL() === url,
       );
       return view?.getBounds();
