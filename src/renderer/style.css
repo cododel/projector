@@ -1948,3 +1948,25 @@ button > svg {
   padding: 0;
 }
 .terminal-pane.terminal-file-drop { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* Project titles keep the full row width while actions overlay their trailing edge. */
+.project-session-row { position: relative; gap: 0; --session-row-background: #f1f3f6; }
+.project-session-row.active { --session-row-background: #e3e8f7; }
+.project-session-row.engaged { background: #e9edf5; --session-row-background: #e9edf5; }
+.project-session-row.active.engaged { background: #e3e8f7; --session-row-background: #e3e8f7; }
+.project-session-row .session-select { padding-right: 0; }
+.project-session-row .session-title { min-width: 0; text-overflow: clip; }
+.project-session-row .session-title.overflowing:not(.at-end) { mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); }
+.project-session-row .session-title-text { display: inline-block; white-space: nowrap; }
+.project-session-row.pinned .session-title { margin-right: 24px; }
+.project-session-row:is(.engaged, :hover, :focus-within) .session-title { margin-right: 49px; }
+.project-session-row .session-actions { position: absolute; right: calc(4px + var(--session-tail-width)); top: 2.5px; background: transparent; }
+.project-session-row .session-actions button { pointer-events: none; }
+.project-session-row:is(.engaged, :hover, :focus-within) .session-actions { background: var(--session-row-background); }
+.project-session-row:is(.engaged, :hover, :focus-within) .session-actions button { opacity: 1; pointer-events: auto; }
+.project-session-row .session-actions button.session-pinned { background: var(--session-row-background); pointer-events: auto; }
+.project-session-row:not(:is(.engaged, :hover, :focus-within)).pinned .session-actions { flex-direction: row-reverse; }
+.session-indicators { display: flex; align-items: center; justify-content: flex-end; width: var(--session-tail-width); flex: none; gap: 6px; }
+.session-worktree { display: inline-flex; align-items: center; color: var(--muted); width: 15px; }
+
+.session-indicators .runtime-dot { flex: none; margin-right: 0; }

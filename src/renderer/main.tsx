@@ -17,6 +17,7 @@ import { annotationClip } from './annotation-visibility';
 import { RefreshQueue } from './refresh-queue';
 import { TerminalPane } from './TerminalPane';
 import { SessionActions, ArchiveNotice, type ArchivedChat } from './SessionActions';
+import { ProjectSessionRow } from './ProjectSessionRow';
 import { WorkspaceSplit } from './WorkspaceSplit';
 import { ProjectDashboard } from './ProjectDashboard';
 import { ApplicationSettings } from './ApplicationSettings';
@@ -2073,30 +2074,15 @@ function App(): React.JSX.Element {
                       .filter((session) => session.projectId === item.id)
                       .sort(pinOrder)
                       .map((session) => (
-                        <div
-                          key={session.id}
-                          className={`harness-session ${sessionWorkspace?.sessionId === session.id && sessionWorkspace.projectId === item.id ? 'active' : ''}`}
-                        >
-                          <button
-                            className="session-select"
-                            title={`${session.title} · ${session.id} · ${session.processState === 'unknown' ? 'Process state unknown' : session.processState}`}
-                            onClick={() => {
-                              setBottomFocused(false);
-                              void transition(() =>
-                                invoke('applicationCommand', {
-                                  action: 'select',
-                                  projectId: item.id,
-                                  sessionId: session.id,
-                                }),
-                              );
-                            }}
-                          >
-                            <span aria-hidden="true">›_</span>
-                            <span className="session-title">{session.title || 'Codex session'}</span>
-                            {session.processState === 'running' && <span className="runtime-dot" />}
-                          </button>
-                          {sessionActions(session)}
-                        </div>
+                        <ProjectSessionRow key={session.id} session={session}
+                          active={sessionWorkspace?.sessionId === session.id && sessionWorkspace.projectId === item.id}
+                          pinned={pinnedSessions.includes(session.id)} actions={sessionActions(session)}
+                          onSelect={() => {
+                            setBottomFocused(false);
+                            void transition(() => invoke('applicationCommand', {
+                              action: 'select', projectId: item.id, sessionId: session.id,
+                            }));
+                          }} />
                       ))}
                     {!application?.harnesses.sessions.some(
                       (session) => session.projectId === item.id,

@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { observeChild, markChildStop, diagnostic, bindDiagnosticError, errorDiagnosticId } from '../shared/test-diagnostics';
+import { linkedWorktreePath } from './worktree';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
@@ -428,8 +429,18 @@ export class CodexManager {
       if (this.discoveryStarting === starting) this.discoveryStarting = null;
     }
   }
-  private async session(thread: Thread, launch?: LaunchRecord): Promise<HarnessSession> {
+  private async session(
+    thread: Thread,
+    launch?: LaunchRecord,
+    worktrees?: Map<string, Promise<string | undefined>>,
+  ): Promise<HarnessSession> {
     const cwd = await canonical(thread.cwd);
+    let worktree = worktrees?.get(cwd);
+    if (!worktree) {
+      worktree = linkedWorktreePath(cwd);
+      worktrees?.set(cwd, worktree);
+    }
+    const worktreePath = await worktree;
     const previous = this.sessions.get(thread.id);
     const project = this.projects.find((value) => value.path === cwd);
     const owned =
@@ -442,6 +453,7 @@ export class CodexManager {
     return {
       id: thread.id,
       harness: 'codex',
+      ...(worktreePath ? { worktreePath } : {}),
       ...(thread.sessionId ? { rootSessionId: thread.sessionId } : {}),
       projectId: owned?.projectId ?? project?.id ?? null,
       cwd,
@@ -484,6 +496,7 @@ export class CodexManager {
       if (this.stopping) return this.snapshot().sessions;
       const client = await this.discoveryClient();
       const found = new Map<string, HarnessSession>();
+      const worktrees = new Map<string, Promise<string | undefined>>();
       // Codex exposes archived/non-archived as exclusive filters. Read both
       // sets without invoking the optional rollout scan-and-repair behavior.
       for (const archived of [false, true]) {
@@ -504,7 +517,10 @@ export class CodexManager {
             );
           for (const thread of page.data)
             if (!thread.ephemeral)
-              found.set(thread.id, { ...(await this.session(thread)), archived });
+              found.set(thread.id, {
+                ...(await this.session(thread, undefined, worktrees)),
+                archived,
+              });
           cursor = page.nextCursor ?? undefined;
           if (cursor && cursors.has(cursor)) throw new Error('CODEX_PAGINATION_CYCLE');
           if (cursor) cursors.add(cursor);

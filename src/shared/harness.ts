@@ -7,6 +7,8 @@ export interface HarnessSession {
   rootSessionId?: string;
   projectId: string | null;
   cwd: string;
+  /** Verified linked Git worktree working directory; transient catalog metadata. */
+  worktreePath?: string;
   title: string;
   /** Seconds since epoch, as returned by the Codex protocol. */
   updatedAt: number;
