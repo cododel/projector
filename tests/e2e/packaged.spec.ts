@@ -1,9 +1,11 @@
+import { markChildStop } from '../../src/shared/test-diagnostics';
 import { newTerminal } from './workspace-ui';
 import { randomUUID } from 'node:crypto';
-import { test, expect, _electron as electron } from '@playwright/test';
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { test, expect, electron } from './test';
+import { execFile, spawn } from '../support/process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, cp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, cp, rm, writeFile, readFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -12,7 +14,7 @@ import type { McpSetup } from '../../src/shared/protocol';
 import type { TerminalRecord, TerminalScreen } from '../../src/shared/terminal';
 import type { ApplicationWorkspaceSnapshot } from '../../src/shared/application-workspace';
 
-test('relocated packaged app uses its own stdio helper without system Node and preserves runtime lifecycle', async () => {
+test('relocated packaged app uses its own stdio helper without system Node and preserves runtime lifecycle', async ({diagnostics}) => {
   test.setTimeout(120000);
   const root = await mkdtemp(join(tmpdir(), 'bp-packaged-'));
   let child: ChildProcessWithoutNullStreams | undefined;
@@ -51,18 +53,24 @@ test('relocated packaged app uses its own stdio helper without system Node and p
     expect(
       JSON.parse(await readFile(join(appResources, 'app', 'package.json'), 'utf8')).license,
     ).toBe('SEE LICENSE IN LICENSE');
+    // Chromium requests a sandbox extension for this helper resource root.
+    await access(join(source, 'Contents', 'Frameworks', 'Projector Helper.app', 'Contents', 'Resources'));
     const relocated = join(root, 'Moved app with spaces', 'Projector.app');
     await mkdir(join(root, 'Moved app with spaces'));
     // Framework symlinks must stay relative when an application bundle is relocated.
     await cp(source, relocated, { recursive: true, verbatimSymlinks: true });
     const socket = join(root, 'service.sock');
     const executable = join(relocated, 'Contents', 'MacOS', 'Projector');
+    const codexLauncher = join(root, 'codex-fixture');
+    const bundledNode = join(relocated, 'Contents', 'Resources', 'mcp', 'node');
+    await writeFile(codexLauncher, `#!/bin/sh\nexec '${bundledNode}' '${resolve('tests/fixtures/codex-cli.mjs')}' "$@"\n`, {mode:0o755});
     app = await electron.launch({
       executablePath: executable,
       args: [],
       env: {
         ...process.env,
         PATH: '/usr/bin:/bin',
+        PROJECTOR_E2E_CODEX_EXECUTABLE: codexLauncher,
         PROJECTOR_NODE: '/missing/system/node',
         PROJECTOR_DATA: join(root, 'data'),
         PROJECTOR_RUNTIME_DESCRIPTOR: socket,
@@ -270,6 +278,8 @@ test('relocated packaged app uses its own stdio helper without system Node and p
     app = undefined;
     expect(() => process.kill(terminal.pid!, 0)).toThrow();
     // A disconnected runtime must not cause the helper to start the app.
+    diagnostics.expect({role:'bridge',kind:'console-error',phase:'test',message:'Projector runtime descriptor is unavailable. Start the application manually and reconnect MCP.',count:1});
+    diagnostics.expect({role:'test-child',kind:'process-exit',phase:'test',message:'code=1 signal=null',count:1});
     await expect(
       promisify(execFile)(setup.executable, [], {
         env: { ...process.env, ...setup.env, PATH: '/usr/bin:/bin' },
@@ -282,7 +292,8 @@ test('relocated packaged app uses its own stdio helper without system Node and p
   } finally {
     if (child && child.exitCode === null) {
       const exit = once(child, 'exit');
-      child.kill();
+      markChildStop(child);
+    child.kill();
       await exit;
     }
     await app?.close();

@@ -2,11 +2,11 @@ import { newBrowserTab } from './workspace-ui';
 import {
   test,
   expect,
-  _electron as electron,
+  electron,
   type ElectronApplication,
   type Page,
   type Locator,
-} from '@playwright/test';
+} from './test';
 import { mkdtemp, mkdir, rm, writeFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -77,7 +77,7 @@ async function planTab(
   await expect(tabs(page)).toHaveCount(current.tabs.length);
   return tabs(page).nth(index);
 }
-test('project Plans workspaces, local comments, browser close and restart preserve independent artifact work', async () => {
+test('project Plans workspaces, local comments, browser close and restart preserve independent artifact work', async ({ diagnostics }) => {
   root = await mkdtemp(join(tmpdir(), 'bp-workspace-'));
   const data = join(root, 'data'),
     project = join(root, 'project'),
@@ -358,8 +358,19 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await app.evaluate(({ dialog }) => {
     dialog.showMessageBoxSync = () => 0;
   });
+  const previousView = await applicationSnapshot(page);
+  const previousWorkspace = previousView.workspaces[previousView.selectedWorkspace!];
+  const previousTab = previousWorkspace.tabs.find(tab => tab.id === previousWorkspace.activeTabId)!;
+  const previousPanes = paneLeaves(previousTab.root);
+  const oldBrowserPane = previousPanes.find(pane => pane.content.kind === 'plan' && pane.content.tab.kind === 'browser')!;
   await page.getByRole('button', { name: 'Close local browser page tab', exact: true }).click();
   await expect(page.getByRole('tab', { name: 'Local browser page', exact: true })).toHaveCount(0);
+  const staleProjection = await page.evaluate(owner => (window as unknown as {projector:{invoke(name:string,args:unknown):Promise<unknown>}}).projector.invoke('browserViews', owner), {
+    workspaceKey: previousView.selectedWorkspace!, tabId: previousTab.id, paneIds: previousPanes.map(pane => pane.id),
+    views: [{viewId: oldBrowserPane.id, active:true, bounds:{x:0,y:40,width:100,height:100}}],
+  });
+  expect(staleProjection).toEqual({updated:false,reason:'view-changed'});
+
   // Closing this artifact's document retains its private work and leaves the
   // other artifact's document/home tabs intact in the shared project workspace.
   await (await planTab(page, a.artifact.artifactId, 'document')).click({ button: 'middle' });
@@ -483,6 +494,8 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await expect(page.getByText('Saved locally')).toBeVisible();
   const probeFile = join(root, 'annotation-fault-probe.cjs');
   await writeFile(probeFile, 'process.parentPort.on("message",()=>{});');
+  diagnostics.phase('annotation-write-failure');
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'annotation-write-failure', message: /^Error occurred in handler for 'projector:invoke': Error: DISK_WRITE_FAILED: Injected isolated write failure\n[\s\S]*$/, count: 1 });
   const tabsBeforeFailedWrite = await tabs(page).count();
   await app.evaluate(({ utilityProcess }, file) => {
     const probe = utilityProcess.fork(file, [], { stdio: 'ignore' });
@@ -524,6 +537,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
         (globalThis as unknown as { workspaceAnnotationFaults: number }).workspaceAnnotationFaults,
     ),
   ).toBe(1);
+  diagnostics.phase('test');
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'New tab address' })).toBeVisible();
   await expect(page.locator('.annotation p').filter({ hasText: 'Retry this comment' })).toHaveCount(
@@ -541,6 +555,8 @@ test('project Plans workspaces, local comments, browser close and restart preser
     backup = join(root, 'application-workspace.backup.json');
   await rename(metadata, backup);
   await mkdir(metadata);
+  diagnostics.phase('workspace-write-failure');
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'workspace-write-failure', message: /^Error occurred in handler for 'projector:invoke': Error: EISDIR: illegal operation on a directory, rename '[^\n]*application-workspace\.json\.[^\n]*\.tmp' -> '[^\n]*application-workspace\.json'\n[\s\S]*$/, count: 1 });
   await page
     .getByRole('tab', { name: 'Local browser page', exact: true })
     .click({ button: 'middle' });
@@ -553,6 +569,7 @@ test('project Plans workspaces, local comments, browser close and restart preser
       url,
     ),
   ).toBe(1);
+  diagnostics.phase('test');
   await rm(metadata, { recursive: true });
   await rename(backup, metadata);
   await page.getByRole('button', { name: 'Retry', exact: true }).click();

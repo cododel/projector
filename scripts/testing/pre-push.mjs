@@ -1,8 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 export function pushedCommits(input) {
   const commits = new Set();
@@ -15,7 +15,7 @@ export function pushedCommits(input) {
   return [...commits];
 }
 
-export async function validatePush(root, input) {
+export async function validatePush(root, input, { captureOutput = false } = {}) {
   for (const commit of pushedCommits(input)) {
     const directory = await mkdtemp(join(tmpdir(), 'projector-pre-push-'));
     try {
@@ -30,8 +30,13 @@ export async function validatePush(root, input) {
       for (const args of [['install', '--frozen-lockfile'], ['check:full']]) {
         const result = spawnSync('pnpm', args, {
           cwd: directory,
-          stdio: 'inherit',
+          stdio: captureOutput ? 'pipe' : 'inherit',
         });
+        if (captureOutput) {
+          const evidence = resolve('.tmp/test-diagnostics/hooks');
+          await mkdir(evidence, {recursive:true});
+          await writeFile(join(evidence, `${commit}-${args[0]}.log`), String(result.stdout ?? '') + String(result.stderr ?? ''));
+        }
         if (result.error || result.status !== 0)
           throw new Error(
             `Pre-push ${commit}: pnpm ${args.join(' ')} failed (${result.status ?? result.error?.message})`,

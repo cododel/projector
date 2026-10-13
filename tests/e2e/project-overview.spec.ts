@@ -1,5 +1,5 @@
 import { newTerminal, workspaceAction, openProjectOverview } from './workspace-ui';
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
+import { test, expect, electron, type ElectronApplication, type Page } from './test';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -18,7 +18,7 @@ const invoke = <T>(page: Page, name: string, args: Record<string, unknown> = {})
   ({name,args}) => (window as unknown as {projector: {invoke(name: string,args: Record<string,unknown>): Promise<unknown>}}).projector.invoke(name,args), {name,args},
 ) as Promise<T>;
 
-test('project overview owns plans and archives without changing history; project plus starts exactly one Codex session', async () => {
+test('project overview owns plans and archives without changing history; project plus starts exactly one Codex session', async ({diagnostics}) => {
   root = await realpath(await mkdtemp(join(tmpdir(),'bp-project-overview-')));
   const project = join(root,'project'), data=join(root,'data'), home=join(root,'home');
   await Promise.all([project,data,home].map(path=>mkdir(path)));
@@ -54,6 +54,7 @@ test('project overview owns plans and archives without changing history; project
   await expect(sidebar.getByRole('button',{name:'Expand sessions in project',exact:true})).toHaveAttribute('aria-expanded','false');
   await expect(page.getByText('No plans yet',{exact:true})).toBeVisible();
   await expect(sidebar.getByRole('button',{name:/New plan/})).toHaveCount(0);
+  diagnostics.expect({role:'main',kind:'console-error',phase:'test',message:/^Error occurred in handler for 'projector:invoke': Error: Unsupported operator command\b/,count:1});
   await expect(invoke(page,'createEmptyPlan',{projectId,operationId:randomUUID()})).rejects.toThrow('Unsupported operator command');
 
   await app.evaluate(({Menu}) => {

@@ -1,9 +1,9 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, electron } from './test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-test('operator IPC loss after send rejects without an uncaught exception or replay', async () => {
+test('operator IPC loss after send rejects without an uncaught exception or replay', async ({ diagnostics }) => {
   const root = await mkdtemp(join(tmpdir(), 'bp-disconnect-'));
   await mkdir(join(root, 'data'));
   const probeFile = join(root, 'probe.cjs');
@@ -15,6 +15,14 @@ test('operator IPC loss after send rejects without an uncaught exception or repl
   try {
     const page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: 'Make decisions before implementation' })).toBeVisible();
+    // Isolate this IPC boundary from the shell's asynchronous startup refresh.
+    // The production preload, trusted origin and main/runtime handlers remain.
+    await app.evaluate(async ({ protocol, BrowserWindow }) => {
+      protocol.unhandle('projector');
+      protocol.handle('projector', () => new Response('<!doctype html><title>IPC boundary probe</title>', { headers: { 'Content-Type': 'text/html' } }));
+      await BrowserWindow.getAllWindows()[0].loadURL('projector://app/ipc-probe');
+    });
+    await page.evaluate(() => (window as unknown as {projector:{invoke(name:string):Promise<unknown>}}).projector.invoke('snapshot'));
     await app.evaluate(({ utilityProcess }, file) => {
       // Reach the native parent IPC prototype without adding a test-only product hook.
       const probe = utilityProcess.fork(file, [], { stdio: 'ignore' });
@@ -35,11 +43,14 @@ test('operator IPC loss after send rejects without an uncaught exception or repl
         return result;
       };
     }, probeFile);
+  diagnostics.phase('ipc-loss');
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'ipc-loss', message: /^Error occurred in handler for 'projector:invoke': Error: UNKNOWN_RESULT: Projector runtime disconnected\. An operation may have completed; reconcile before retrying\. Restart Projector and reconnect MCP\.\n[\s\S]*$/, count: 1 });
     const result = await page.evaluate(async () => {
       const bridge = (window as unknown as { projector: { invoke: (name: string) => Promise<unknown> } }).projector;
       try { await bridge.invoke('snapshot'); return 'resolved'; }
       catch (error) { return String(error); }
     });
+  diagnostics.phase('test');
     const observation = await app.evaluate(() =>
       (globalThis as unknown as { projectorIpcTest: { errors: string[]; writes: number } }).projectorIpcTest);
     expect(observation.errors).toEqual([]);

@@ -1,4 +1,4 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, electron } from './test';
 import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,11 +14,11 @@ function alive(pid: number) {
   }
 }
 
-test('Quit cleans owned PTYs when an alive runtime cannot answer a workspace mutation', async ({ playwright }, testInfo) => {
+test('Quit cleans owned PTYs when an alive runtime cannot answer a workspace mutation', async ({ diagnostics }, testInfo) => {
   const root = await mkdtemp(join(tmpdir(), 'bp-quit-stopped-runtime-'));
   const data = join(root, 'data'), project = join(root, 'project');
   await Promise.all([data, project].map(path => mkdir(path)));
-  const app = await playwright._electron.launch({ args: [resolve('.')], env: { ...process.env,
+  const app = await electron.launch({ args: [resolve('.')], env: { ...process.env,
     PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'runtime.json') } });
   const main = app.process().pid!;
   let child: number | undefined, parent: number | undefined, runtime: number | undefined;
@@ -61,7 +61,7 @@ test('Quit cleans owned PTYs when an alive runtime cannot answer a workspace mut
       // Shorten only the main runtime deadline/diagnostic, never utility cleanup.
       const timeout = globalThis.setTimeout;
       globalThis.setTimeout = ((handler: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
-        timeout(handler, delay === 10000 ? 50 : delay, ...args)) as typeof setTimeout;
+        timeout(handler, delay === 10000 && (/\bresolv\w*\(false\)/.test(String(handler)) || String(handler).includes('runtime.kill()')) ? 50 : delay, ...args)) as typeof setTimeout;
     }, probe);
     await invoke('snapshot');
     const before = await app.evaluate(({ app }) => {
@@ -94,6 +94,9 @@ test('Quit cleans owned PTYs when an alive runtime cannot answer a workspace mut
       main, runtime, parent, child, runtimeAlive: alive(runtime), childAlive: alive(child),
       mutationResult: 'pending', requestsBefore: before.requests,
     }) });
+    diagnostics.phase('unresponsive-runtime-quit');
+    diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'unresponsive-runtime-quit', message: 'UNKNOWN_RESULT: Workspace write did not settle during Quit. Reconcile its persisted result after restart; it was not cancelled or replayed.', count: 1 });
+    diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'unresponsive-runtime-quit', message: /^Error occurred in handler for 'projector:invoke': Error: UNKNOWN_RESULT: Projector runtime disconnected\. An operation may have completed; reconcile before retrying\. Restart Projector and reconnect MCP\.\n[\s\S]*$/, count: 1 });
     await app.evaluate(({ app }) => { app.quit(); });
     // A diagnostic timer does not cancel the operation. Quit must still release
     // its owned process tree instead of awaiting that unbounded RPC first.
@@ -209,7 +212,7 @@ test('runtime quit deadline cannot interrupt owned PTY descendant cleanup', asyn
     await app.evaluate(() => {
       const original = globalThis.setTimeout;
       globalThis.setTimeout = ((handler: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
-        original(handler, delay === 10000 ? 10 : delay, ...args)) as typeof setTimeout;
+        original(handler, delay === 10000 && String(handler).includes('runtime.kill()') ? 10 : delay, ...args)) as typeof setTimeout;
     });
     await app.close();
     expect(alive(child)).toBe(false);

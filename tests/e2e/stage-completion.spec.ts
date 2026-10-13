@@ -1,5 +1,5 @@
 import { openProjectOverview } from './workspace-ui';
-import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
+import { test, expect, electron, type ElectronApplication } from './test';
 import { mkdtemp, mkdir, rm, rename, cp, writeFile, chmod, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -180,7 +180,7 @@ test('offline guide, folder relocation and copy conflict preserve the original p
   await page.getByRole('button', { name: 'Original plan', exact: true }).click();
   await expect(page.frameLocator('iframe').getByRole('textbox')).toHaveValue('PRIVATE retained');
 });
-test('version summary and approval revocation are visible and separate from Save', async () => {
+test('version summary and approval revocation are visible and separate from Save', async ({ diagnostics }) => {
   root = await mkdtemp(join(tmpdir(), 'bp-revoke-'));
   await mkdir(join(root, 'project'));
   await mkdir(join(root, 'data'));
@@ -257,6 +257,8 @@ test('version summary and approval revocation are visible and separate from Save
   if (process.env.PROJECTOR_E2E_VISIBLE === '1') {
     await frame.getByRole('textbox', { name: 'Reason' }).fill('Private renderer recovery');
     await expect(page.getByText('Unsaved working changes', { exact: false })).toBeVisible();
+    diagnostics.phase('renderer-crash');
+    diagnostics.expect({ role: 'shell', kind: 'renderer-exit', phase: 'renderer-crash', message: 'killed: 2', count: 1 });
     await app.evaluate(
       ({ dialog, BrowserWindow }) =>
         new Promise<void>((resolve) => {
@@ -266,6 +268,7 @@ test('version summary and approval revocation are visible and separate from Save
           target.webContents.forcefullyCrashRenderer();
         }),
     );
+    diagnostics.phase('test');
     // Playwright marks a crashed Page terminally. Read the recovered real renderer
     // through Electron, rather than replacing the crash with a synthetic reload.
     await expect
@@ -295,7 +298,7 @@ test('version summary and approval revocation are visible and separate from Save
   }
 });
 
-test('a failed Save retry remains bound to its own artifact when another plan is selected', async () => {
+test('a failed Save retry remains bound to its own artifact when another plan is selected', async ({ diagnostics }) => {
   root = await mkdtemp(join(tmpdir(), 'bp-save-target-'));
   await mkdir(join(root, 'project'));
   await mkdir(join(root, 'data'));
@@ -344,6 +347,8 @@ test('a failed Save retry remains bound to its own artifact when another plan is
     revisionId: plans[0].revisionId,
   });
   await expect(page.frameLocator('iframe').getByRole('heading', { name: 'Plan A' })).toBeVisible();
+  diagnostics.phase('save-denied');
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'save-denied', message: /^Error occurred in handler for 'projector:invoke': Error: EACCES: Access to the storage location was denied\. Restore access and retry\.\n[\s\S]*$/, count: 1 });
   await chmod(plans[0].path, 0o555);
   try {
     await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -351,6 +356,7 @@ test('a failed Save retry remains bound to its own artifact when another plan is
   } finally {
     await chmod(plans[0].path, 0o755);
   }
+  diagnostics.phase('test');
   await openProjectOverview(page);
   await page.getByRole('button', { name: 'Plan B', exact: true }).click();
   await expect(page.frameLocator('iframe').getByRole('heading', { name: 'Plan B' })).toBeVisible();

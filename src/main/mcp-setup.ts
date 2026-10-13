@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { access, realpath } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
+import { execFile } from '../shared/observed-exec';
 import { promisify } from 'node:util';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { McpSetup } from '../shared/protocol';

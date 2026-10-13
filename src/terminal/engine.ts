@@ -1,3 +1,4 @@
+import { diagnostic, bindDiagnosticError } from '../shared/test-diagnostics';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, stat, realpath, rm } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
@@ -73,6 +74,7 @@ interface Context {
   record: TerminalRecord;
   terminal: Terminal;
   serializer: SerializeAddon;
+  mouseEncoding: 0 | 1006 | 1016;
   pty?: IPty;
   seq: number;
   replay: TerminalOutput[];
@@ -86,6 +88,7 @@ interface Context {
   paused: boolean;
   timer?: ReturnType<typeof setTimeout>;
   retiring?: boolean;
+  stopRequested?: boolean;
   removal?: Promise<void>;
   processCleanup?: Promise<void>;
   exit?: Promise<void>;
@@ -207,12 +210,13 @@ export class TerminalService {
     });
     const serializer = new SerializeAddon();
     terminal.loadAddon(serializer);
-    return {
+    const context: Context = {
       generation: randomUUID(),
       record,
       registered: false,
       terminal,
       serializer,
+      mouseEncoding: 0,
       seq: 0,
       replay: [],
       replayBytes: 0,
@@ -222,6 +226,18 @@ export class TerminalService {
       pendingBytes: 0,
       paused: false,
     };
+    // addon-serialize preserves tracking, but not the encoding selected by
+    // DECSET 1006/1016. Observe public parser events while leaving xterm's
+    // own handlers authoritative, including DEFAULT on either DECRST.
+    const encoding = (enabled: boolean) => (params: (number | number[])[]) => {
+      for (const param of params)
+        if (param === 1006 || param === 1016) context.mouseEncoding = enabled ? param : 0;
+      return false;
+    };
+    terminal.parser.registerCsiHandler({prefix:'?',final:'h'}, encoding(true));
+    terminal.parser.registerCsiHandler({prefix:'?',final:'l'}, encoding(false));
+    terminal.parser.registerEscHandler({final:'c'}, () => { context.mouseEncoding = 0; return false; });
+    return context;
   }
   private get(id: string): Context {
     const context = this.contexts.get(id);
@@ -286,7 +302,10 @@ export class TerminalService {
       this.changed();
     }
   }
-  private output(context: Context, data: string) {
+  private output(context: Context, data: string, pid?: number, environment: NodeJS.ProcessEnv = process.env) {
+    diagnostic(context.record.kind === 'codex' ? 'codex-tui' : 'pty-command', 'output', data, 'info', {
+      external: true, pid, workerId: context.record.id, context: environment,
+    });
     if (context.outputFailed) return;
     const bytes = Buffer.byteLength(data);
     context.pendingBytes += bytes;
@@ -340,6 +359,9 @@ export class TerminalService {
         }
       })
       .catch((error) => {
+        bindDiagnosticError(error, diagnostic('terminal-service', 'output-error', String(error), 'error', {
+          workerId: context.record.id, stack: error instanceof Error ? error.stack : undefined,
+        }));
         context.outputFailed = true;
         context.outputQueue = undefined;
         context.pendingBytes = 0;
@@ -393,8 +415,22 @@ export class TerminalService {
         },
       );
       context.record.pid = context.pty.pid;
-      context.pty.onData((data) => this.output(context, data));
+      context.stopRequested = false;
+      const pid = context.pty.pid;
+      const environment = { ...process.env, ...input.env,
+        PROJECTOR_TEST_DIAGNOSTICS: process.env.PROJECTOR_TEST_DIAGNOSTICS,
+        PROJECTOR_TEST_ID: process.env.PROJECTOR_TEST_ID, PROJECTOR_TEST_RUN_ID: process.env.PROJECTOR_TEST_RUN_ID };
+      diagnostic(context.record.kind === 'codex' ? 'codex-tui' : 'pty-command', 'process-start', 'PTY process started', 'info', {
+        pid, workerId: context.record.id, external: context.record.kind !== 'codex', context: environment,
+      });
+      context.pty.onData((data) => this.output(context, data, pid, environment));
       context.pty.onExit(({ exitCode, signal: exitSignal }) => {
+        const signal = exitSignal ?? 0;
+        const clean = exitCode === 0 && (signal === 0 ||
+          (context.stopRequested && (signal === 15 || signal === 9)));
+        diagnostic(context.record.kind === 'codex' ? 'codex-tui' : 'pty-command', 'process-exit', `code=${exitCode} signal=${signal}`, clean ? 'info' : 'error', {
+          pid, workerId: context.record.id, external: context.record.kind !== 'codex', context: environment,
+        });
         context.pty = undefined;
         context.processCleanup ??= terminateOwnedProcessTree(context.record.pid!);
         void context.processCleanup.catch(() => {});
@@ -403,7 +439,7 @@ export class TerminalService {
         context.record.signal = exitSignal;
         context.resolveExit?.();
         if (!context.registered) return;
-        void this.retire(context).catch(() => {});
+        void this.retire(context).catch(error => bindDiagnosticError(error, diagnostic('terminal-service', 'retire-error', String(error), 'error', {workerId:context.record.id,stack:error instanceof Error ? error.stack : undefined})));
       });
     } catch {
       context.record.status = 'error';
@@ -508,10 +544,12 @@ export class TerminalService {
     const context = this.get(id);
     await context.pending;
     let scrollback = this.options.scrollback;
-    let content = context.serializer.serialize({ scrollback });
+    const serialize = () => context.serializer.serialize({scrollback}) +
+      (context.mouseEncoding ? `\x1b[?${context.mouseEncoding}h` : '');
+    let content = serialize();
     while (Buffer.byteLength(content) > 8 * 1024 * 1024 && scrollback > 0) {
       scrollback = Math.floor(scrollback / 2);
-      content = context.serializer.serialize({ scrollback });
+      content = serialize();
       this.markTruncated(context);
     }
     if (Buffer.byteLength(content) > 8 * 1024 * 1024)
@@ -542,29 +580,34 @@ export class TerminalService {
         afterSeq < context.seq && (!context.replay.length || context.replay[0].seq > afterSeq + 1),
     };
   }
-  input(id: string, data: string, viewId: string) {
+  input(id: string, data: string, viewId: string, encoding: 'utf8' | 'binary' = 'utf8') {
     this.available();
     const context = this.get(id);
     if (context.activeView !== viewId)
       throw new TerminalError('TERMINAL_VIEW_INACTIVE', 'Select the terminal pane before typing.');
     if (!context.pty)
       throw new TerminalError('TERMINAL_INACTIVE', 'Start or resume this terminal explicitly.');
-    if (typeof data !== 'string' || Buffer.byteLength(data) > 65536)
+    if (typeof data !== 'string' || !['utf8', 'binary'].includes(encoding) ||
+      Buffer.byteLength(data, encoding === 'binary' ? 'latin1' : 'utf8') > 65536 ||
+      (encoding === 'binary' && [...data].some(character => character.charCodeAt(0) > 255)))
       throw new TerminalError('TERMINAL_INPUT_INVALID', 'Terminal input exceeds the limit.');
-    context.pty.write(data);
+    context.pty.write(encoding === 'binary' ? Buffer.from(data, 'latin1') : data);
   }
   resize(id: string, value: TerminalResize) {
     this.available();
-    const context = this.get(id);
     const input = resizeSchema.parse(value);
+    const context = this.contexts.get(id);
+    // Geometry can arrive after EOF/Stop while the renderer removes its view.
+    if (!context?.pty || context.retiring) return {resized:false};
     if (!input.active) {
       if (context.activeView === input.viewId) context.activeView = null;
-      return;
+      return {resized:true};
     }
     context.activeView = input.viewId;
     context.terminal.resize(input.cols, input.rows);
-    context.pty?.resize(input.cols, input.rows);
+    context.pty.resize(input.cols, input.rows);
     this.schedule(context);
+    return {resized:true};
   }
   async bindSession(id: string, sessionId: string) {
     this.available();
@@ -622,6 +665,7 @@ export class TerminalService {
       return;
     }
     let failure: unknown;
+    context.stopRequested = true;
     context.processCleanup ??= terminateOwnedProcessTree(pty.pid);
     await context.processCleanup.catch((error) => {
       failure = error;

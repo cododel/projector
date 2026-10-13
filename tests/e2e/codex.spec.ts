@@ -1,8 +1,10 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { authenticatedCodexStateArguments } from '../support/codex-client';
+import { markChildStop } from '../../src/shared/test-diagnostics';
+import { test, expect, electron } from './test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn } from '../support/process';
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { Mcp } from './mcp';
@@ -79,6 +81,11 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
     env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_RUNTIME_DESCRIPTOR: socket },
   });
   let child: ReturnType<typeof spawn> | undefined;
+  const clientEnvironment = { ...process.env };
+  // The model client is an independent test launch, not a child of the
+  // desktop agent whose shell happens to run the gate. Keep auth/policies.
+  for (const key of ['CODEX_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_APP_TOOLS_PIPE_PATH', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE'])
+    delete clientEnvironment[key];
   try {
     const page = await app.firstWindow();
     await app.evaluate(({ dialog }, path) => {
@@ -91,7 +98,8 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
       'codex',
       [
         'exec',
-        '--ephemeral',
+        ...authenticatedCodexStateArguments(root),
+        '--model', process.env.PROJECTOR_CODEX_MODEL ?? 'gpt-6.1-sol',
         '--ignore-user-config',
         '--skip-git-repo-check',
         '--sandbox',
@@ -119,7 +127,7 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
         `mcp_servers.projector.env.PROJECTOR_RUNTIME_DESCRIPTOR=${JSON.stringify(socket)}`,
         prompt,
       ],
-      { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+      { env: clientEnvironment, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let log = '';
     let errors = '';
@@ -252,7 +260,8 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
       'codex',
       [
         'exec',
-        '--ephemeral',
+        ...authenticatedCodexStateArguments(root),
+        '--model', process.env.PROJECTOR_CODEX_MODEL ?? 'gpt-6.1-sol',
         '--ignore-user-config',
         '--skip-git-repo-check',
         '--sandbox',
@@ -280,7 +289,7 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
         `mcp_servers.projector.env.PROJECTOR_RUNTIME_DESCRIPTOR=${JSON.stringify(socket)}`,
         second,
       ],
-      { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+      { env: clientEnvironment, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let secondLog = '';
     let secondErrors = '';
@@ -323,7 +332,7 @@ test('Codex CLI model obtains bundled guide and publishes a plan', async () => {
     expect(image.length).toBe(expectedImage.length);
     expect(sha256(image)).toBe(sha256(expectedImage));
   } finally {
-    if (child && child.exitCode === null) child.kill('SIGTERM');
+    if (child && child.exitCode === null) { markChildStop(child); child.kill('SIGTERM'); }
     await app.close();
     await rm(root, { recursive: true, force: true });
   }

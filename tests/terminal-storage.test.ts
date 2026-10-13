@@ -1,3 +1,4 @@
+import { diagnostics } from './support/vitest-diagnostics';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -177,6 +178,7 @@ it('keeps a failed removal actionable and removes the ended terminal after Retry
     executable: '/bin/sh',
     args: ['-c', 'read line'],
   });
+  diagnostics().expect({role:'terminal-service',kind:'retire-error',phase:'test',message:'Error: Synthetic full disk',count:1});
   fault.write = true;
   await expect(service.stop(terminal.id)).rejects.toBeDefined();
   expect(service.snapshot()).toEqual([

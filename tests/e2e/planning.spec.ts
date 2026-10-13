@@ -1,10 +1,11 @@
 import { openProjectOverview } from './workspace-ui';
-import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
+import { test, expect, electron, type ElectronApplication } from './test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn } from '../support/process';
+import { type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 class Mcp {
   child: ChildProcessWithoutNullStreams;
@@ -21,7 +22,7 @@ class Mcp {
         this.pending.delete(value.id);
       }
     });
-    this.child.stderr.on('data', (chunk) => console.error(String(chunk)));
+
   }
   request(method: string, params: unknown): Promise<Record<string, unknown>> {
     const id = ++this.next;

@@ -2,6 +2,8 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { diagnostics } from './support/vitest-diagnostics';
+import { DiagnosticCollector } from './support/diagnostics';
 import { TerminalService } from '../src/terminal/engine';
 import type { TerminalOutput, TerminalRecord } from '../src/shared/terminal';
 const services: TerminalService[] = [];
@@ -370,4 +372,69 @@ it('drops legacy inactive and exited screens on startup without touching unrelat
       operationId: 'legacy-create',
     }),
   ).rejects.toMatchObject({ code: 'TERMINAL_PROCESS_ENDED' });
+});
+
+it('ignores late geometry for an ended process without enabling terminal input', async () => {
+  const {service,data} = await setup();
+  const record = await service.create({projectId:'project',cwd:data,kind:'shell',executable:'/bin/sh',args:['-i']});
+  await service.stop(record.id);
+  expect(service.resize(record.id,{cols:80,rows:24,viewId:'departing-pane',active:true})).toEqual({resized:false});
+  expect(() => service.input(record.id,'unexpected','departing-pane')).toThrow('Terminal is not available.');
+  expect(service.snapshot()).toEqual([]);
+});
+
+it('restores SGR mouse encoding with the terminal screen and follows encoding resets', async () => {
+  const { data, service, output } = await setup();
+  const terminal = await service.create({ projectId:'project',cwd:data,kind:'shell',executable:'/bin/sh',
+    args:['-c', 'stty -echo; printf "\\033[?1049h\\033[?1000h\\033[?1006hSGR_READY\\n"; read first; printf "\\033[?1016hPIXEL_READY\\n"; read second; printf "\\033[?1006lDEFAULT_READY\\n"; read finish'] });
+  await until(() => output.some(event => event.data.includes('SGR_READY')));
+  expect((await service.screen(terminal.id)).content).toContain('\x1b[?1006h');
+  service.resize(terminal.id,{cols:80,rows:24,viewId:'pane',active:true});
+  service.input(terminal.id,'\r','pane');
+  await until(() => output.some(event => event.data.includes('PIXEL_READY')));
+  expect((await service.screen(terminal.id)).content).toContain('\x1b[?1016h');
+  service.input(terminal.id,'\r','pane');
+  await until(() => output.some(event => event.data.includes('DEFAULT_READY')));
+  const restored = (await service.screen(terminal.id)).content;
+  expect(restored).not.toContain('\x1b[?1006h');
+  expect(restored).not.toContain('\x1b[?1016h');
+});
+
+it('preserves ordered UTF-8 and binary input as exact raw PTY bytes', async () => {
+  const { data, service, output } = await setup();
+  const expected = '41f09f99820080ffe697a5e69cac1b5b4d608384';
+  const terminal = await service.create({
+    projectId: 'project', cwd: data, kind: 'shell', executable: process.execPath,
+    args: ['-e', `process.stdin.setRawMode(true);let input=Buffer.alloc(0);process.stdout.write('BYTE_INPUT_READY\\r\\n');process.stdin.on('data',bytes=>{input=Buffer.concat([input,bytes]);if(input.length>=${expected.length / 2})process.stdout.write('RAW_HEX:'+input.toString('hex')+'\\r\\n')});`],
+  });
+  await until(() => output.some(event => event.data.includes('BYTE_INPUT_READY')));
+  service.resize(terminal.id, { cols: 160, rows: 24, viewId: 'active', active: true });
+  expect(() => service.input(terminal.id, '\x80', 'inactive', 'binary')).toThrow('Select the terminal pane');
+  expect(() => service.input(terminal.id, '\u0100', 'active', 'binary')).toThrow('Terminal input exceeds the limit');
+  service.input(terminal.id, 'A🙂', 'active');
+  service.input(terminal.id, '\x00\x80\xff', 'active', 'binary');
+  service.input(terminal.id, '日本', 'active');
+  service.input(terminal.id, '\x1b[M\x60\x83\x84', 'active', 'binary');
+  await until(() => output.map(event => event.data).join('').includes(`RAW_HEX:${expected}`));
+  expect((await service.screen(terminal.id)).content).toContain(`RAW_HEX:${expected}`);
+});
+
+it('owns a failed harness exit while retaining ordinary shell failures as external evidence', async () => {
+  const {service,data} = await setup();
+  const audit = diagnostics();
+  for (const kind of ['codex','shell'] as const) {
+    const terminal = await service.create({projectId:'p',cwd:data,kind,executable:'/bin/sh',
+      args:['-c', 'printf "Error is terminal data\\n"; read line; exit 7']});
+    service.resize(terminal.id,{cols:80,rows:24,active:true,viewId:'failure-view'});
+    if (kind === 'codex') audit.expect({role:'codex-tui',kind:'process-exit',phase:'test',message:'code=7 signal=0',count:1});
+    service.input(terminal.id,'finish\r','failure-view');
+    await until(() => service.snapshot().every(record => record.id !== terminal.id));
+    const exit = audit.events().find(event => event.kind === 'process-exit' && event.workerId === terminal.id);
+    expect(exit).toMatchObject({pid:terminal.pid,workerId:terminal.id,level:'error',
+      ...(kind === 'shell' ? {external:true} : {role:'codex-tui'})});
+    const independent = new DiagnosticCollector({testId:audit.testId,runId:audit.runId,directory:data});
+    independent.append(exit!);
+    if (kind === 'codex') expect(() => independent.assertClean()).toThrow('Unexpected error');
+    else expect(() => independent.assertClean()).not.toThrow();
+  }
 });

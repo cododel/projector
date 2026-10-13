@@ -1,10 +1,10 @@
 import {
   test,
   expect,
-  _electron as electron,
+  electron,
   type ElectronApplication,
   type Page,
-} from '@playwright/test';
+} from './test';
 import { build } from 'esbuild';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';

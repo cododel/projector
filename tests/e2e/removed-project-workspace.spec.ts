@@ -1,4 +1,4 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
+import { test, expect, electron, type ElectronApplication, type Page } from './test';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';

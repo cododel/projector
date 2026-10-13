@@ -1,3 +1,4 @@
+import { installProcessDiagnostics } from '../shared/test-diagnostics';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdir, chmod, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -25,6 +26,7 @@ import {
   type RuntimeDescriptor,
 } from '../shared/runtime-endpoint';
 
+installProcessDiagnostics('runtime');
 /** All accepted operations share one writer, independently of their transport. */
 export class RuntimeOperationQueue {
   private chain: Promise<void> = Promise.resolve();

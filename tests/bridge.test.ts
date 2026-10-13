@@ -1,5 +1,8 @@
+import { markChildStop } from '../src/shared/test-diagnostics';
+import { diagnostics } from './support/vitest-diagnostics';
 import { createServer, type Server as HttpServer } from 'node:http';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn } from './support/process';
+import { type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -19,6 +22,7 @@ let closeHandler: (() => Promise<void>) | undefined;
 afterEach(async () => {
   if (child && child.exitCode === null) {
     const exited = once(child, 'exit');
+    markChildStop(child);
     child.kill();
     await exited;
   }
@@ -254,6 +258,8 @@ describe('MCP stdio bridge over HTTP', () => {
 
   it('fails visibly for an absent descriptor without starting an app or writing protocol noise', async () => {
     const outfile = await bridgePath();
+    diagnostics().expect({role:'bridge',kind:'console-error',phase:'test',message:'Projector runtime descriptor is unavailable. Start the application manually and reconnect MCP.',count:1});
+    diagnostics().expect({role:'test-child',kind:'process-exit',phase:'test',message:'code=1 signal=null',count:1});
     const io = launch(outfile, join(directory, 'missing.json'));
     expect((await once(child!, 'exit'))[0]).toBe(1);
     expect(io.stdout()).toBe('');
@@ -263,6 +269,8 @@ describe('MCP stdio bridge over HTTP', () => {
   it('rejects a stale instance before forwarding any MCP request', async () => {
     const outfile = await bridgePath();
     const peer = await endpoint({ stale: true });
+    diagnostics().expect({role:'bridge',kind:'console-error',phase:'test',message:'Projector runtime instance changed. Reconnect MCP before retrying any operation.',count:1});
+    diagnostics().expect({role:'test-child',kind:'process-exit',phase:'test',message:'code=1 signal=null',count:1});
     const io = launch(outfile, peer.descriptorPath);
     expect((await once(child!, 'exit'))[0]).toBe(1);
     expect(io.stdout()).toBe('');
@@ -301,6 +309,8 @@ describe('MCP stdio bridge over HTTP', () => {
 
   it('rejects legacy Unix configuration with migration instructions', async () => {
     const outfile = await bridgePath();
+    diagnostics().expect({role:'bridge',kind:'console-error',phase:'test',message:'PROJECTOR_SOCKET is no longer supported (including legacy BLUEPRINT_SOCKET). Reconnect MCP using the Projector setup command and PROJECTOR_RUNTIME_DESCRIPTOR.',count:1});
+    diagnostics().expect({role:'test-child',kind:'process-exit',phase:'test',message:'code=1 signal=null',count:1});
     child = spawn(process.execPath, [outfile], {
       env: { ...process.env, HOME: directory, PROJECTOR_SOCKET: join(directory, 'unused.sock') },
       stdio: ['pipe', 'pipe', 'pipe'],

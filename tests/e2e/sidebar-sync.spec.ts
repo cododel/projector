@@ -1,4 +1,4 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, electron } from './test';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Mcp } from './mcp';

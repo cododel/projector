@@ -86,3 +86,118 @@ kinds and read-only MCP names remain compatible. The isolated Electron test chec
 private answers, byte-identical revision manifests and real legacy localStorage /
 cookies through the renamed app. No personal app data, client config or repository
 remote is migrated by tests. Existing persisted roots are reused in place, not moved.
+
+## Unexpected-error gate
+
+Both gates audit diagnostics as well as functional assertions. E2E scenarios use the
+shared `tests/e2e/test.ts` fixture; launches use its Electron helper and the audited
+process helpers. A static boundary test rejects bypasses. Integration unit tests
+have the same per-test collector and observe their owned subprocesses.
+
+The journal records test/run identity, process role/PID, compiler thread identity,
+phase, severity, message and available stack. Observation starts before application
+readiness and persists through cleanup; the gate drains owned children and checks
+journals after scenario cleanup. Missing, corrupt or unbound evidence fails. Main,
+owned renderer/document/overlay, runtime, compiler, terminal service, Codex and MCP
+bridge errors fail even when functional assertions succeed. Native exception exit
+policy is retained. Terminal output and external-page diagnostics are recorded as
+external evidence; their failures are evaluated by the scenario's own assertions.
+
+A deliberate failure must be declared before its action, with exact source, event
+kind, named phase, message/code and count. Unexpected extras, missing expectations
+and ambiguous matches fail. Tests do not globally allow IPC, storage, crash or
+cleanup errors. Journals and attachments under `.tmp/test-diagnostics` remain
+available after failed checks; secret environment values and bearer credentials
+are redacted. Captured output is disposable test data, not the operator's terminals.
+
+Known non-error diagnostics have explicit source-specific classifications: Electron
+inspector lifecycle, Codex stdin/server endpoint notices, and the pinned Electron
+44.7.0 macOS notice about its absent Helper Resources directory (only when that
+exact directory is absent). Exact Git worktree metadata probes can report a
+non-repository/missing directory as a normal negative result with exit 128;
+other command failures remain errors. Raw unknown stderr is not ignored.
+
+`diagnostics.spec.ts` runs nested gates to prove that main/shell errors, unhandled
+child rejection, runtime/terminal crashes and post-assertion cleanup errors return
+failure after functional success. Compiler fault coverage independently audits the
+real worker event even when its caller catches the rejected operation. Known
+negative pre-push checks retain captured inner output without presenting their
+intentional exit as a failure of the outer gate.
+
+Suite hooks use an unbound diagnostic journal: errors in `beforeAll` or `afterAll`
+fault the runner even when every test assertion passes. The console observer uses
+one active route across reused Vitest workers. Playwright results use a unique
+`.tmp/test-results/<run>` directory, so independent runs cannot remove each other's
+traces. Each E2E result includes its complete redacted diagnostic journal.
+
+Nested regressions also cover pre-readiness main errors, document rejection,
+annotation overlays and a terminal-service crash during Quit. Journal initialization
+and previously observed records must remain present; erasing a journal cannot make
+it clean. Worker exceptions and their parent notifications share a primary-event
+link and the actual worker ID. Native process output is observed without changing
+buffered `execFile` results. Terminal mouse tests cover retained SGR encoding after
+screen restoration and high-byte legacy reports through xterm's binary event path.
+
+Authenticated Codex diagnostics are subject to the same strict gate. A successful
+model/MCP interaction does not authorize native client warnings or prove the full
+gate passed. Native profile/client failures remain visible with their journals;
+tests do not repair the operator's profile or silently allow recurring warnings.
+
+Shutdown regression barriers also cover an overlay renderer still alive after its
+browser owner is disposed, and runtime replies admitted before Quit. Retired overlay
+senders receive a recoverable capture error; the process-owned IPC dispatcher
+releases its manager reference. Quit drains admitted RPC acknowledgements within
+its existing deadline. Native GPU/compositor errors remain blocking diagnostics;
+the gate does not disable hardware acceleration or globally allow them.
+
+Runtime, compiler and terminal-service channels carry their protocol/data through
+IPC, not stdout. Unknown stdout on those internal service streams therefore fails
+alongside stderr. Audited command/Codex/bridge protocol stdout and external PTY
+output retain their separate boundaries; the word `Error` is never the classifier.
+
+Renderer console events carry their frame's OS PID and routing identity. Chromium
+native stderr prefixes identify the emitting child PID; GPU/viz diagnostics use
+`electron-gpu` rather than the main process whose pipe transports them. Source
+attribution does not change severity or authorize any native error.
+
+PTY evidence includes the actual PTY PID and terminal ID, including output received
+while no renderer view is attached. Ordinary shell command output and exits are
+external evidence. An abnormal owned Codex TUI exit fails; an explicitly requested
+Stop is distinguished from an unexplained signal. Terminal parser/storage failures
+and Codex adapter or MCP-startup failures remain owned errors even when callers
+catch them to display a recovery action. Explicit causal IDs link service errors to
+forwarded IPC/console notifications without counting the same primary error twice;
+these IDs are test diagnostics, not persisted application records or public MCP data.
+
+Codex Quit cancellation uses a distinct lifecycle cause. Read-only discovery may
+finish with the current catalog when Quit cancels its admitted operation; a later
+OS exit cannot overwrite that cause. Established launches are marked stopped before
+concurrent PTY cleanup. Unexpected backend exits and protocol failures keep their
+original cause and remain gate failures.
+
+Audited callback/promise execFile and synchronous helpers redact using the child
+launch environment too. A secret supplied only to one child is not allowed to leak
+through stdout/stderr; the overload regression uses synthetic credentials and
+retains the native callback/promise contracts.
+
+The authenticated MCP model client uses `tests/support/codex-client.ts` for
+launch-only state boundaries. Codex 0.162.1 gives ephemeral sessions no state DB
+handle, but its shell-snapshot cleanup still resolves existing rollouts, emits
+`falling_back` for each retained snapshot, and deletes orphan snapshots from its
+authentication home. This client disables that optional shell context mechanism
+with `features.shell_snapshot=false`; it must not consume or modify the operator's
+shell snapshots. SQLite/log directories remain disposable, credentials are neither
+copied nor edited by the test, and normal application/TUI launch settings are unchanged.
+
+`codex-client-isolation.test.ts` creates a valid rollout and DB with the installed
+Codex and a credential-free loopback provider. Its explicit negative control
+reproduces one fallback plus orphan deletion; the shared authenticated-client
+arguments then preserve both retained and orphan snapshots. This protects actual
+side effects, rather than merely allowing a warning. All other diagnostics remain
+subject to the strict collector; the authenticated full MCP scenario still tests
+real model access, privacy, Save, full snapshots and attachments.
+
+A requested child Stop authorizes only a clean exit or the observed SIGTERM/SIGKILL
+termination of a still-live child. An arbitrary nonzero exit after that request
+still fails: the regression handles SIGTERM by exiting7 and verifies rejection.
+A Stop marker also cannot retroactively excuse a process that already failed.

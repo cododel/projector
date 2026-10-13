@@ -38,7 +38,7 @@ test('a defective pushed commit fails even when the dirty worktree fixes it', as
       JSON.stringify({ scripts: { 'check:full': 'node -e "process.exit(0)"' } }),
     );
     await assert.rejects(
-      validatePush(root, `refs/heads/main ${sha} refs/heads/main ${'0'.repeat(40)}`),
+      validatePush(root, `refs/heads/main ${sha} refs/heads/main ${'0'.repeat(40)}`, { captureOutput: true }),
       /check:full failed/,
     );
   } finally {

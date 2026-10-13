@@ -1,8 +1,8 @@
-import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
-import { spawnSync } from 'node:child_process';
+import { test, expect, electron, type ElectronApplication } from './test';
+import { spawnSync } from '../support/process';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ApplicationWorkspaceSnapshot } from '../../src/shared/application-workspace';
 import type { HarnessSnapshot } from '../../src/shared/harness';
@@ -13,7 +13,7 @@ type Snapshot = ApplicationWorkspaceSnapshot & {
   harnesses: HarnessSnapshot;
 };
 test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently launched owned TUI processes', async () => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'bp-codex-keys-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'projector-codex-keys-')));
   const project = join(root, 'project'),
     home = join(root, 'home'),
     data = join(root, 'data');
@@ -25,7 +25,7 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
     const executable = lookup.stdout.trim();
     await writeFile(
       join(home, 'config.toml'),
-      `model="gpt-5.4"\nmodel_provider="local"\ncli_auth_credentials_store="file"\ncheck_for_update_on_startup=false\n[analytics]\nenabled=false\n[tui]\nshow_welcome_banner=false\n[model_providers.local]\nname="Isolated terminal qualification"\nbase_url="http://127.0.0.1:9/v1"\nwire_api="responses"\nrequires_openai_auth=false\n[projects.${JSON.stringify(project)}]\ntrust_level="trusted"\n`,
+      `model="gpt-6.1-sol"\nmodel_provider="local"\ncli_auth_credentials_store="file"\ncheck_for_update_on_startup=false\n[features]\nplugins=false\nremote_plugin=false\n[analytics]\nenabled=false\n[tui]\nshow_welcome_banner=false\n[model_providers.local]\nname="Isolated terminal qualification"\nbase_url="http://127.0.0.1:9/v1"\nwire_api="responses"\nrequires_openai_auth=false\n[projects.${JSON.stringify(project)}]\ntrust_level="trusted"\n`,
     );
     app = await electron.launch({
       args: [resolve('.')],
@@ -33,7 +33,7 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
         CODEX_HOME: home,
-        TMPDIR: root,
+        TMPDIR: process.env.TMPDIR ?? '/tmp',
         LANG: 'en_US.UTF-8',
         PROJECTOR_DATA: data,
         PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'),
@@ -73,7 +73,7 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
     await expect.poll(async () => (await snapshot()).terminals[0]?.harnessSessionId).toBeTruthy();
     const created = (await snapshot()).terminals[0];
     const keyboard = page.locator('.terminal-pane .xterm-helper-textarea');
-    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('gpt-5.4');
+    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText(/gpt-6\.1-sol/i);
     await keyboard.focus();
     await keyboard.press('Control+d');
     await expect.poll(async () => (await snapshot()).terminals).toEqual([]);
@@ -84,7 +84,7 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
     });
     await expect.poll(async () => (await snapshot()).terminals[0]?.harnessSessionId).toBeTruthy();
     expect((await snapshot()).terminals[0].harnessSessionId).not.toBe(created.harnessSessionId);
-    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('gpt-5.4');
+    await expect(page.locator('.terminal-pane .xterm-rows')).toContainText(/gpt-6\.1-sol/i);
     await keyboard.focus();
     await keyboard.press('Control+c');
     // Codex may ask for a second Ctrl+C at idle. Never replace either with Stop.

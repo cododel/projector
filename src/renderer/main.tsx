@@ -155,6 +155,8 @@ interface Bridge {
     callback: (status: { waiting: boolean; operation?: string }) => void,
   ): () => void;
   onRefresh(callback: () => void): (() => void) | void;
+  isShuttingDown?(): boolean;
+  onShutdown?(callback: () => void): () => void;
   getPathForFile?(file: File): string;
   onTerminalOutput?(callback: (output: TerminalOutput) => void): () => void;
   onOpenSettings?(callback: () => void): () => void;
@@ -288,6 +290,7 @@ function App(): React.JSX.Element {
     height: number;
   } | null>(null);
   const documentFrames = useRef(new Map<string, DocumentFrame>());
+  const browserProjection = useRef<FullApplicationSnapshot | null>(null);
   const editingFrames = useRef(new Set<string>());
   const [documentEditing, setDocumentEditing] = useState(false);
   const nativeFrames = useRef(new Map<string, { nativeId?: string; element: HTMLDivElement }>());
@@ -497,10 +500,10 @@ function App(): React.JSX.Element {
       (artifact) => artifact.id === selection?.artifactId,
     );
     const selectedProjectId = nextSession?.projectId ?? selectedArtifact?.projectId;
+    const selectedProject = next.projects.find((project) => project.id === selectedProjectId);
     const selectedProjectAvailable =
-      !selectedProjectId ||
-      next.projects.find((project) => project.id === selectedProjectId)?.available !== false;
-    const loaded = !selectedProjectAvailable
+      !selectedProjectId || Boolean(selectedProject && selectedProject.available !== false);
+    const loaded = !selectedProjectAvailable || (content && !selectedArtifact)
       ? null
       : content?.tab.kind === 'document' && nextKey && nextPane
         ? await invoke<DocumentResult>('paneDocument', { key: nextKey, paneId: nextPane.id })
@@ -517,6 +520,7 @@ function App(): React.JSX.Element {
     setDocument(loaded);
     setBrowser(nextBrowser);
     setWorkspace(nextWorkspace);
+    browserProjection.current = nextApplication;
     setApplication(nextApplication);
     setProjectId(
       (current) =>
@@ -534,12 +538,21 @@ function App(): React.JSX.Element {
     }
     // Only a coherent read refreshes the current surface. Identity prevents a late
     // notification from making the departing iframe read its old document again.
-    for (const owner of documentFrames.current.values())
-      if (owner.ready)
+    for (const owner of documentFrames.current.values()) {
+      const owningWorkspace = nextApplication.workspaces[owner.key];
+      const owningPane = owningWorkspace?.tabs.flatMap(tab => paneLeaves(tab.root))
+        .find(pane => pane.id === owner.paneId);
+      const owningContent = owningPane?.content;
+      if (owner.ready && owner.frame.isConnected && selectedProjectAvailable &&
+        next.artifacts.some(artifact => artifact.id === owner.artifactId) &&
+        owningContent?.kind === 'plan' && owningContent.tab.kind === 'document' &&
+        owningContent.artifactId === owner.artifactId &&
+        owningContent.tab.revisionId === owner.revisionId)
         owner.frame.contentWindow?.postMessage(
           { type: 'projector-refresh', artifactId: owner.artifactId, revisionId: owner.revisionId },
           'projector://document',
         );
+    }
     if (next.selected && surfaceReady.current && !nextApplication.selectedWorkspace)
       frame.current?.contentWindow?.postMessage(
         { type: 'projector-refresh', ...next.selected },
@@ -547,7 +560,7 @@ function App(): React.JSX.Element {
       );
   }, []);
   const refreshQueue = useMemo(
-    () => new RefreshQueue(readView, (error) => setError(message(error))),
+    () => new RefreshQueue(readView, (error) => { if (!bridge.isShuttingDown?.()) setError(message(error)); }),
     [readView],
   );
   const reload = useCallback(() => refreshQueue.request(), [refreshQueue]);
@@ -558,6 +571,7 @@ function App(): React.JSX.Element {
     refreshQueue.invalidate();
     return bridge.onRefresh(() => refreshQueue.invalidate());
   }, [refreshQueue]);
+  useEffect(() => bridge.onShutdown?.(() => { refreshQueue.pause(); }), [refreshQueue]);
   const activePlan = activePane?.content.kind === 'plan' ? activePane.content : null;
   const selected = activePlan
     ? {
@@ -574,6 +588,9 @@ function App(): React.JSX.Element {
       ? null
       : snapshot.selected;
   const artifact = snapshot.artifacts.find((item) => item.id === selected?.artifactId);
+  const artifactProjectAvailable = Boolean(artifact && snapshot.projects.some(
+    project => project.id === artifact.projectId && project.available !== false,
+  ));
   useEffect(() => {
     setNotification('');
     setNotificationState(null);
@@ -589,12 +606,12 @@ function App(): React.JSX.Element {
         )
       : null;
   useEffect(() => {
-    if (selected?.artifactId)
+    if (selected?.artifactId && artifactProjectAvailable)
       void invoke('browserRestoreDraft', { artifactId: selected.artifactId })
         .then(() => invoke<BrowserSnapshot>('browserSnapshot'))
         .then(setBrowser)
         .catch((e) => setError(message(e)));
-  }, [selected?.artifactId]);
+  }, [selected?.artifactId, artifactProjectAvailable]);
   const annotations = (
     appMode
       ? (document?.annotations ?? [])
@@ -685,7 +702,20 @@ function App(): React.JSX.Element {
     const update = () => {
       if (animation) cancelAnimationFrame(animation);
       animation = requestAnimationFrame(() => {
-        const views = [...nativeFrames.current.entries()].map(([viewId, value]) => {
+        if (transitioning.current || bridge.isShuttingDown?.()) return;
+        const latest = browserProjection.current;
+        if (!latest) return;
+        const projectionKey = latest.selectedWorkspace;
+        if (!projectionKey) return;
+        const projectionWorkspace = latest.workspaces[projectionKey];
+        const projectionTab = projectionWorkspace?.tabs.find(tab => tab.id === projectionWorkspace.activeTabId);
+        const projectionPanes = projectionTab ? paneLeaves(projectionTab.root) : [];
+        const views = [...nativeFrames.current.entries()].filter(([viewId,value]) => {
+          const content = projectionPanes.find(pane => pane.id === viewId)?.content;
+          const rect = value.element.getBoundingClientRect();
+          return content?.kind === 'plan' && content.tab.kind === 'browser' &&
+            value.element.isConnected && Math.round(rect.width)>0 && Math.round(rect.height)>0;
+        }).map(([viewId, value]) => {
           const bounds = value.element.getBoundingClientRect();
           return {
             viewId,
@@ -697,7 +727,7 @@ function App(): React.JSX.Element {
               height: Math.round(bounds.height),
             },
             active:
-              viewId === activePane?.id &&
+              viewId === projectionWorkspace?.activePaneId &&
               !settingsOpen &&
               !guideOpen &&
               !setup &&
@@ -706,7 +736,10 @@ function App(): React.JSX.Element {
           };
         });
         void invoke('browserViews', {
-          views: settingsOpen || guideOpen || setup || renaming || sessionMetadata ? [] : views,
+          workspaceKey: projectionKey,
+          tabId: projectionTab?.id ?? null,
+          paneIds: projectionPanes.map(pane => pane.id),
+          views: latest.selectedSurface === 'project' || settingsOpen || guideOpen || setup || renaming || sessionMetadata ? [] : views,
         }).catch((error) => setError(message(error)));
       });
     };
@@ -721,6 +754,7 @@ function App(): React.JSX.Element {
     };
   }, [
     appMode,
+    busy,
     framesVersion,
     activePane?.id,
     settingsOpen,
@@ -1020,12 +1054,20 @@ function App(): React.JSX.Element {
       setRetryTransition(null);
     } catch (error) {
       setError(message(error));
-      const confirmation = await invoke<{ pending: boolean }>('applicationConfirmation');
-      setRetryTransition(() =>
-        confirmation.pending
-          ? confirmWorkspaceWrite
-          : () => transition(callback, true, backgroundRefresh),
-      );
+      if (bridge.isShuttingDown?.()) return;
+      try {
+        const confirmation = await invoke<{ pending: boolean }>('applicationConfirmation');
+        setRetryTransition(() =>
+          confirmation.pending
+            ? confirmWorkspaceWrite
+            : () => transition(callback, true, backgroundRefresh),
+        );
+      } catch (confirmationError) {
+        setError(`${message(error)}\nWorkspace confirmation failed: ${message(confirmationError)}`);
+        // An unavailable confirmation does not prove that the operation failed.
+        // Retry reconciliation, never replay the original mutation.
+        setRetryTransition(() => confirmWorkspaceWrite);
+      }
     } finally {
       resume();
       transitioning.current = false;
@@ -1147,10 +1189,11 @@ function App(): React.JSX.Element {
   }
   useEffect(() => {
     function relay(event: MessageEvent): void {
+      if (!event.source) return;
       const owner = [...documentFrames.current.values()].find(
-        (owner) => owner.frame.contentWindow === event.source,
+        (owner) => owner.frame.isConnected && owner.frame.contentWindow !== null && owner.frame.contentWindow === event.source,
       );
-      const legacy = !appMode && event.source === frame.current?.contentWindow;
+      const legacy = !appMode && Boolean(frame.current?.isConnected) && event.source === frame.current?.contentWindow;
       if (
         event.origin !== 'projector://document' ||
         (!owner && !legacy) ||
@@ -1199,6 +1242,11 @@ function App(): React.JSX.Element {
       )
         return;
       const target = event.source as Window;
+      const sourceFrame = owner?.frame ?? frame.current;
+      const reply = (value: unknown, origin: string) => {
+        if (sourceFrame?.isConnected && sourceFrame.contentWindow === target)
+          target.postMessage(value, origin);
+      };
       const params =
         request.params && typeof request.params === 'object'
           ? (request.params as Record<string, unknown>)
@@ -1223,7 +1271,7 @@ function App(): React.JSX.Element {
         (!['editing', 'previewing'].includes(request.method) &&
           (params.artifactId !== identity.artifactId || params.revisionId !== identity.revisionId))
       ) {
-        target.postMessage(
+        reply(
           {
             type: 'projector-response',
             id: request.id,
@@ -1235,7 +1283,7 @@ function App(): React.JSX.Element {
       }
       if (request.method === 'previewing') {
         if (!owner || owner.paneId === activePane?.id) setDocumentPreview(params.active === true);
-        target.postMessage(
+        reply(
           { type: 'projector-response', id: request.id, result: {} },
           'projector://document',
         );
@@ -1243,7 +1291,7 @@ function App(): React.JSX.Element {
       }
       if (request.method === 'annotationNavigated') {
         setJump(null);
-        target.postMessage(
+        reply(
           { type: 'projector-response', id: request.id, result: {} },
           'projector://document',
         );
@@ -1296,7 +1344,7 @@ function App(): React.JSX.Element {
               next.delete(saveKey);
               return next;
             });
-          target.postMessage(
+          reply(
             {
               type: 'projector-response',
               id: request.id,
@@ -1310,7 +1358,7 @@ function App(): React.JSX.Element {
             jump.artifactId === params.artifactId &&
             jump.revisionId === params.revisionId
           )
-            target.postMessage(
+            reply(
               { type: 'projector-jump', annotation: jump },
               'projector://document',
             );
@@ -1320,7 +1368,7 @@ function App(): React.JSX.Element {
         .catch((e) => {
           if (['setValue', 'saveEditor', 'setViewState'].includes(String(request.method)))
             setFailedAutosaves((previous) => new Set(previous).add(saveKey));
-          target.postMessage(
+          reply(
             { type: 'projector-response', id: request.id, error: message(e) },
             'projector://document',
           );
@@ -1676,6 +1724,9 @@ function App(): React.JSX.Element {
     }
     const plan = snapshot.artifacts.find((plan) => plan.id === content.artifactId);
     if (!plan) return <div className="new-tab-home">Plan unavailable</div>;
+    const owningProject = snapshot.projects.find(project => project.id === plan.projectId);
+    if (!owningProject || owningProject.available === false)
+      return <div className="new-tab-home">Project folder unavailable</div>;
     if (content.tab.kind === 'document')
       return (
         <PlanDocumentPane
@@ -1683,6 +1734,7 @@ function App(): React.JSX.Element {
           paneId={pane.id}
           workspaceKey={currentKey}
           bridge={bridge}
+          refreshToken={snapshot}
           register={registerDocument}
           onFocus={() => focusPane(pane.id)}
 
@@ -3578,7 +3630,10 @@ function DocumentSurface(): React.JSX.Element {
     window.addEventListener('keydown', cancel);
     return () => window.removeEventListener('keydown', cancel);
   }, [areaMode]);
-  const displayValues = previewState?.values ?? data?.state.values ?? {};
+  const displayValues = useMemo(
+    () => previewState?.values ?? data?.state.values ?? {},
+    [previewState?.values, data?.state.values],
+  );
   const displayDetails = previewState?.view.details ?? details;
   const stateMatches = useCallback(
     (context?: AnnotationState): boolean =>
@@ -3961,7 +4016,7 @@ function DocumentSurface(): React.JSX.Element {
           readOnly={data?.draft || Boolean(previewState) || contextPending || Boolean(selection)}
         />
       );
-    const common = { key, 'data-block-id': node.id ?? key };
+    const common = { 'data-block-id': node.id ?? key };
     switch (node.type) {
       case 'root':
         return <React.Fragment key={key}>{children}</React.Fragment>;
@@ -3972,12 +4027,12 @@ function DocumentSurface(): React.JSX.Element {
           </span>
         );
       case 'paragraph':
-        return <p {...common}>{children}</p>;
+        return <p key={key} {...common}>{children}</p>;
       case 'heading': {
         const Heading =
           `h${Math.max(1, Math.min(6, typeof props.depth === 'number' ? props.depth : 2))}` as
             'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
-        return <Heading {...common}>{children}</Heading>;
+        return <Heading key={key} {...common}>{children}</Heading>;
       }
       case 'strong':
         return <strong key={key}>{children}</strong>;
@@ -3995,25 +4050,25 @@ function DocumentSurface(): React.JSX.Element {
         return props.language === 'mermaid' ? (
           <Diagram key={key} source={node.value ?? ''} />
         ) : (
-          <pre {...common}>
+          <pre key={key} {...common}>
             <code>
               <span data-text-path={JSON.stringify(key.split('-').map(Number))}>{node.value}</span>
             </code>
           </pre>
         );
       case 'blockquote':
-        return <blockquote {...common}>{children}</blockquote>;
+        return <blockquote key={key} {...common}>{children}</blockquote>;
       case 'list':
         return props.ordered ? (
-          <ol {...common} start={typeof props.start === 'number' ? props.start : 1}>
+          <ol key={key} {...common} start={typeof props.start === 'number' ? props.start : 1}>
             {children}
           </ol>
         ) : (
-          <ul {...common}>{children}</ul>
+          <ul key={key} {...common}>{children}</ul>
         );
       case 'listItem':
         return (
-          <li {...common}>
+          <li key={key} {...common}>
             {typeof props.checked === 'boolean' && (
               <input type="checkbox" checked={props.checked} disabled />
             )}
@@ -4031,7 +4086,7 @@ function DocumentSurface(): React.JSX.Element {
       case 'tableRow':
         return <tr key={key}>{children}</tr>;
       case 'tableCell':
-        return <td {...common}>{children}</td>;
+        return <td key={key} {...common}>{children}</td>;
       case 'link':
         return (
           <span
@@ -4044,20 +4099,20 @@ function DocumentSurface(): React.JSX.Element {
         );
       case 'image':
         return (
-          <span {...common} className="image-placeholder">
+          <span key={key} {...common} className="image-placeholder">
             {typeof props.alt === 'string' ? props.alt : 'Image'} · external image preview
             unavailable in Alpha 1
           </span>
         );
       case 'thematicBreak':
-        return <hr {...common} />;
+        return <hr key={key} {...common} />;
       case 'break':
         return <br key={key} />;
       case 'Details':
       case 'details':
         return (
           <details
-            {...common}
+            key={key} {...common}
             open={displayDetails[node.id ?? key] ?? false}
             onToggle={(e) => {
               if (data?.draft || previewState) return;
@@ -4086,7 +4141,7 @@ function DocumentSurface(): React.JSX.Element {
       case 'Callout':
       case 'callout':
         return (
-          <aside {...common} className="callout">
+          <aside key={key} {...common} className="callout">
             {typeof props.title === 'string' && <strong>{props.title}</strong>}
             {children}
           </aside>
@@ -4106,10 +4161,10 @@ function DocumentSurface(): React.JSX.Element {
             ? props.name
             : (node as DocumentNode & { name?: string }).name;
         if (name) return render({ ...node, type: name }, key);
-        return <div {...common}>{children}</div>;
+        return <div key={key} {...common}>{children}</div>;
       }
       default:
-        return <div {...common}>{node.value ?? children}</div>;
+        return <div key={key} {...common}>{node.value ?? children}</div>;
     }
   }
   return (

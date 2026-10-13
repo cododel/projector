@@ -63,6 +63,6 @@ export interface TerminalOptions {
 export type TerminalRequest = { id: string; method: string; args?: unknown };
 export type TerminalMessage =
   | { type: 'ready' }
-  | { type: 'response'; id: string; result?: unknown; error?: { code: string; message: string } }
+  | { type: 'response'; id: string; result?: unknown; error?: { code: string; message: string; diagnosticId?: string } }
   | { type: 'change'; terminals: TerminalRecord[] }
   | { type: 'output'; output: TerminalOutput };

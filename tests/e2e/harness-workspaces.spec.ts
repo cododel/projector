@@ -1,5 +1,5 @@
 import { expectNewTerminalEnabled, openProjectOverview } from './workspace-ui';
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
+import { test, expect, electron, type ElectronApplication, type Page } from './test';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -80,7 +80,8 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   await page.getByRole('button', { name: 'New Codex session in project', exact: true }).click();
   await expect.poll(async () => (await snapshot(page)).terminals.find(record => record.harnessSessionId === exact)?.status).toBe('running').catch(async error => {
     const value = await snapshot(page);
-    throw new Error(`${String(error)}\nHarness: ${JSON.stringify(value.harnesses)}\n${launchErrors}`);
+    await test.info().attach('codex-protocol-audit', {path:audit,contentType:'application/x-ndjson'});
+    throw new Error(`${String(error)}\nHarness: ${JSON.stringify(value.harnesses)}\nTerminals: ${JSON.stringify(value.terminals)}\n${launchErrors}`);
   });
   await expect.poll(async () => (await snapshot(page)).workspaces[`${projectId}/${exact}`]?.sessionId).toBe(exact);
   value = await snapshot(page);
@@ -244,7 +245,7 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   await expect.poll(async () => (await snapshot(page)).harnesses.sessions.find(session => session.id === exact)?.processState).toBe('running');
 });
 
-test('Resume reports an active writer without starting a terminal or taking over the session', async () => {
+test('Resume reports an active writer without starting a terminal or taking over the session', async ({ diagnostics }) => {
   root = await realpath(await mkdtemp(join(tmpdir(), 'bp-writer-ui-')));
   const project = join(root, 'project'), data = join(root, 'data'), home = join(root, 'home');
   await Promise.all([project, data, home].map(path => mkdir(path)));
@@ -275,12 +276,16 @@ test('Resume reports an active writer without starting a terminal or taking over
   await page.getByRole('button', {name:'Workspace actions',exact:true}).click();
   await expect(page.getByRole('menuitem', { name: 'Close panel', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
+  diagnostics.phase('active-writer');
+  diagnostics.expect({role:'codex-manager',kind:'adapter-error',phase:'active-writer',message:'CODEX_SESSION_IN_USE: This session is already in use by another Codex process. Return to the existing launch, or retry after it releases the session. Projector will not take it over.',count:1});
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'active-writer', message: /^Error occurred in handler for 'projector:invoke': Error: CODEX_SESSION_IN_USE: This session is already in use by another Codex process\. Return to the existing launch, or retry after it releases the session\. Projector will not take it over\.\n[\s\S]*$/, count: 1 });
   await page.getByRole('button', { name: 'Resume', exact: true }).click();
   const error = page.locator('.error-banner');
   await expect(error).toContainText('This session is already in use by another Codex process.');
   await expect(error).toContainText('Return to the existing launch, or retry after it releases the session.');
   await expect(error).not.toContainText('CODEX_RPC_FAILED');
   await expect(page.getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
+  diagnostics.phase('test');
   const state = await snapshot(page);
   expect(state.terminals).toEqual([]);
   expect(state.harnesses.mcpStartup).toEqual([]);

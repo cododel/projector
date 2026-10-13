@@ -1,8 +1,9 @@
 import { newBrowserTab } from './workspace-ui';
 import { randomUUID } from 'node:crypto';
 import { Mcp } from './mcp';
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, electron } from './test';
 import { createServer } from 'vite';
+import { createServer as createHttpServer } from 'node:http';
 import react from '@vitejs/plugin-react';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,11 +14,15 @@ test('development renderer proxy loads the isolated document without production 
   const project = join(root, 'project');
   await mkdir(data);
   await mkdir(project);
+  const hmrServer = createHttpServer();
+  await new Promise<void>(done => hmrServer.listen(0,'127.0.0.1',done));
+  const hmrAddress = hmrServer.address();
+  if (!hmrAddress || typeof hmrAddress==='string') throw new Error('Missing HMR endpoint');
   const server = await createServer({
     configFile: false,
     root: resolve('src/renderer'),
     plugins: [react()],
-    server: { host: '127.0.0.1', port: 0 },
+    server: { host: '127.0.0.1', port: 0, hmr: {server:hmrServer,host:'127.0.0.1',protocol:'ws',clientPort:hmrAddress.port,port:hmrAddress.port} },
   });
   await server.listen();
   const address = server.httpServer!.address();
@@ -163,6 +168,7 @@ test('development renderer proxy loads the isolated document without production 
   } finally {
     await app.close();
     await server.close();
+    if (hmrServer.listening) await new Promise<void>((done,reject)=>hmrServer.close(error=>error?reject(error):done()));
     await rm(root, { recursive: true, force: true });
   }
 });

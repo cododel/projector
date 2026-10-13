@@ -12,13 +12,13 @@ export interface DocumentFrame {
 }
 interface PaneBridge {
   invoke(method: string, params?: Record<string, unknown>): Promise<unknown>;
-  onRefresh(callback: () => void): (() => void) | void;
 }
 export function PlanDocumentPane({
   content,
   paneId,
   workspaceKey,
   bridge,
+  refreshToken,
   register,
   onFocus,
   onNewTab,
@@ -29,6 +29,7 @@ export function PlanDocumentPane({
   paneId: string;
   workspaceKey: string;
   bridge: PaneBridge;
+  refreshToken: object;
   register(paneId: string, value: DocumentFrame | null): void;
   onFocus(): void;
   onNewTab(): void;
@@ -54,12 +55,10 @@ export function PlanDocumentPane({
         });
     };
     read();
-    const unsubscribe = bridge.onRefresh(read);
     return () => {
       alive = false;
-      unsubscribe?.();
     };
-  }, [workspaceKey, paneId, content.artifactId, revisionId, bridge]);
+  }, [workspaceKey, paneId, content.artifactId, revisionId, bridge, refreshToken]);
   useEffect(() => {
     if (waiting || !frame.current) {
       register(paneId, null);

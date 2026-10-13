@@ -1,10 +1,10 @@
 import {
   test,
   expect,
-  _electron as electron,
+  electron,
   type ElectronApplication,
   type Page,
-} from '@playwright/test';
+} from './test';
 import { mkdtemp, mkdir, rm, writeFile, readFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -58,7 +58,7 @@ async function siteState(url: string): Promise<{ actions: number; focus: string;
   }, url);
 }
 
-test('native pane first click drains the sibling comment without acting on the site, including real write failure', async () => {
+test('native pane first click drains the sibling comment without acting on the site, including real write failure', async ({ diagnostics }) => {
   root = await mkdtemp(join(tmpdir(), 'bp-native-pane-comment-'));
   const data = join(root, 'data');
   const project = join(root, 'project');
@@ -161,6 +161,8 @@ test('native pane first click drains the sibling comment without acting on the s
   // This is an actual private-storage failure, not a stubbed IPC response.
   await expect(writeFile(join(editorDirectory, 'permission-probe'), 'must fail')).rejects
     .toMatchObject({ code: 'EACCES' });
+  diagnostics.phase('private-write-denied');
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'private-write-denied', message: /^Error occurred in handler for 'projector:invoke': Error: EACCES: Access to the storage location was denied\. Restore access and retry\.\n[\s\S]*$/, count: 1 });
   await editor.fill('Private text after write failure');
   await expect(frame.getByRole('alert')).toContainText('EACCES');
   const beforeSite = await siteState(url);
@@ -175,6 +177,7 @@ test('native pane first click drains the sibling comment without acting on the s
     .toMatchObject({ savedState: null, privateStateIncluded: false });
   expect(JSON.parse(await readFile(editorPath, 'utf8')).comment).toBe('Confirmed private draft');
 
+  diagnostics.phase('test');
   await chmod(editorDirectory, 0o700);
   await editor.fill('Confirmed after storage recovery');
   await expect.poll(async () => JSON.parse(await readFile(editorPath, 'utf8')).comment)

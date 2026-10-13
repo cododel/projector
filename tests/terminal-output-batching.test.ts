@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/headless';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { diagnostics } from './support/vitest-diagnostics';
 import { TerminalService } from '../src/terminal/engine';
 import type { TerminalOutput } from '../src/shared/terminal';
 
@@ -121,6 +122,7 @@ it('reports unknown parser results without publishing output and still releases 
     spy = vi.spyOn(Terminal.prototype, 'write').mockImplementation(() => {
       throw new Error('Synthetic parser failure');
     });
+    diagnostics().expect({role:'terminal-service',kind:'output-error',phase:'test',message:'Error: Synthetic parser failure',count:1});
     delivery.output('uncertain');
     delivery.output('queued');
     await expect(service.screen(terminal.id)).rejects.toThrow('Synthetic parser failure');

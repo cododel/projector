@@ -3,6 +3,7 @@ import process from 'node:process';
 process.stdin.setRawMode(true);
 const mode = process.argv[2] ?? 'mouse';
 if (mode !== 'normal') process.stdout.write('\x1b[?1049h');
+if (mode === 'binary') process.stdout.write('\x1b[?1000h');
 if (mode === 'mouse') process.stdout.write('\x1b[?1000h\x1b[?1006h');
 if (mode === 'normal') for (let i = 0; i < 200; i++) process.stdout.write(`HISTORY_${i}\r\n`);
 process.stdout.write('WHEEL_READY\r\n');
@@ -10,6 +11,10 @@ let input = '',
   up = 0,
   down = 0;
 process.stdin.on('data', (bytes) => {
+  if (bytes.toString() === 'r') {
+    process.stdout.write('\r\nWHEEL_INPUT_READY\r\n');
+    return;
+  }
   if (bytes.toString() === 't') {
     process.stdout.write('\x1b[?1000l\x1b[?1000h\r\nMOUSE_CYCLE\r\n');
     return;
@@ -18,6 +23,11 @@ process.stdin.on('data', (bytes) => {
     process.stdout.write(
       bytes.toString() === 'o' ? '\x1b[?1000l\r\nMOUSE_OFF\r\n' : '\x1b[?1000h\r\nMOUSE_ON\r\n',
     );
+    return;
+  }
+  if (mode === 'binary') {
+    input += bytes.toString('hex');
+    process.stdout.write('\r\nBINARY_HEX:' + input + '\r\n');
     return;
   }
   input += bytes.toString();

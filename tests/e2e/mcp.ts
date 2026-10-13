@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn } from '../support/process';
+import { type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';
 export class Mcp {
@@ -17,7 +18,7 @@ export class Mcp {
         this.pending.delete(value.id);
       }
     });
-    this.child.stderr.on('data', (chunk) => console.error(String(chunk)));
+
   }
   request(method: string, params: unknown): Promise<Record<string, unknown>> {
     const id = ++this.next;

@@ -1,3 +1,5 @@
+import { homedir } from 'node:os';
+import { observeChild, markChildStop, diagnostic, bindDiagnosticError, errorDiagnosticId } from '../shared/test-diagnostics';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
@@ -15,6 +17,10 @@ import type {
   HarnessSnapshot,
   HarnessMcpStartup,
 } from '../shared/harness';
+
+class CodexShutdownError extends Error {
+  constructor() { super('CODEX_MANAGER_STOPPED'); }
+}
 
 const QUALIFIED_VERSION = '0.162.1';
 const RPC_TIMEOUT_MS = 10_000;
@@ -117,6 +123,7 @@ async function terminate(child: ChildProcessWithoutNullStreams) {
       if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
     }
   };
+  markChildStop(child);
   signal('SIGTERM');
   if (!isAlive(child)) return;
   await new Promise<void>((done) => {
@@ -204,7 +211,7 @@ class DiscoveryClient {
     child.stdout.on('data', this.receive);
     child.on('error', (error) => this.fail(new Error('CODEX_START_FAILED: ' + error.message)));
     child.on('exit', () => this.fail(new Error('CODEX_BACKEND_STOPPED')));
-    child.stderr.resume();
+    observeChild(child, 'codex');
   }
   private receiveLine(line: string) {
     try {
@@ -227,6 +234,10 @@ class DiscoveryClient {
     }
   }
   private fail(error: Error) {
+    // Keep the first terminal cause. The later OS exit notification must not
+    // turn explicit shutdown into an unexplained backend failure, or conceal
+    // a real earlier protocol failure behind shutdown.
+    if (this.failure) return;
     this.failure = error;
     this.input = '';
     this.inputBytes = 0;
@@ -260,7 +271,7 @@ class DiscoveryClient {
   async stop() {
     this.child.stdout.off('data', this.receive);
     this.child.stdout.resume();
-    this.fail(new Error('CODEX_BACKEND_STOPPED'));
+    this.fail(new CodexShutdownError());
     await terminate(this.child);
   }
 }
@@ -307,6 +318,11 @@ export class CodexManager {
     this.options.onChange?.();
   }
   private failed(error: unknown) {
+    const cause = errorDiagnosticId(error);
+    const id = diagnostic('codex-manager', 'adapter-error', message(error), cause ? 'info' : 'error', {
+      forwardedFrom: cause, stack: error instanceof Error ? error.stack : undefined,
+    });
+    bindDiagnosticError(error, cause ?? id);
     this.error = message(error);
     this.options.onError?.(this.error);
     this.changed();
@@ -331,7 +347,7 @@ export class CodexManager {
     child.stdout.on('data', (data: Buffer) => {
       stdout += data.toString();
     });
-    child.stderr.resume();
+    observeChild(child, 'codex');
     try {
       await new Promise<void>((done, reject) => {
         const timeout = setTimeout(() => {
@@ -367,7 +383,7 @@ export class CodexManager {
     if (!compatibility.qualified) throw new Error(compatibility.error);
   }
   private async discoveryClient() {
-    if (this.stopping) throw new Error('CODEX_MANAGER_STOPPED');
+    if (this.stopping) throw new CodexShutdownError();
     const key = JSON.stringify([
       this.options.getExecutable(),
       this.options.getProfile?.(),
@@ -387,6 +403,7 @@ export class CodexManager {
         [...this.profileArguments(), 'app-server', '--listen', 'stdio://', ...this.mcpArguments()],
         {
           env: this.environment(),
+          cwd: homedir(),
           stdio: ['pipe', 'pipe', 'pipe'],
           detached: process.platform !== 'win32',
         },
@@ -395,7 +412,7 @@ export class CodexManager {
       const client = new DiscoveryClient(child);
       try {
         await client.initialize();
-        if (this.stopping) throw new Error('CODEX_MANAGER_STOPPED');
+        if (this.stopping) throw new CodexShutdownError();
         this.discovery = client;
         this.discoveryKey = key;
         return client;
@@ -461,6 +478,10 @@ export class CodexManager {
       this.projects = await Promise.all(
         projects.map(async (project) => ({ ...project, path: await canonical(project.path) })),
       );
+      // Quit can begin while canonical paths are being resolved. Discovery
+      // is read-only; finish with the current catalog instead of starting a
+      // new client after the lifecycle owner has stopped it.
+      if (this.stopping) return this.snapshot().sessions;
       const client = await this.discoveryClient();
       const found = new Map<string, HarnessSession>();
       // Codex exposes archived/non-archived as exclusive filters. Read both
@@ -513,6 +534,7 @@ export class CodexManager {
       this.changed();
       return this.snapshot().sessions;
     } catch (error) {
+      if (this.stopping && error instanceof CodexShutdownError) return this.snapshot().sessions;
       this.failed(error);
       throw error;
     }
@@ -594,15 +616,15 @@ export class CodexManager {
     cwd: string,
     expectedId?: string,
   ): Promise<CodexLaunch> {
-    if (this.stopping) throw new Error('CODEX_MANAGER_STOPPED');
+    if (this.stopping) throw new CodexShutdownError();
     await this.qualified();
-    if (this.stopping) throw new Error('CODEX_MANAGER_STOPPED');
+    if (this.stopping) throw new CodexShutdownError();
     const executable = this.options.getExecutable();
     const environment = this.environment();
     const mcpArguments = this.mcpArguments();
     const directory = await canonical(cwd);
     const port = await freePort();
-    if (this.stopping) throw new Error('CODEX_MANAGER_STOPPED');
+    if (this.stopping) throw new CodexShutdownError();
     const backendUrl = `ws://127.0.0.1:${port}`;
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -631,7 +653,7 @@ export class CodexManager {
     ownedGroups.add(child);
     child.stdin.end();
     child.stdout.resume();
-    child.stderr.resume();
+    observeChild(child, 'codex');
     let startError: Error | undefined;
     child.once('error', (error) => {
       startError = error;
@@ -644,7 +666,7 @@ export class CodexManager {
     let record: LaunchRecord | undefined;
     try {
       await this.waitForBackend(backendUrl, token, child, () => startError);
-      if (this.stopping) throw new Error('CODEX_MANAGER_STOPPED');
+      if (this.stopping) throw new CodexShutdownError();
       server.on('upgrade', (request, socket, head) => {
         // Neither cookies nor an external browser Origin authorizes this control endpoint.
         if (
@@ -668,7 +690,7 @@ export class CodexManager {
         server.once('error', reject);
         server.listen(0, '127.0.0.1', done);
       });
-      if (this.stopping) throw new Error('CODEX_MANAGER_STOPPED');
+      if (this.stopping) throw new CodexShutdownError();
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('CODEX_GATEWAY_ADDRESS_MISSING');
       const startupTimer = setTimeout(() => {
@@ -917,6 +939,8 @@ export class CodexManager {
   private applyMcpStartup(record: LaunchRecord, observation: McpObservation) {
     const { params } = observation;
     record.mcpObservedSequence = observation.sequence;
+    if (params.status === 'failed')
+      diagnostic('codex-manager', 'mcp-startup-error', params.error ?? params.failureReason ?? 'MCP startup failed', 'error', { workerId: record.id });
     this.mcpStartup.set(record.id, {
       launchId: record.id,
       projectId: record.projectId,
@@ -1000,8 +1024,13 @@ export class CodexManager {
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     this.stopping = true;
+    // Mark established launches as stopped synchronously, before concurrent
+    // PTY shutdown can close their TUI/backend connections. Starting launches
+    // retain their existing cancellation barrier.
+    const established = [...this.launches.values()].map((record) => this.stopLaunch(record));
     this.stopPromise = (async () => {
       await Promise.allSettled([...this.startingLaunches]);
+      await Promise.all(established);
       await Promise.all([...this.launches.values()].map((record) => this.stopLaunch(record)));
       if (this.discoveryStarting) await this.discoveryStarting.catch(() => {});
       await this.discovery?.stop();

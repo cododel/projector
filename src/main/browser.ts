@@ -23,6 +23,26 @@ import {
   type AreaRect,
 } from './browser-policy';
 
+type OverlayHandler = (event: Electron.IpcMainInvokeEvent, action: unknown, value: unknown) => unknown;
+const retiredOverlayContents = new WeakSet<WebContents>();
+let overlayHandler: OverlayHandler | undefined;
+let overlayIpcBound = false;
+function bindOverlayHandler(handler: OverlayHandler): () => void {
+  if (!overlayIpcBound) {
+    // IPC belongs to the process. Native renderer closure is asynchronous, so
+    // its retired sender may still deliver already queued messages afterward.
+    ipcMain.handle('projector:browser-overlay', (event, action: unknown, value: unknown) => {
+      if (retiredOverlayContents.has(event.sender))
+        return { captureError: 'CAPTURE_CHANGED: The annotation tool was closed. Select again.' };
+      if (!overlayHandler) throw new Error('Untrusted browser overlay sender');
+      return overlayHandler(event, action, value);
+    });
+    overlayIpcBound = true;
+  }
+  overlayHandler = handler;
+  return () => { if (overlayHandler === handler) overlayHandler = undefined; };
+}
+
 export type BrowserTab = {
   id: string;
   artifactId: string;
@@ -123,6 +143,16 @@ const areaSchema = z
 const editSchema = z
   .object({ captureId: z.string(), rect: areaSchema.nullable(), comment: z.string().max(20000) })
   .strict();
+const overlayPointerSchema = z.object({
+  x: z.number().finite().nonnegative(),
+  y: z.number().finite().nonnegative(),
+  deltaX: z.number().finite().optional(),
+  deltaY: z.number().finite().optional(),
+}).strict();
+const overlaySelectionSchema = z.object({
+  point: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
+  rect: areaSchema.nullable(),
+}).strict();
 
 class CaptureChangedError extends Error {
   constructor(reason: string) {
@@ -181,6 +211,7 @@ export class BrowserManager {
     { view: WebContentsView; contents: WebContents; artifactId: string; annotationId: string }
   >();
   private markerTimer: ReturnType<typeof setInterval>;
+  private releaseOverlayHandler: () => void;
   private markerBusy = false;
   private downloadItems = new Map<Electron.DownloadItem, string>();
   private downloads: {
@@ -203,7 +234,7 @@ export class BrowserManager {
     private hooks: BrowserHooks,
     private profileData?: string,
   ) {
-    ipcMain.handle('projector:browser-overlay', (event, action: unknown, value: unknown) => {
+    this.releaseOverlayHandler = bindOverlayHandler((event, action, value) => {
       const marker = [...this.markerViews.values()].find((m) => m.contents === event.sender);
       if (marker && event.senderFrame === event.sender.mainFrame) {
         if (action !== 'marker') throw new Error('Unsupported marker operation');
@@ -219,9 +250,10 @@ export class BrowserManager {
       )
         throw new Error('Untrusted browser overlay sender');
       // Serialize draft writes and submission so the final composer value cannot be overwritten.
+      const generation = this.captureGeneration;
       const next = this.operationChain
         .catch(() => {})
-        .then(() => this.overlayAction(action, value));
+        .then(() => this.overlayAction(action, value, generation));
       this.operationChain = next;
       return next.catch((error: unknown) => {
         // A stale selection is an expected, recoverable tool result, not an IPC failure.
@@ -1133,13 +1165,7 @@ export class BrowserManager {
 
   private async captureSelectionWithinDeadline(value: unknown) {
     if (!this.tool) throw new Error('ANNOTATE_TOOL_NOT_ACTIVE');
-    const input = z
-      .object({
-        point: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
-        rect: areaSchema.nullable(),
-      })
-      .strict()
-      .parse(value);
+    const input = overlaySelectionSchema.parse(value);
     const tool = this.tool,
       tab = this.tabs.get(tool.tabId);
     if (!tab) throw new Error('BROWSER_TAB_NOT_FOUND');
@@ -1487,22 +1513,21 @@ export class BrowserManager {
     this.hooks.onChange();
   }
 
-  private async overlayAction(action: unknown, value: unknown) {
-    if (this.tool && (action === 'hover' || action === 'select' || action === 'wheel')) {
+  private async overlayAction(action: unknown, value: unknown, generation: number) {
+    if (action === 'hover' || action === 'select' || action === 'wheel') {
+      const input = action === 'select'
+        ? overlaySelectionSchema.parse(value).point
+        : overlayPointerSchema.parse(value);
+      // Live pointer traffic can already be queued when navigation hides the
+      // overlay. It cannot act on a later tool or on an unrelated saved capture.
+      if (!this.tool || this.closed || generation !== this.captureGeneration)
+        throw new CaptureChangedError('The annotation tool was closed.');
+      if (input.x < 0 || input.y < 0 || input.x > this.bounds.width || input.y > this.bounds.height)
+        throw new Error('INVALID_POINTER');
       const tab = this.tabs.get(this.tool.tabId);
       if (!tab) throw new Error('BROWSER_TAB_NOT_FOUND');
       if (action === 'select') return this.captureSelection(value);
-      const point = z
-        .object({
-          x: z.number().finite().nonnegative(),
-          y: z.number().finite().nonnegative(),
-          deltaX: z.number().finite().optional(),
-          deltaY: z.number().finite().optional(),
-        })
-        .strict()
-        .parse(value);
-      if (point.x > this.bounds.width || point.y > this.bounds.height)
-        throw new Error('INVALID_POINTER');
+      const point = overlayPointerSchema.parse(value);
       if (action === 'wheel') {
         tab.contents.sendInputEvent({
           type: 'mouseWheel',
@@ -1513,7 +1538,10 @@ export class BrowserManager {
         });
         return { scrolled: true };
       }
-      return this.elementAt(tab, point);
+      const hit = await this.elementAt(tab, point);
+      if (!this.tool || this.closed || generation !== this.captureGeneration)
+        throw new CaptureChangedError('The annotation tool was closed.');
+      return hit;
     }
     if (this.tool && action === 'cancel') {
       this.hideOverlay();
@@ -1589,9 +1617,11 @@ export class BrowserManager {
     if (this.closed) return;
     this.closed = true;
     clearInterval(this.markerTimer);
+    if (this.overlayContents) retiredOverlayContents.add(this.overlayContents);
+    for (const marker of this.markerViews.values()) retiredOverlayContents.add(marker.contents);
+    this.releaseOverlayHandler();
     this.clearMarkers();
     ++this.captureGeneration;
-    ipcMain.removeHandler('projector:browser-overlay');
     for (const { contents } of [...this.tabs.values()])
       if (!contents.isDestroyed()) contents.close();
     this.tabs.clear();

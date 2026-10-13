@@ -1,8 +1,9 @@
+import { diagnostics } from './support/vitest-diagnostics';
 import { it, expect } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, cp } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { execFile } from 'node:child_process';
+import { execFile } from './support/process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
@@ -46,6 +47,7 @@ it('qualifies PTY ownership and ended-process removal through real Electron util
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
     try {
+      diagnostics().expect({role:'terminal-service',kind:'process-exit',phase:'test',message:'code=9',count:1});
       await execute(require('electron'), [main, data, service], { env, timeout: 20000 });
     } catch (error) {
       const diagnostic = await readFile(join(data, 'result.json'), 'utf8').catch(

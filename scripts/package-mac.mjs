@@ -119,7 +119,11 @@ exec "$helper_dir/node" "$helper_dir/bridge.cjs" "$@"
       tmpdir: stage,
       quiet: true,
     });
-    return join(apps[0], 'Projector.app');
+    const app = join(apps[0], 'Projector.app');
+    // The pinned Electron distribution omits this empty resource root. Chromium
+    // still requests its sandbox extension; include it in our unsigned package.
+    await mkdir(join(app, 'Contents', 'Frameworks', 'Projector Helper.app', 'Contents', 'Resources'), { recursive: true });
+    return app;
   } finally {
     await rm(stage, { recursive: true, force: true });
   }

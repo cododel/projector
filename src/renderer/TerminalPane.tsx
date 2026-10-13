@@ -45,7 +45,7 @@ export function TerminalPane({
   const fitRef = useRef<FitAddon | null>(null);
   const activeRef = useRef(active);
   const inputReady = useRef(false);
-  const pendingInput = useRef('');
+  const pendingInput = useRef<{ data: string; encoding: 'utf8' | 'binary' }[]>([]);
   const pendingDrop = useRef<string | null>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const resizeSequence = useRef(0);
@@ -101,8 +101,7 @@ export function TerminalPane({
         !disposed &&
         initializedRef.current &&
         activeRef.current &&
-        runningRef.current &&
-        inputReady.current,
+        runningRef.current,
       batch: (action) => {
         batchingWheel = true;
         try {
@@ -162,7 +161,8 @@ export function TerminalPane({
           rows: Math.min(300, terminal.rows),
           active: activeRef.current,
         })
-        .then(() => {
+        .then((result) => {
+          if (result && typeof result === 'object' && 'resized' in result && result.resized === false) return;
           if (!disposed && sequence === resizeSequence.current) {
             inputReady.current = activeRef.current;
             acknowledgeInput();
@@ -180,29 +180,39 @@ export function TerminalPane({
         !activeRef.current ||
         !inputReady.current ||
         !runningRef.current ||
-        !pendingInput.current
+        !pendingInput.current.length
       )
         return;
-      const data = pendingInput.current;
+      const chunks = pendingInput.current;
       // Clear before sending: an uncertain acknowledgement must never replay keystrokes.
-      pendingInput.current = '';
-      void bridge.invoke('terminalInput', { id: record.id, viewId, data }).catch((error) => {
-        if (!disposed) setError(String(error));
-      });
+      pendingInput.current = [];
+      for (const { data, encoding } of chunks)
+        void bridge.invoke('terminalInput', { id: record.id, viewId, data, encoding }).catch((error) => {
+          if (!disposed) setError(String(error));
+        });
     };
-    const input = terminal.onData((data) => {
+    const receiveInput = (data: string, encoding: 'utf8' | 'binary') => {
       if (!activeRef.current || !runningRef.current) return;
-      if (new TextEncoder().encode(pendingInput.current + data).byteLength > 65536) {
+      const previous = pendingInput.current.at(-1);
+      const candidate = previous?.encoding === encoding
+        ? [...pendingInput.current.slice(0, -1), { data: previous.data + data, encoding }]
+        : [...pendingInput.current, { data, encoding }];
+      const bytes = candidate.reduce((total, chunk) => total + (chunk.encoding === 'binary'
+        ? chunk.data.length : new TextEncoder().encode(chunk.data).byteLength), 0);
+      if (bytes > 65536) {
         setError('Pending terminal input is full. Wait for the terminal before typing more.');
         return;
       }
-      pendingInput.current += data;
+      pendingInput.current = candidate;
       if (!batchingWheel) flushInput.current();
-    });
+    };
+    const input = terminal.onData(data => receiveInput(data, 'utf8'));
+    // Default xterm mouse reports contain raw bytes, not UTF-8 text.
+    const binaryInput = terminal.onBinary(data => receiveInput(data, 'binary'));
     return () => {
       disposed = true;
       resizeSequence.current++;
-      pendingInput.current = '';
+      pendingInput.current = [];
       pendingDrop.current = null;
       focusAfterResize.current = false;
       flushInput.current = () => {};
@@ -214,6 +224,7 @@ export function TerminalPane({
       wheel.dispose();
       wheelReset.current = () => {};
       input.dispose();
+      binaryInput.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
@@ -233,9 +244,9 @@ export function TerminalPane({
     const sequence = ++resizeSequence.current;
     focusAfterResize.current = active;
     if (!active || !runningRef.current) {
-      if (pendingInput.current)
+      if (pendingInput.current.length)
         setError('Pending input was cancelled when this terminal became inactive.');
-      pendingInput.current = '';
+      pendingInput.current = [];
       pendingDrop.current = null;
     }
     let disposed = false;
@@ -247,7 +258,8 @@ export function TerminalPane({
         rows: Math.min(300, terminal.rows),
         active,
       })
-      .then(() => {
+      .then((result) => {
+        if (result && typeof result === 'object' && 'resized' in result && result.resized === false) return;
         if (disposed || sequence !== resizeSequence.current) return;
         inputReady.current = initializedRef.current && activeRef.current;
         acknowledgeInput();

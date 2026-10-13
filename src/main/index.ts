@@ -1,3 +1,5 @@
+import { observeElectron } from './test-diagnostics';
+import { diagnostic, observeDiagnosticStream } from '../shared/test-diagnostics';
 import { normalizeLegacyEnvironment, resolveApplicationData } from '../shared/brand-compat';
 import {
   app,
@@ -35,6 +37,7 @@ import { safeBrowserBounds, validateArea } from './browser-policy';
 import { z } from 'zod';
 const here = dirname(fileURLToPath(import.meta.url));
 const developmentUrl = app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL;
+observeElectron(app);
 normalizeLegacyEnvironment();
 auditE2EWindows(app);
 app.setName('Projector');
@@ -150,7 +153,8 @@ function applicationMutation<T>(action: () => Promise<T> | T): Promise<T> {
       throw error;
     }
   });
-  applicationWrites = write;
+  // Drain tracks settlement; the caller retains and observes the operation failure.
+  applicationWrites = write.then(() => undefined, () => undefined);
   return write;
 }
 async function activateApplicationPane(key: string, paneId: string) {
@@ -223,7 +227,8 @@ async function applicationPlan(artifactId: string, revisionId: string | null, al
   return pane;
 }
 function workspaceRefresh() {
-  window?.webContents.send('projector:refresh');
+  if (!quitting && window && !window.isDestroyed())
+    window.webContents.send('projector:refresh');
 }
 function applicationShortcut(input: Electron.Input): boolean {
   if (shortcutCapture || input.type !== 'keyDown') return false;
@@ -264,6 +269,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 let window: BrowserWindow | null = null;
 let worker: Electron.UtilityProcess | null = null;
+const stoppedRuntimeWorkers = new WeakSet<Electron.UtilityProcess>();
 let runtimeReady = false;
 let quitting = false;
 let browser: BrowserManager | null = null;
@@ -288,8 +294,9 @@ function failRpcRequests(): void {
   requests.clear();
   window?.webContents.send('projector:operation-status', { waiting: false });
 }
+const rpcSettlements = new Set<Promise<void>>();
 function rpc(name: string, args: unknown = {}): Promise<unknown> {
-  return new Promise((resolve, reject) => {
+  const operation = new Promise<unknown>((resolve, reject) => {
     if (!worker || !runtimeReady) {
       reject(new Error('Projector runtime is unavailable'));
       return;
@@ -305,6 +312,10 @@ function rpc(name: string, args: unknown = {}): Promise<unknown> {
       failRpcRequests();
     }
   });
+  const settlement = operation.then(() => undefined, () => undefined);
+  rpcSettlements.add(settlement);
+  void settlement.then(() => rpcSettlements.delete(settlement));
+  return operation;
 }
 async function showCapturedAnnotation(artifactId: string, annotationId: string, requestedPaneId?: string) {
   if (!browser || !window) throw new Error('Browser surface unavailable');
@@ -514,6 +525,7 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
+  if (window && !window.isDestroyed()) window.webContents.send('projector:shutdown');
   void quitAfterCleanup();
 });
 async function quitAfterCleanup() {
@@ -523,10 +535,13 @@ async function quitAfterCleanup() {
   const ownedCleanup = Promise.allSettled([terminals.shutdown(), codex.stop()]);
   let drainTimer: ReturnType<typeof setTimeout> | undefined;
   const drained = await Promise.race([
-    applicationWrites.then(() => true, error => {
-      console.error('Workspace write failed during Quit', error);
+    (async () => {
+      await applicationWrites;
+      // Already admitted reads and late responses must settle before runtime
+      // exit too; new renderer requests are rejected by the lifecycle guard.
+      while (rpcSettlements.size) await Promise.all([...rpcSettlements]);
       return true;
-    }),
+    })(),
     new Promise<false>(resolve => {
       drainTimer = setTimeout(() => resolve(false), 10000);
     }),
@@ -546,6 +561,7 @@ async function quitAfterCleanup() {
     runtime.once('exit', finished);
     const timer = setTimeout(() => {
       runtime.removeListener('exit', finished);
+      stoppedRuntimeWorkers.add(runtime);
       runtime.kill();
       resolve();
     }, 10000);
@@ -642,8 +658,14 @@ void app
       },
       stdio: 'pipe',
     });
-    worker.stderr?.on('data', (chunk) => process.stderr.write(chunk));
+    const runtimeWorker = worker;
+    let runtimePid = runtimeWorker.pid;
+    runtimeWorker.once('spawn', () => { runtimePid = runtimeWorker.pid; });
+    observeDiagnosticStream(runtimeWorker.stderr, 'runtime', () => runtimePid, 'stderr');
+    observeDiagnosticStream(runtimeWorker.stdout, 'runtime', () => runtimePid, 'stdout');
     await new Promise<void>((resolve, reject) => {
+      worker!.once('exit', code => diagnostic('runtime','process-exit',`code=${code}`,
+        code === 0 || stoppedRuntimeWorkers.has(runtimeWorker) ? 'info' : 'error', {pid:runtimePid}));
       worker!.once('exit', (code) => reject(new Error('Runtime exited: ' + code)));
       worker!.on('message', (message) => {
         if (message.type === 'ready') {
@@ -666,7 +688,8 @@ void app
           else pending.resolve(response.result);
         }
         else if (message.type === 'refresh') {
-          window?.webContents.send('projector:refresh');
+          if (quitting) return;
+          workspaceRefresh();
           void browser
             ?.refreshAnnotations()
             .catch((error) => console.error('Browser annotation refresh failed', error));
@@ -746,13 +769,16 @@ void app
     }
     await applicationWorkspace.save();
     ipcMain.handle('projector:invoke', async (event, name: string, args: unknown) => {
+      const diagnosticArgs = args && typeof args === 'object' ? Object.fromEntries(Object.entries(args).filter(([key]) => ['artifactId','revisionId','paneId','key','action','projectId','operationId'].includes(key))) : {};
+      diagnostic('main','ipc-request',JSON.stringify({name,...diagnosticArgs}),'info');
       const source = new URL(event.senderFrame?.url ?? 'about:blank');
       const trusted =
         (source.hostname === 'app' && source.protocol === 'projector:') ||
         (Boolean(developmentUrl) && event.senderFrame?.url.startsWith(developmentUrl!));
       if (!trusted || event.senderFrame !== event.sender.mainFrame)
         throw new Error('Untrusted IPC sender');
-      if (quitting) throw new Error('Projector is shutting down.');
+      try {
+      if (quitting) return { __projectorLifecycle: 'shutdown', code: 'SHUTTING_DOWN', message: 'Projector is shutting down.' };
       if (name === 'shortcutCapture') {
         const { active } = z.object({ active: z.boolean() }).strict().parse(args);
         shortcutCapture = active;
@@ -853,6 +879,7 @@ void app
       }
       if (['terminalScreen', 'terminalReplay', 'terminalInput', 'terminalResize', 'terminalStop', 'terminalRestart'].includes(name)) {
         const value = z.object({ id: z.string().min(1), data: z.string().max(1024 * 1024).optional(),
+          encoding: z.enum(['utf8', 'binary']).optional(),
           viewId: z.string().min(1).optional(), cols: z.number().int().min(2).max(500).optional(),
           rows: z.number().int().min(1).max(300).optional(), active: z.boolean().optional(),
           afterSeq: z.number().int().nonnegative().optional() }).strict().parse(args);
@@ -860,12 +887,11 @@ void app
         if (name === 'terminalReplay') return terminals.replay(value.id, value.afterSeq ?? 0);
         if (name === 'terminalInput') {
           if (!value.viewId || value.data === undefined) throw new Error('Invalid terminal input');
-          await terminals.input(value.id, value.data, value.viewId); return { accepted: true };
+          await terminals.input(value.id, value.data, value.viewId, value.encoding); return { accepted: true };
         }
         if (name === 'terminalResize') {
           if (!value.viewId || value.cols === undefined || value.rows === undefined) throw new Error('Invalid terminal dimensions');
-          await terminals.resize(value.id, { cols: value.cols, rows: value.rows, viewId: value.viewId, active: value.active === true });
-          return { resized: true };
+          return terminals.resize(value.id, { cols: value.cols, rows: value.rows, viewId: value.viewId, active: value.active === true });
         }
         if (name === 'terminalStop') {
           if (!window) throw new Error('Terminal window unavailable');
@@ -1197,8 +1223,21 @@ void app
       if (name === 'browserViews' && browser) {
         const value = z.object({ views: z.array(z.object({ viewId: z.string().min(1), tabId: z.string().optional(),
           active: z.boolean(), bounds: z.object({ x: z.number().finite(), y: z.number().finite(),
-            width: z.number().finite().positive(), height: z.number().finite().positive() }) })).max(64) }).strict().parse(args);
+            width: z.number().finite().positive(), height: z.number().finite().positive() }) })).max(64),
+          workspaceKey: z.string().optional(), tabId: z.string().nullable().optional(), paneIds: z.array(z.string()).optional()
+        }).strict().refine(value => value.workspaceKey === undefined
+          ? value.tabId === undefined && value.paneIds === undefined
+          : value.tabId !== undefined && value.paneIds !== undefined, 'INCOMPLETE_BROWSER_VIEW_OWNER').parse(args);
         const key = applicationWorkspace.snapshot().selectedWorkspace;
+        if (value.workspaceKey !== undefined) {
+          const owner = key ? applicationWorkspace.workspace(key) : null;
+          const tab = owner?.tabs.find(tab => tab.id === owner.activeTabId);
+          const ids = tab ? paneLeaves(tab.root).map(pane => pane.id) : [];
+          if (key !== value.workspaceKey || applicationWorkspace.snapshot().selectedSurface === 'project'
+            || owner?.activeTabId !== value.tabId || ids.length !== value.paneIds!.length
+            || ids.some((id, index) => id !== value.paneIds![index]))
+            return { updated: false, reason: 'view-changed' };
+        }
         if (!key || applicationWorkspace.snapshot().selectedSurface === 'project') { browser.setVisibleViews([]); return { updated: true }; }
         const current = applicationWorkspace.workspace(key);
         const selected = current.tabs.find(tab => tab.id === current.activeTabId);
@@ -1607,7 +1646,15 @@ void app
         'demo',
       ];
       if (!allowed.includes(name)) throw new Error('Unsupported operator command');
-      return rpc(name, args);
+      return await rpc(name, args);
+      } catch (error) {
+        // A request admitted before Quit can reach the runtime after its write
+        // queue stops accepting work. Keep the rejection typed across Electron
+        // IPC, as for requests received after the lifecycle notification.
+        if (quitting && error instanceof Error && 'code' in error && error.code === 'SHUTTING_DOWN')
+          return { __projectorLifecycle: 'shutdown', code: 'SHUTTING_DOWN', message: 'Projector is shutting down.' };
+        throw error;
+      }
     });
     const activeKey = applicationWorkspace.snapshot().selectedWorkspace;
     const active = activeKey ? applicationWorkspace.workspace(activeKey) : null;

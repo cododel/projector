@@ -1,8 +1,10 @@
+import { installProcessDiagnostics } from '../../src/shared/test-diagnostics';
 import { app } from 'electron';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TerminalManager } from '../../src/main/terminals';
 import { TerminalOutputReader } from '../../src/renderer/terminal-output';
+installProcessDiagnostics('main');
 const data = process.argv[2],
   servicePath = process.argv[3];
 app.setPath('userData', data);
@@ -46,6 +48,8 @@ void app.whenReady().then(async () => {
     )
       throw new Error('Wrong PTY content, history or viewport.');
     await manager.shutdown();
+    const retiredResize = await manager.resize(record.id, {cols:101,rows:37,viewId:'pane',active:true});
+    if (retiredResize.resized) throw new Error('Shutdown terminal accepted a view resize.');
     stage = 'restart without terminal history';
     manager = new TerminalManager({
       onOutput: (output) => {

@@ -1,10 +1,10 @@
 import {
   test,
   expect,
-  _electron as electron,
+  electron,
   type ElectronApplication,
   type Page,
-} from '@playwright/test';
+} from './test';
 import { build } from 'esbuild';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -445,6 +445,76 @@ test('live hover selects a table cell and markers follow DOM geometry, sticky sc
   await expect.poll(async () => (await nativeMarkerBounds()).length).toBe(0);
 });
 
+test('queued overlay pointer traffic retires when selection closes without acting on a later tool', async ({ diagnostics }) => {
+  const tab = await app.evaluate(async (_electron, url) =>
+    globalThis.browserTest.manager.open({ artifactId: 'artifact-a', projectId: 'project-a', url }), url);
+  const external = await pageAt(page => page.url() === url);
+  await expect(external.getByRole('heading', { name: 'External page', exact: true })).toBeVisible();
+  const activate = () => app.evaluate(async ({ BrowserWindow }, id) => {
+    const [width, height] = BrowserWindow.getAllWindows()[0].getContentSize();
+    // The fixture shell's load can still be finishing when its first window
+    // becomes observable. Project real native bounds explicitly before Annotate.
+    globalThis.browserTest.manager.setVisibleViews([{ viewId: 'queued-pointer-pane',
+      tabId: id, active: true, bounds: { x: 20, y: 80, width: width - 60, height: height - 160 } }]);
+    await globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' });
+  }, tab.id);
+  await activate();
+  const overlay = await pageAt(page => page.url().startsWith('data:text/html;base64,'));
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+  await app.evaluate(({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find(contents => contents.getURL() === url)!;
+    const original = contents.executeJavaScriptInIsolatedWorld.bind(contents);
+    const gate = { held: false, release: (() => {}) as () => void };
+    Object.assign(globalThis, { queuedOverlayProbe: gate });
+    contents.executeJavaScriptInIsolatedWorld = async (...args) => {
+      const result = await original(...args);
+      if (!gate.held && args[1].some(script => script.code.includes('document.elementFromPoint('))) {
+        gate.held = true;
+        await new Promise<void>(resolve => { gate.release = resolve; });
+      }
+      return result;
+    };
+  }, url);
+  await overlay.evaluate(() => {
+    const bridge = (window as unknown as { projectorCapture: { invoke(action: string, value: unknown): Promise<unknown> } }).projectorCapture;
+    const results = ['pending', 'pending'];
+    Object.assign(window, { queuedHoverResults: results });
+    for (let index = 0; index < 2; index++)
+      void bridge.invoke('hover', { x: 60 + index, y: 50 }).then(
+        () => { results[index] = 'resolved'; },
+        error => { results[index] = String(error); },
+      );
+  });
+  await expect.poll(() => app.evaluate(() =>
+    (globalThis as unknown as { queuedOverlayProbe: { held: boolean } }).queuedOverlayProbe.held)).toBe(true);
+  await app.evaluate(() => globalThis.browserTest.manager.select(null));
+  await app.evaluate(() =>
+    (globalThis as unknown as { queuedOverlayProbe: { release(): void } }).queuedOverlayProbe.release());
+  await expect.poll(() => overlay.evaluate(() =>
+    (window as unknown as { queuedHoverResults: string[] }).queuedHoverResults)).toEqual([
+      'Error: CAPTURE_CHANGED: The annotation tool was closed. Select again.',
+      'Error: CAPTURE_CHANGED: The annotation tool was closed. Select again.',
+    ]);
+  expect(await app.evaluate(() => globalThis.browserTest.manager.snapshot().annotating)).toBe(false);
+  expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(0);
+
+  await activate();
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+  diagnostics.phase('invalid-active-pointer');
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'invalid-active-pointer',
+    message: /^Error occurred in handler for 'projector:browser-overlay': Error: INVALID_POINTER\n[\s\S]*$/, count: 1 });
+  const invalid = await overlay.evaluate(async () => {
+    const bridge = (window as unknown as { projectorCapture: { invoke(action: string, value: unknown): Promise<unknown> } }).projectorCapture;
+    try { await bridge.invoke('hover', { x: 100000, y: 50 }); return 'resolved'; }
+    catch (error) { return String(error); }
+  });
+  expect(invalid).toContain('INVALID_POINTER');
+  diagnostics.phase('test');
+  const fresh = await overlay.evaluate(async () =>
+    (window as unknown as { projectorCapture: { invoke(action: string, value: unknown): Promise<{ rect?: { width: number } }> } }).projectorCapture.invoke('hover', { x: 60, y: 50 }));
+  expect(fresh.rect!.width).toBeGreaterThan(0);
+});
+
 test('history push/replace/hash entries hide mismatched markers and back recovers matching page identity', async () => {
   const tab = await app.evaluate(
     async (_electron, url) =>
@@ -718,6 +788,34 @@ test('unrelated continuous updates do not prevent capturing a stable selected el
   };
   expect(draft.capture.source.pointer).toEqual({ x: 60, y: 50 });
   expect(Buffer.from(draft.capture.png, 'base64').subarray(1, 4).toString()).toBe('PNG');
+});
+
+test('disposing a browser owner retires IPC from an overlay whose native close is still pending', async () => {
+  const tab = await app.evaluate(async (_electron, url) =>
+    globalThis.browserTest.manager.open({artifactId:'artifact-a',projectId:'project-a',url}),url);
+  const external = await pageAt(page => page.url() === url);
+  await expect(external.getByRole('heading',{name:'External page',exact:true})).toBeVisible();
+  await app.evaluate(async (_electron,id) => globalThis.browserTest.manager.command({tabId:id,action:'annotate'}),tab.id);
+  const overlay = await pageAt(page => page.url().startsWith('data:text/html;base64,'));
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
+  await app.evaluate(({webContents}) => {
+    const contents = webContents.getAllWebContents().find(contents => contents.getURL().startsWith('data:text/html;base64,'))!;
+    const close = contents.close.bind(contents);
+    contents.close = () => {};
+    Object.assign(globalThis,{releaseRetiredOverlay:close});
+    globalThis.browserTest.manager.dispose();
+  });
+  try {
+    const result = await overlay.evaluate(async () => {
+      const bridge = (window as unknown as {projectorCapture:{invoke(action:string,value:unknown):Promise<unknown>}}).projectorCapture;
+      try { await bridge.invoke('hover',{x:60,y:50}); return 'resolved'; }
+      catch(error) { return String(error); }
+    });
+    expect(result).toBe('Error: CAPTURE_CHANGED: The annotation tool was closed. Select again.');
+    expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(0);
+  } finally {
+    await app.evaluate(() => (globalThis as unknown as {releaseRetiredOverlay():void}).releaseRetiredOverlay());
+  }
 });
 
 test('same-document history updates during tool activation do not cancel the uncaptured annotator', async () => {
@@ -1025,7 +1123,7 @@ test('external webContents destruction unregisters tabs and dispose is idempoten
   expect(tab.id).toBeTruthy();
 });
 
-test('browser finishComment flushes latest text, cancels empty and blocks transition on failed private write', async () => {
+test('browser finishComment flushes latest text, cancels empty and blocks transition on failed private write', async ({diagnostics}) => {
   const tab = await app.evaluate(
     async (_electron, url) =>
       globalThis.browserTest.manager.open({
@@ -1069,6 +1167,8 @@ test('browser finishComment flushes latest text, cancels empty and blocks transi
   await app.evaluate(() => {
     globalThis.browserTest.failDraft = true;
   });
+  diagnostics.phase('browser-draft-denied');
+  diagnostics.expect({role:'main',kind:'console-error',phase:'browser-draft-denied',message:/^Error occurred in handler for 'projector:browser-overlay': Error: DISK_WRITE_FAILED\b/,count:1});
   await failed.getByLabel('Area annotation comment').fill('Keep on disk failure');
   const message = await app.evaluate(async () => {
     try {

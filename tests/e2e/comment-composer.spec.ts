@@ -1,10 +1,10 @@
 import {
   test,
   expect,
-  _electron as electron,
+  electron,
   type ElectronApplication,
   type Page,
-} from '@playwright/test';
+} from './test';
 import { build } from 'esbuild';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

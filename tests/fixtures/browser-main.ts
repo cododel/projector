@@ -1,8 +1,10 @@
+import { observeElectron } from '../../src/main/test-diagnostics';
 import { app, BrowserWindow } from 'electron';
 import { join } from 'node:path';
 import { BrowserManager, type BrowserCapture } from '../../src/main/browser';
 import { auditE2EWindows, e2eWindowOptions } from '../../src/main/e2e-window';
 
+observeElectron(app);
 auditE2EWindows(app);
 app.setName('Projector Browser Test');
 app.setPath('userData', process.env.PROJECTOR_BROWSER_TEST_DATA!);

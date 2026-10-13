@@ -1,8 +1,8 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, electron } from './test';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
-import { execFile } from 'node:child_process';
+import { execFile } from '../support/process';
 import { promisify } from 'node:util';
 import { platform, release, totalmem, cpus } from 'node:os';
 import { performance } from 'node:perf_hooks';

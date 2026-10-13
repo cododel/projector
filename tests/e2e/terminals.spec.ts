@@ -2,15 +2,16 @@ import { newTerminal, workspaceAction } from './workspace-ui';
 import {
   test,
   expect,
-  _electron as electron,
+  electron,
   type ElectronApplication,
   type Page,
-} from '@playwright/test';
+} from './test';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'vite';
+import { createServer as createHttpServer } from 'node:http';
 import react from '@vitejs/plugin-react';
 import {
   paneLeaves,
@@ -26,12 +27,15 @@ interface Bridge {
 }
 let app: ElectronApplication | undefined;
 let developmentServer: Awaited<ReturnType<typeof createServer>> | undefined;
+let developmentHmrServer: ReturnType<typeof createHttpServer> | undefined;
 let root: string;
 test.afterEach(async () => {
   await app?.close();
   app = undefined;
   await developmentServer?.close();
   developmentServer = undefined;
+  if (developmentHmrServer?.listening) await new Promise<void>((done, reject) => developmentHmrServer!.close(error => error ? reject(error) : done()));
+  developmentHmrServer = undefined;
   if (root) await rm(root, { recursive: true, force: true });
 });
 async function invoke<T>(
@@ -103,11 +107,17 @@ async function setup(development = false) {
   await Promise.all([data, project, other].map((path) => mkdir(path)));
   let rendererUrl: string | undefined;
   if (development) {
+    // The custom app scheme has no HTTP port. Bind the WS endpoint before Vite
+    // injects its client so it receives a real localhost URL, rather than port 0.
+    developmentHmrServer = createHttpServer();
+    await new Promise<void>(done => developmentHmrServer!.listen(0, '127.0.0.1', done));
+    const hmrAddress = developmentHmrServer.address();
+    if (!hmrAddress || typeof hmrAddress === 'string') throw new Error('Missing development websocket address.');
     developmentServer = await createServer({
       configFile: false,
       root: resolve('src/renderer'),
       plugins: [react()],
-      server: { host: '127.0.0.1', port: 0 },
+      server: { host: '127.0.0.1', port: 0, hmr: { server: developmentHmrServer, protocol: 'ws', host: '127.0.0.1', clientPort: hmrAddress.port, port: hmrAddress.port } },
     });
     await developmentServer.listen();
     const address = developmentServer.httpServer!.address();
@@ -134,7 +144,7 @@ async function setup(development = false) {
   return { page, projectId, other, launch };
 }
 
-test('real terminal tabs, nested splits and project terminals keep independent ownership when views close', async () => {
+test('real terminal tabs, nested splits and project terminals keep independent ownership when views close', async ({ diagnostics }) => {
   const { page, projectId, other } = await setup();
   await newTerminal(page);
   await expect.poll(async () => (await snapshot(page)).terminals.length).toBe(1);
@@ -183,6 +193,8 @@ test('real terminal tabs, nested splits and project terminals keep independent o
     rows: 5,
     active: false,
   });
+  diagnostics.phase('inactive-view-input');
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'inactive-view-input', message: /^Error occurred in handler for 'projector:invoke': Error: Select the terminal pane before typing\.\n[\s\S]*code: 'TERMINAL_VIEW_INACTIVE'[\s\S]*$/, count: 1 });
   await expect(
     invoke(page, 'terminalInput', {
       id: first.id,
@@ -190,6 +202,7 @@ test('real terminal tabs, nested splits and project terminals keep independent o
       data: 'bad input\r',
     }),
   ).rejects.toThrow(/Select the terminal pane/);
+  diagnostics.phase('test');
   await expect
     .poll(async () => (await screen(page, first.id)).content)
     .toContain('\r\nACTIVE_VIEW\r\n');
@@ -421,7 +434,7 @@ test('terminal screen write failure stays visible and recovered saving plus live
   expect((await screen(page, streaming.id)).content).not.toContain('LIVE_HISTORY:0000');
 });
 
-test('utility crash removes ended processes and an explicit new terminal receives real xterm input', async () => {
+test('utility crash removes ended processes and an explicit new terminal receives real xterm input', async ({ diagnostics }) => {
   const { page, projectId } = await setup();
   await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
   const value = await snapshot(page),
@@ -435,6 +448,8 @@ test('utility crash removes ended processes and an explicit new terminal receive
     .toContain('CRASH_UI_READY');
   await input(page, terminal.id, pane.id, 'printf "\\nUNCONFIRMED_UI_OUTPUT\\n"\r');
   await expect(page.locator('.terminal-pane .xterm-rows')).toContainText('UNCONFIRMED_UI_OUTPUT');
+  diagnostics.phase('terminal-crash');
+  diagnostics.expect({ role: 'terminal-service', kind: 'process-exit', phase: 'terminal-crash', message: 'code=9', count: 1 });
   await app!.evaluate(({ app }) => {
     const helper = app.getAppMetrics().find((entry) => entry.name === 'Projector Terminals');
     if (!helper) throw new Error('Missing dedicated terminal utility service');
@@ -442,6 +457,7 @@ test('utility crash removes ended processes and an explicit new terminal receive
   });
   await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
   await expect.poll(() => alive(terminal.pid!)).toBe(false);
+  diagnostics.phase('test');
   await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
   const fresh = (await snapshot(page)).terminals[0];
   expect(fresh.id).not.toBe(terminal.id);
@@ -502,7 +518,7 @@ test('manual split follows source cwd and Quit removes both ended terminals', as
   expect((await snapshot(restoredPage)).workspaces[key].tabs).toEqual([]);
 });
 
-test('failed terminal removal offers Retry cleanup and retires the view after storage recovers', async () => {
+test('failed terminal removal offers Retry cleanup and retires the view after storage recovers', async ({ diagnostics }) => {
   const { page, projectId } = await setup();
   await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
   const terminal = (await snapshot(page)).terminals[0];
@@ -512,6 +528,9 @@ test('failed terminal removal offers Retry cleanup and retires the view after st
   });
   await rm(catalog);
   await mkdir(catalog);
+  diagnostics.phase('terminal-removal-failure');
+  diagnostics.expect({role:'terminal-service',kind:'retire-error',phase:'terminal-removal-failure',message:/^Error: EISDIR: illegal operation on a directory, rename '[^']+\/data\/terminals\/catalog\.json\.[0-9a-f-]+\.tmp' -> '[^']+\/data\/terminals\/catalog\.json'$/,count:1});
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'terminal-removal-failure', message: /^Error occurred in handler for 'projector:invoke': Error: Terminal operation failed\. Check input and local storage\.\n[\s\S]*code: 'TERMINAL_OPERATION_FAILED'[\s\S]*$/, count: 1 });
   await page.getByRole('button', { name: 'Stop terminal', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Retry terminal cleanup', exact: true }),
@@ -521,6 +540,7 @@ test('failed terminal removal offers Retry cleanup and retires the view after st
     id: terminal.id,
     error: expect.stringContaining('removed'),
   });
+  diagnostics.phase('test');
   await rm(catalog, { recursive: true });
   await page.getByRole('button', { name: 'Retry terminal cleanup', exact: true }).click();
   await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
@@ -746,6 +766,10 @@ for (const mode of ['mouse', 'arrows'])
     const rows = page.locator('.terminal-pane .xterm-rows');
     await expect(rows).toContainText('WHEEL_READY');
     await page.locator('.xterm-helper-textarea').focus();
+    // Seeing output does not prove that the initial PTY resize acknowledgement
+    // has arrived. Confirm the real input path before dispatching wheel events.
+    await page.locator('.xterm-helper-textarea').press('r');
+    await expect(rows).toContainText('WHEEL_INPUT_READY');
     const wheel = (deltaY: number, deltaMode = 1, deltaX = 0) =>
       page.locator('.xterm-screen').evaluate(
         (element, delta) => {
@@ -851,6 +875,8 @@ test('warmed wheel input is batched and measured through real PTY and DOM paint;
   await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
   await expect(page.locator('.xterm-rows')).toContainText('WHEEL_READY');
   await page.locator('.xterm-helper-textarea').focus();
+  await page.locator('.xterm-helper-textarea').press('r');
+  await expect(page.locator('.xterm-rows')).toContainText('WHEEL_INPUT_READY');
   await observeWheelPackets();
   const latencies: number[] = [],
     outputLatencies: number[] = [],
@@ -981,6 +1007,8 @@ test('wheel fractions reset across mouse mode changes and inactive panes cannot 
   const first = page.locator('.terminal-pane').first();
   await expect(first.locator('.xterm-rows')).toContainText('WHEEL_READY');
   await first.locator('.xterm-helper-textarea').focus();
+  await first.locator('.xterm-helper-textarea').press('r');
+  await expect(first.locator('.xterm-rows')).toContainText('WHEEL_INPUT_READY');
   await observeWheelPackets();
   const wheel = (deltaY: number) =>
     first.locator('.xterm-screen').evaluate((element, deltaY) => {
@@ -1038,4 +1066,63 @@ test('wheel fractions reset across mouse mode changes and inactive panes cannot 
   await expect(second).toHaveClass(/active/);
   await expect(second.locator('.xterm-helper-textarea')).toBeFocused();
   await expect(first.locator('.xterm-rows')).toContainText('SCROLL_UP=0 DOWN=2');
+});
+
+test('wheel input survives a pending real PTY resize acknowledgement as one packet without replay', async () => {
+  const { page, projectId } = await setup();
+  await invoke(page, 'applicationSettings', { ...(await snapshot(page)).settings,
+    shell: resolve('tests/fixtures/terminal-wheel.mjs'), shellArgs: ['mouse'] });
+  await command(page, projectId, 'newTerminal', {operationId:randomUUID()});
+  await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+  const rows = page.locator('.terminal-pane .xterm-rows');
+  await expect(rows).toContainText('WHEEL_READY');
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.locator('.xterm-helper-textarea').press('r');
+  await expect(rows).toContainText('WHEEL_INPUT_READY');
+  await observeWheelPackets();
+  const pid = await app!.evaluate(({app}) => {
+    const service = app.getAppMetrics().find(entry => entry.name === 'Projector Terminals');
+    if (!service) throw new Error('Missing owned terminal service');
+    return service.pid;
+  });
+  process.kill(pid,'SIGSTOP');
+  try {
+    await page.locator('.xterm-container').evaluate(async element => {
+      element.style.width = `${element.clientWidth - 60}px`;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    await page.locator('.xterm-screen').evaluate(async element => {
+      const rect = element.getBoundingClientRect();
+      element.dispatchEvent(new WheelEvent('wheel', {bubbles:true,cancelable:true,deltaY:5,deltaMode:1,clientX:rect.x+40,clientY:rect.y+40}));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    expect(await wheelPackets()).toEqual([]);
+  } finally { process.kill(pid,'SIGCONT'); }
+  await expect(rows).toContainText('SCROLL_UP=0 DOWN=5');
+  await expect.poll(async () => (await wheelPackets()).length).toBe(1);
+  expect((await wheelPackets())[0].data.split('\x1b[<').length - 1).toBe(5);
+});
+
+test('legacy xterm mouse reports preserve high coordinate bytes through binary IPC and a real PTY', async () => {
+  const {page,projectId} = await setup();
+  await app!.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].setSize(1800,900));
+  await invoke(page,'applicationSettings',{...(await snapshot(page)).settings,shell:resolve('tests/fixtures/terminal-wheel.mjs'),shellArgs:['binary']});
+  await command(page,projectId,'newTerminal',{operationId:randomUUID()});
+  await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+  const rows = page.locator('.terminal-pane .xterm-rows');
+  await expect(rows).toContainText('WHEEL_READY');
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.locator('.xterm-helper-textarea').press('r');
+  await expect(rows).toContainText('WHEEL_INPUT_READY');
+  const terminal = (await snapshot(page)).terminals[0];
+  const dimensions = await screen(page,terminal.id);
+  expect(dimensions.cols).toBeGreaterThan(110);
+  const col = 100, row = 2;
+  await page.locator('.xterm-screen').evaluate((element,{cols,rows,col,row}) => {
+    const rect = element.getBoundingClientRect();
+    element.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:1,deltaMode:1,
+      clientX:rect.x+(col+0.5)*rect.width/cols,clientY:rect.y+(row+0.5)*rect.height/rows}));
+  },{cols:dimensions.cols,rows:dimensions.rows,col,row});
+  const expected = Buffer.from([0x1b,0x5b,0x4d,0x61,col+33,row+33]).toString('hex');
+  await expect(rows).toContainText('BINARY_HEX:'+expected);
 });

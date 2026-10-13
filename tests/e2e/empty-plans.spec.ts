@@ -3,10 +3,10 @@ import { openProjectOverview } from './workspace-ui';
 import {
   test,
   expect,
-  _electron as electron,
+  electron,
   type ElectronApplication,
   type Page,
-} from '@playwright/test';
+} from './test';
 import { mkdtemp, mkdir, readFile, rm, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -64,7 +64,7 @@ async function menuItems() {
       }[],
   );
 }
-test('agent-created unpublished plan has native project actions and retains private browser capture through first publication', async () => {
+test('agent-created unpublished plan has native project actions and retains private browser capture through first publication', async ({ diagnostics }) => {
   root = await mkdtemp(join(tmpdir(), 'bp-empty-ui-'));
   const data = join(root, 'data'),
     project = join(root, 'project'),
@@ -104,10 +104,13 @@ test('agent-created unpublished plan has native project actions and retains priv
   const context = await mcp.tool('get_projector_context', {});
   const projectId = (context.project as {id: string}).id;
   const originSession = {harness: 'codex', sessionId: 'actual-empty-plan-agent'};
+  diagnostics.phase('unsupported-operator');
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'unsupported-operator', message: /^Error occurred in handler for 'projector:invoke': Error: Unsupported operator command\n[\s\S]*$/, count: 1 });
   await expect(page.evaluate(async projectId => {
     const bridge = (window as unknown as {projector: {invoke(name: string,args: Record<string,unknown>):Promise<unknown>}}).projector;
     await bridge.invoke('createEmptyPlan', {projectId, operationId: crypto.randomUUID()});
   }, projectId)).rejects.toThrow('Unsupported operator command');
+  diagnostics.phase('test');
   await expect(page.getByRole('button', { name: 'New plan in project', exact: true })).toHaveCount(0);
   const plan = await mcp.tool('create_artifact', {projectId, title: 'Untitled plan', kind: 'projector', originSession, operationId: randomUUID()});
   const artifactId = String(plan.artifactId);
@@ -256,6 +259,8 @@ test('agent-created unpublished plan has native project actions and retains priv
         );
     })
     .toContain(String(revision.revisionId));
+  diagnostics.phase('stale-document-request');
+  diagnostics.expect({ role: 'main', kind: 'console-error', phase: 'stale-document-request', message: /^Error occurred in handler for 'projector:invoke': Error: DOCUMENT_PANE_CHANGED: The document view has changed\.\n[\s\S]*$/, count: 1 });
   const stale = await page
     .frameLocator('iframe')
     .locator('body')
@@ -281,6 +286,7 @@ test('agent-created unpublished plan has native project actions and retains priv
       });
     }, artifactId);
   expect(stale.error).toContain('DOCUMENT_PANE_CHANGED');
+  diagnostics.phase('test');
   await app.evaluate(() =>
     (globalThis as unknown as { releasePlanRefresh(): void }).releasePlanRefresh(),
   );

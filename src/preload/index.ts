@@ -2,6 +2,17 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { TerminalOutput } from '../shared/terminal';
 import type { ShortcutAction } from '../shared/application-workspace';
 const terminalListeners = new Set<(output: TerminalOutput) => void>();
+let shuttingDown = false;
+const shutdownListeners = new Set<() => void>();
+function shutdownError() {
+  return Object.assign(new Error('Projector is shutting down.'), { code: 'SHUTTING_DOWN' });
+}
+function beginShutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  for (const callback of shutdownListeners) callback();
+}
+ipcRenderer.on('projector:shutdown', beginShutdown);
 ipcRenderer.on('projector:terminal-output', (_event, delivery: { deliveryId: string; output: TerminalOutput }) => {
   try {
     for (const callback of terminalListeners) {
@@ -11,8 +22,23 @@ ipcRenderer.on('projector:terminal-output', (_event, delivery: { deliveryId: str
 });
 contextBridge.exposeInMainWorld('projector', {
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
-  invoke: (method: string, params: unknown = {}) =>
-    ipcRenderer.invoke('projector:invoke', method, params),
+  invoke: async (method: string, params: unknown = {}) => {
+    if (shuttingDown) throw shutdownError();
+    const result: unknown = await ipcRenderer.invoke('projector:invoke', method, params);
+    if (result && typeof result === 'object' &&
+      '__projectorLifecycle' in result && result.__projectorLifecycle === 'shutdown' &&
+      'code' in result && result.code === 'SHUTTING_DOWN') {
+      beginShutdown();
+      throw shutdownError();
+    }
+    return result;
+  },
+  isShuttingDown: () => shuttingDown,
+  onShutdown: (callback: () => void) => {
+    shutdownListeners.add(callback);
+    if (shuttingDown) callback();
+    return () => shutdownListeners.delete(callback);
+  },
   onOperationStatus: (callback: (status: { waiting: boolean; operation?: string }) => void) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
@@ -22,7 +48,7 @@ contextBridge.exposeInMainWorld('projector', {
     return () => ipcRenderer.removeListener('projector:operation-status', listener);
   },
   onRefresh: (callback: () => void) => {
-    const listener = () => callback();
+    const listener = () => { if (!shuttingDown) callback(); };
     ipcRenderer.on('projector:refresh', listener);
     return () => ipcRenderer.removeListener('projector:refresh', listener);
   },

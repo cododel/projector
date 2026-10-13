@@ -1,3 +1,4 @@
+import { diagnostic, observeDiagnosticStream, bindDiagnosticError } from '../shared/test-diagnostics';
 import { utilityProcess, type UtilityProcess } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -61,6 +62,7 @@ export class TerminalManager {
     }
   >();
   private closing?: Promise<void>;
+  private stoppedWorkers = new WeakSet<Electron.UtilityProcess>();
   private records: TerminalRecord[] = [];
   private recovering: Promise<void> = Promise.resolve();
   private configuration?: { data: string; servicePath: string; options: TerminalOptions };
@@ -85,12 +87,17 @@ export class TerminalManager {
         serviceName: 'Projector Terminals',
       });
       this.worker = worker;
+      let servicePid = worker.pid;
+      worker.once('spawn', () => { servicePid = worker.pid; });
       const timeout = setTimeout(() => {
         worker.kill();
         reject(new Error('Terminal service did not become ready.'));
       }, 10000);
-      worker.stderr?.on('data', () => {});
-      worker.once('exit', () => {
+      observeDiagnosticStream(worker.stderr, 'terminal-service', () => servicePid, 'stderr');
+      observeDiagnosticStream(worker.stdout, 'terminal-service', () => servicePid, 'stdout');
+      worker.once('exit', (code) => {
+        diagnostic('terminal-service','process-exit',`code=${code}`,
+          code === 0 || this.stoppedWorkers.has(worker) ? 'info' : 'error', {pid:servicePid});
         clearTimeout(timeout);
         this.worker = undefined;
         this.startup = undefined;
@@ -109,7 +116,7 @@ export class TerminalManager {
             type: z.string(),
             id: z.string().optional(),
             result: z.unknown().optional(),
-            error: z.object({ code: z.string(), message: z.string() }).optional(),
+            error: z.object({ code: z.string(), message: z.string(), diagnosticId: z.string().uuid().optional() }).optional(),
             terminals: z.unknown().optional(),
             output: z.unknown().optional(),
           })
@@ -135,9 +142,11 @@ export class TerminalManager {
           if (!call) return;
           clearTimeout(call.timer);
           this.pending.delete(event.id);
-          if (event.error)
-            call.reject(Object.assign(new Error(event.error.message), { code: event.error.code }));
-          else call.resolve(event.result);
+          if (event.error) {
+            const failure = Object.assign(new Error(event.error.message), { code: event.error.code });
+            bindDiagnosticError(failure, event.error.diagnosticId);
+            call.reject(failure);
+          } else call.resolve(event.result);
         }
       });
     }).then(async () => {
@@ -213,11 +222,12 @@ export class TerminalManager {
       })
       .parse(await this.request('replay', { id, afterSeq }));
   }
-  async input(id: string, data: string, viewId: string) {
-    await this.request('input', { id, data, viewId });
+  async input(id: string, data: string, viewId: string, encoding: 'utf8' | 'binary' = 'utf8') {
+    await this.request('input', { id, data, viewId, encoding });
   }
   async resize(id: string, dimensions: TerminalResize) {
-    await this.request('resize', { id, ...dimensions });
+    if (this.closing) return { resized: false };
+    return z.object({resized:z.boolean()}).parse(await this.request('resize', { id, ...dimensions }));
   }
   async stop(id: string): Promise<void> {
     await this.ensure();
@@ -288,7 +298,9 @@ export class TerminalManager {
         await exited;
       } catch (error) {
         for (const entry of this.records)
-          if (entry.pid) await terminateOwnedProcessTree(entry.pid).catch(() => {});
+          if (entry.pid) await terminateOwnedProcessTree(entry.pid).catch(error =>
+            diagnostic('terminal-service','process-cleanup-error',String(error)));
+        this.stoppedWorkers.add(worker);
         worker.kill();
         await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 1000))]);
         if (this.worker === worker && worker.pid) process.kill(worker.pid, 'SIGKILL');

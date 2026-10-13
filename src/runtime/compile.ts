@@ -1,3 +1,4 @@
+import { diagnostic, observeWorkerError, observeDiagnosticStream } from '../shared/test-diagnostics';
 import { Worker } from 'node:worker_threads';
 import type { ParsedDocument } from '../document';
 import { ProjectorError } from '../shared/protocol';
@@ -9,8 +10,13 @@ export function compileDocument(source: string): Promise<ParsedDocument> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(process.env.PROJECTOR_COMPILER!, {
       workerData: source,
+      stdout: true,
+      stderr: true,
       resourceLimits: { maxOldGenerationSizeMb: 128 },
     });
+    const workerId = worker.threadId;
+    observeDiagnosticStream(worker.stdout, 'compiler', () => process.pid, 'stdout', workerId);
+    observeDiagnosticStream(worker.stderr, 'compiler', () => process.pid, 'stderr', workerId);
     let settled = false;
     const timer = setTimeout(() => {
       settled = true;
@@ -29,13 +35,15 @@ export function compileDocument(source: string): Promise<ParsedDocument> {
       else reject(new ProjectorError('BUILD_FAILED', 'Compiler returned no document'));
     });
     worker.once('error', (error) => {
+      observeWorkerError('compiler', workerId, error);
       settled = true;
       clearTimeout(timer);
       reject(new ProjectorError('BUILD_FAILED', error.message));
     });
     worker.once('exit', (code) => {
       clearTimeout(timer);
-      if (!settled)
+      if (!settled) {
+        diagnostic('compiler', 'worker-exit', `code=${code} without a document`, 'error', { workerId });
         reject(
           new ProjectorError(
             'BUILD_FAILED',
@@ -44,6 +52,7 @@ export function compileDocument(source: string): Promise<ParsedDocument> {
               : 'Compiler exited unsuccessfully',
           ),
         );
+      }
       settled = true;
     });
   });

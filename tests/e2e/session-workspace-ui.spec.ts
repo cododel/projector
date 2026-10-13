@@ -2,10 +2,10 @@ import { openProjectOverview, workspaceAction } from './workspace-ui';
 import {
   test,
   expect,
-  _electron as electron,
+  electron,
   type ElectronApplication,
   type Page,
-} from '@playwright/test';
+} from './test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -175,7 +175,7 @@ test('session document views share private answers and annotations while retaini
   expect(JSON.stringify(saved)).toContain('Second private value');
 });
 
-test('settings record shortcuts, protect edits and preserve plan workspaces and remove ended terminals when restoration is disabled', async () => {
+test('settings record shortcuts, protect edits and preserve plan workspaces and remove ended terminals when restoration is disabled', async ({diagnostics}) => {
   const { page, projectId, command } = await setup();
   await command('select', { sessionId: null });
   await page.getByRole('button', { name: 'Toggle project terminals', exact: true }).click();
@@ -334,6 +334,7 @@ test('settings record shortcuts, protect edits and preserve plan workspaces and 
   await dialog.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click();
   await record.click();
   await expect(record).toHaveText('Press combination…');
+  diagnostics.expect({role:'main',kind:'console-error',phase:'test',message:/^Error occurred in handler for 'projector:invoke': Error: SHORTCUT_CONFLICT\b/,count:1});
   await record.press('Meta+j');
   await expect(record).toHaveText('Mod+J');
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();

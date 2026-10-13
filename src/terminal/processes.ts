@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile } from '../shared/observed-exec';
 import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

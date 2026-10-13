@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { runtimeLimits } from '../src/shared/runtime-limits';
 import { ProjectorError } from '../src/shared/protocol';
 import { compileDocument } from '../src/runtime/compile';
+import { diagnostics } from './support/vitest-diagnostics';
 import { atomicText, commitDirectory, storageError } from '../src/runtime/files';
 
 const fault = vi.hoisted(() => ({ phase: '', code: 'ENOSPC' }));
@@ -76,6 +77,9 @@ describe('compiler lifecycle', () => {
     const script = join(await root(), 'empty.cjs');
     await writeFile(script, 'process.exit(0)');
     vi.stubEnv('PROJECTOR_COMPILER', script);
+    diagnostics().phase('empty-worker-exit');
+    diagnostics().expect({ role: 'compiler', kind: 'worker-exit', phase: 'empty-worker-exit',
+      message: 'code=0 without a document', count: 1 });
     await expect(compileDocument('hello')).rejects.toMatchObject({ code: 'BUILD_FAILED' });
   }, 500);
 });

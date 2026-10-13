@@ -1,5 +1,8 @@
+import { diagnostics } from './support/vitest-diagnostics';
+import { markChildStop } from '../src/shared/test-diagnostics';
 import { afterEach, expect, it } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from './support/process';
+import { type ChildProcess } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -10,7 +13,7 @@ const managers: CodexManager[] = [];
 const roots: string[] = [];
 const children: ChildProcess[] = [];
 afterEach(async () => {
-  for (const child of children.splice(0)) child.kill('SIGTERM');
+  for (const child of children.splice(0)) { markChildStop(child); child.kill('SIGTERM'); }
   await Promise.all(managers.splice(0).map((manager) => manager.stop()));
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -153,6 +156,7 @@ it('observes validated Projector MCP startup only from its owned upstream and ex
   });
   await gateway.status({ name: 'projector', status: 'failed', failureReason: 'unsupported' });
   expect(current().status).toBe('ready');
+  diagnostics().expect({role:'codex-manager',kind:'mcp-startup-error',phase:'test',message:'Synthetic MCP connection failure',count:1});
   await gateway.status({
     name: 'projector',
     status: 'failed',
@@ -192,6 +196,7 @@ it('keeps MCP startup observations separate per launch and ignores older pre-ide
   await until(() => state(first.launchId).sessionId === 'thread-exact-fixture');
   expect(state(first.launchId).status).toBe('ready');
   expect(state(second.launchId).status).toBe('unknown');
+  diagnostics().expect({role:'codex-manager',kind:'mcp-startup-error',phase:'test',message:'Other owned launch failed',count:1});
   await two.status({ name: 'projector', status: 'failed', error: 'Other owned launch failed' });
   expect(state(first.launchId).status).toBe('ready');
   expect(state(second.launchId).status).toBe('failed');
@@ -378,6 +383,8 @@ it('allows deferred terminal binding and resumes only the explicit session ID', 
 it('blocks an incorrect resume response and an incorrect read response instead of binding a different session', async () => {
   const wrongResume = await setup({ CODEX_FIXTURE_WRONG_RESUME: '1' });
   await wrongResume.manager.discover([{ id: 'project', path: wrongResume.project }]);
+  diagnostics().phase('wrong-resume');
+  diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'wrong-resume',message:'CODEX_THREAD_ID_MISMATCH',count:1});
   const launch = await wrongResume.manager.launchResume(
     'project',
     wrongResume.project,
@@ -393,6 +400,8 @@ it('blocks an incorrect resume response and an incorrect read response instead o
     wrongResume.manager.snapshot().sessions.some((value) => value.id === 'wrong-resume-id'),
   ).toBe(false);
   const wrongRead = await setup({ CODEX_FIXTURE_WRONG_READ: '1' });
+  diagnostics().phase('wrong-read');
+  diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'wrong-read',message:'CODEX_THREAD_ID_MISMATCH',count:1});
   await expect(wrongRead.manager.read('thread-exact-fixture')).rejects.toThrow(
     'CODEX_THREAD_ID_MISMATCH',
   );
@@ -417,6 +426,7 @@ it('rejects unauthenticated or browser-origin access to the TUI control gateway'
 });
 it('does not launch an unsupported version or accept an override of user policy', async () => {
   const { manager, project, audit } = await setup({ CODEX_FIXTURE_VERSION: '0.999.0' });
+  diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'test',message:'CODEX_VERSION_UNQUALIFIED: 0.999.0; qualified 0.162.1',count:1});
   await expect(manager.launchNew('project', project)).rejects.toThrow('CODEX_VERSION_UNQUALIFIED');
   expect((await auditRequests(audit)).every((value) => !value.args?.includes('app-server'))).toBe(
     true,
@@ -515,6 +525,7 @@ it('resumes a known fork by its exact thread ID rather than its session-tree roo
 
 it('drains a backend still starting when Quit begins and never hands out a live launch afterward', async () => {
   const { manager, project, audit } = await setup({ CODEX_FIXTURE_BACKEND_DELAY: '250' });
+  diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'test',message:'CODEX_MANAGER_STOPPED',count:1});
   const outcome = manager.launchNew('project', project).then(
     () => 'unexpected-live-launch',
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
@@ -532,6 +543,25 @@ it('drains a backend still starting when Quit begins and never hands out a live 
   await manager.stop();
   expect(await outcome).toBe('CODEX_MANAGER_STOPPED');
   expect(manager.snapshot().sessions).toEqual([]);
+});
+it('finishes read-only discovery crossing Quit without starting a client or reporting a failure', async () => {
+  const { manager, project, audit, errors } = await setup();
+  const discovery = manager.discover([{ id: 'project', path: project }]);
+  await manager.stop();
+  await expect(discovery).resolves.toEqual([]);
+  expect(errors).toEqual([]);
+  expect((await auditRequests(audit).catch(() => [])).some(request => request.kind === 'spawn')).toBe(false);
+});
+it('cancels an admitted history read with the explicit shutdown cause while retaining its catalog', async () => {
+  const environment: Record<string, string> = {};
+  const { manager, root, project, errors } = await setup(environment);
+  const gate = join(root, 'quit-list-gate');
+  environment.CODEX_FIXTURE_LIST_GATE = gate;
+  const discovery = manager.discover([{ id:'project', path:project }]);
+  await expect.poll(() => readFile(gate + '.waiting', 'utf8').catch(() => '')).toBe('waiting');
+  await manager.stop();
+  await expect(discovery).resolves.toEqual([]);
+  expect(errors).toEqual([]);
 });
 it('archives and undoes the exact thread without resuming it or losing its workspace identity', async () => {
   const { manager, project, audit } = await setup();
@@ -563,6 +593,7 @@ it.each(['before', 'after'])(
   async (failure) => {
     const { manager, project, audit } = await setup({ CODEX_FIXTURE_ARCHIVE_FAILURE: failure });
     await manager.discover([{ id: 'project', path: project }]);
+    if (failure === 'before') diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'test',message:'CODEX_RPC_FAILED: {"code":-32603,"message":"Archive refused"}',count:1});
     const operation = manager.setArchived('thread-exact-fixture', true);
     if (failure === 'before') {
       await expect(operation).rejects.toThrow('CODEX_RPC_FAILED');
@@ -587,6 +618,7 @@ it('rejects an undo response for another thread', async () => {
   const { manager, project } = await setup({ CODEX_FIXTURE_WRONG_UNARCHIVE: '1' });
   await manager.discover([{ id: 'project', path: project }]);
   await manager.setArchived('thread-exact-fixture', true);
+  diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'test',message:'CODEX_THREAD_ID_MISMATCH',count:1});
   await expect(manager.setArchived('thread-exact-fixture', false)).rejects.toThrow(
     'CODEX_THREAD_ID_MISMATCH',
   );
@@ -595,6 +627,7 @@ it('rejects an undo response for another thread', async () => {
 it('reports an active writer as a session conflict without starting or resuming a process', async () => {
   const { manager, project, audit } = await setup({ CODEX_FIXTURE_ACTIVE_WRITER: 'thread-exact-fixture' });
   await manager.discover([{ id: 'project', path: project }]);
+  diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'test',message:'CODEX_SESSION_IN_USE: This session is already in use by another Codex process. Return to the existing launch, or retry after it releases the session. Projector will not take it over.',count:1});
   await expect(manager.launchResume('project', project, 'thread-exact-fixture')).rejects.toThrow('CODEX_SESSION_IN_USE: This session is already in use by another Codex process.');
   expect(manager.snapshot().sessions.find(session => session.id === 'thread-exact-fixture')?.processState).toBe('unknown');
   expect(manager.snapshot().mcpStartup).toHaveLength(0);

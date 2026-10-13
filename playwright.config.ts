@@ -1,5 +1,8 @@
+// Test workers enable FORCE_COLOR; avoid the contradictory inherited Node flag.
+delete process.env.NO_COLOR;
 import { defineConfig } from '@playwright/test';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { availableParallelism } from 'node:os';
 
 // Direct `playwright test` and opt-in Codex tests use the same safe default.
@@ -12,6 +15,7 @@ process.env.CODEX_FIXTURE_EMPTY = '1';
 
 export default defineConfig({
   testDir: 'tests/e2e',
+  outputDir: resolve('.tmp/test-results', randomUUID()),
   testIgnore: '**/stage-performance.spec.ts',
   // Hidden scenarios have disposable app data, sockets and dynamically assigned ports.
   // Visible windows share OS focus and must remain sequential.

@@ -1,3 +1,4 @@
+import { diagnostic, installProcessDiagnostics, errorDiagnosticId } from '../shared/test-diagnostics';
 import { z } from 'zod';
 import { TerminalService, TerminalError } from './engine';
 import type {
@@ -7,6 +8,7 @@ import type {
   TerminalOutput,
   TerminalRequest,
 } from '../shared/terminal';
+installProcessDiagnostics('terminal-service');
 const data = process.env.PROJECTOR_DATA;
 if (!data || !process.parentPort) throw new Error('Terminal service must be launched by Projector');
 let pendingBytes = 0;
@@ -62,7 +64,8 @@ async function operation(request: TerminalRequest): Promise<unknown> {
       args?.options as Pick<CreateTerminal, 'executable' | 'args' | 'env'> | undefined,
     );
   if (request.method === 'input')
-    return engine.input(id, z.string().parse(args?.data), z.string().parse(args?.viewId));
+    return engine.input(id, z.string().parse(args?.data), z.string().parse(args?.viewId),
+      z.enum(['utf8', 'binary']).optional().parse(args?.encoding));
   if (request.method === 'resize')
     return engine.resize(id, {
       cols: z.number().parse(args?.cols),
@@ -105,6 +108,7 @@ process.parentPort.on('message', (event) => {
           id: request.data.id,
           error: {
             code: error instanceof TerminalError ? error.code : 'TERMINAL_OPERATION_FAILED',
+            ...(errorDiagnosticId(error) ? { diagnosticId: errorDiagnosticId(error) } : {}),
             message:
               error instanceof TerminalError
                 ? error.message
@@ -114,7 +118,7 @@ process.parentPort.on('message', (event) => {
         if (request.data.method === 'shutdown') setImmediate(() => process.exit(1));
       }
     })
-    .catch(() => {});
+    .catch(error => { diagnostic('terminal-service', 'ipc-send-error', String(error), 'error', {stack: error instanceof Error ? error.stack : undefined}); });
 });
 const close = () => {
   if (quitting) return;

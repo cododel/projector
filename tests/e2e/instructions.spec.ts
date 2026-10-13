@@ -1,5 +1,7 @@
-import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
-import { spawn, spawnSync } from 'node:child_process';
+import { markChildStop } from '../../src/shared/test-diagnostics';
+import { test, expect, electron, type ElectronApplication } from './test';
+import { spawn } from '../support/process';
+import { spawnSync } from '../support/process';
 import { createServer } from 'node:http';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -90,6 +92,8 @@ test('Codex delivers Projector server instructions to its model request without 
     const overrides = {
       model_provider: 'projector_delivery_probe',
       model: 'gpt-5.4',
+      'features.plugins': true,
+      'features.remote_plugin': false,
       'model_providers.projector_delivery_probe.name': 'Local delivery probe',
       'model_providers.projector_delivery_probe.base_url': `http://127.0.0.1:${address.port}/v1`,
       'model_providers.projector_delivery_probe.wire_api': 'responses',
@@ -163,7 +167,7 @@ test('Codex delivers Projector server instructions to its model request without 
       'Draft feedback is private until Save; approval does not authorize implementation.',
     );
   } finally {
-    if (child && child.exitCode === null) child.kill('SIGTERM');
+    if (child && child.exitCode === null) { markChildStop(child); child.kill('SIGTERM'); }
     await app?.close();
     server.closeAllConnections();
     await new Promise<void>((done) => server.close(() => done()));

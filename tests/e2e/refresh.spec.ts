@@ -2,10 +2,10 @@ import { openProjectOverview } from './workspace-ui';
 import {
   test,
   expect,
-  _electron as electron,
+  electron,
   type ElectronApplication,
   type Page,
-} from '@playwright/test';
+} from './test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -303,4 +303,17 @@ test('switching drains pending answer and annotation acknowledgements before lea
     annotation: 'Pending private annotation',
     source: { revisionId: a.revisionId },
   });
+});
+
+
+test('a detached document cannot claim a null message source or create an unhandled reply', async () => {
+  const {page,a} = await start();
+  await installGate();
+  await page.locator('iframe').evaluate(frame => frame.remove());
+  await page.evaluate(({artifactId,revisionId}) => {
+    window.dispatchEvent(new MessageEvent('message',{origin:'projector://document',source:null,data:{type:'projector-request',id:'detached-null-request',method:'getDocument',params:{artifactId,revisionId}}}));
+  },a);
+  // Flush queued application work; the forged detached source must not reach IPC.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  expect(await requests('paneDocument')).toEqual([]);
 });
