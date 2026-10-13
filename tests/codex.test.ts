@@ -669,3 +669,25 @@ it('retains exact live ownership when discovery finishes after Resume identifica
     'CODEX_SESSION_ALREADY_RUNNING',
   );
 });
+
+it('removes an unstarted session after its backend closes', async () => {
+  const { manager, project, identities } = await setup({ CODEX_FIXTURE_EMPTY: '1' });
+  await manager.discover([{ id: 'project', path: project }]);
+  const launch = await manager.launchNew('project', project);
+  manager.bindTerminal(launch.launchId, 'unstarted-terminal');
+  children.push(spawn(launch.executable, launch.args, { cwd: launch.cwd, env: launch.env, stdio: 'ignore' }));
+  await until(() => identities.length === 1);
+  expect(manager.snapshot().sessions).toHaveLength(1);
+  await manager.terminalStopped('unstarted-terminal');
+  expect(manager.snapshot().sessions).toEqual([]);
+});
+
+it('reconciles an unavailable empty session without hiding failures for persisted threads', async () => {
+  const empty = await setup({ CODEX_FIXTURE_EMPTY: '1', CODEX_FIXTURE_UNLOADED: 'thread-exact-fixture' });
+  await expect(empty.manager.read('thread-exact-fixture')).rejects.toThrow('CODEX_SESSION_UNAVAILABLE');
+  expect(empty.manager.snapshot().error).toBeNull();
+  const persisted = await setup({ CODEX_FIXTURE_UNLOADED: 'thread-exact-fixture' });
+  diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'test',message:'CODEX_RPC_FAILED: {"code":-32600,"message":"thread not loaded: thread-exact-fixture"}',count:1});
+  await expect(persisted.manager.read('thread-exact-fixture')).rejects.toThrow('thread not loaded');
+  expect(persisted.manager.snapshot().sessions.some(session => session.id === 'thread-exact-fixture')).toBe(true);
+});

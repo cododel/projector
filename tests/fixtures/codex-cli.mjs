@@ -182,6 +182,10 @@ if (args.includes('--remote')) {
         break;
       }
       case 'thread/read':
+        if (process.env.CODEX_FIXTURE_UNLOADED === value.params.threadId) {
+          send({ id: value.id, error: { code: -32600, message: `thread not loaded: ${value.params.threadId}` } });
+          return;
+        }
         if (process.env.CODEX_FIXTURE_ACTIVE_WRITER === value.params.threadId) {
           send({ id: value.id, error: { code: -32600, message: `thread ${value.params.threadId} already has an active writer` } });
           return;

@@ -227,7 +227,7 @@ class DiscoveryClient {
           /^thread \S+ already has an active writer$/.test(error.data.message);
         pending.reject(new Error(activeWriter
           ? 'CODEX_SESSION_IN_USE: This session is already in use by another Codex process. Return to the existing launch, or retry after it releases the session. Projector will not take it over.'
-          : 'CODEX_RPC_FAILED: ' + JSON.stringify(value.error)));
+          : 'CODEX_RPC_FAILED: ' + JSON.stringify(value.error), { cause: value.error }));
       } else pending.resolve(value.result);
     } catch {
       this.fail(new Error('CODEX_PROTOCOL_INVALID_MESSAGE'));
@@ -551,6 +551,17 @@ export class CodexManager {
       this.changed();
       return { ...session };
     } catch (error) {
+      const rpc = z.object({ code: z.number(), message: z.string() }).safeParse(
+        error instanceof Error ? error.cause : undefined,
+      );
+      if (rpc.success && rpc.data.code === -32600 && rpc.data.message === `thread not loaded: ${sessionId}`) {
+        // Confirm absence through authoritative history, rather than treating
+        // every not-loaded response as a deleted or empty session.
+        await this.discover(this.projects);
+        if (!this.sessions.has(sessionId)) {
+          throw new Error('CODEX_SESSION_UNAVAILABLE: This session is no longer available in Codex. Start a new session.', { cause: error });
+        }
+      }
       this.failed(error);
       throw error;
     }
@@ -1013,9 +1024,17 @@ export class CodexManager {
     const cleanup = Promise.all([
       new Promise<void>((done) => record.server.close(() => done())),
       terminate(record.child),
-    ]).then(() => {
+    ]).then(async () => {
       this.launches.delete(record.id);
       this.changed();
+      // A new thread has no persisted rollout until its first turn. Once its
+      // backend exits, refresh authoritative history instead of retaining a
+      // stopped, unresumable entry in the UI. Keep workspaces independently.
+      if (record.sessionId && !this.stopping) {
+        await this.discover(this.projects).catch(() => {
+          /* Discovery reports its own error; do not make cleanup fail. */
+        });
+      }
     });
     record.cleanup = cleanup;
     return cleanup;

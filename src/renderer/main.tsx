@@ -1620,7 +1620,17 @@ function App(): React.JSX.Element {
     windowWidth,
   );
   function renderSessionHome(sessionId: string): React.ReactNode {
-    const session = application?.harnesses.sessions.find(item => item.id === sessionId) ?? {
+    const knownSession = application?.harnesses.sessions.find(item => item.id === sessionId);
+    if (!knownSession && application && !application.harnesses.error) {
+      return <div className="session-home new-tab-home">
+        <h2>Session unavailable</h2>
+        <p className="muted">This session is no longer available in Codex.</p>
+        <button className="primary" disabled={busy} onClick={() => void applicationCommand('newCodex', {
+          operationId: crypto.randomUUID(),
+        })}>Start new session</button>
+      </div>;
+    }
+    const session = knownSession ?? {
       id: sessionId, title: 'Codex session', cwd: snapshot.projects.find(item => item.id === sessionWorkspace?.projectId)?.path ?? '',
       processState: 'unknown', terminalId: undefined,
     };
@@ -2436,6 +2446,8 @@ function App(): React.JSX.Element {
               />
             ) : selectedSession ? (
               renderSessionHome(selectedSession.id)
+            ) : sessionWorkspace?.sessionId && !application?.harnesses.error ? (
+              renderSessionHome(sessionWorkspace.sessionId)
             ) : (
               <div className="new-tab-home">
                 <h2>No open tabs</h2>
