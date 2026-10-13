@@ -1,8 +1,38 @@
 import { test, expect, electron } from './test';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+
+test('Quit continues cleanup after shell contents closes before native window retirement', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'projector-dead-shell-'));
+  const probe = join(root, 'probe.json');
+  const app = await electron.launch({ args: [resolve('.')], env: { ...process.env,
+    PROJECTOR_DATA: join(root, 'data'), PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'runtime.json'),
+  } });
+  const child = app.process();
+  try {
+    const page = await app.firstWindow();
+    await expect(page.getByRole('button', { name: 'Open project folder', exact: true })).toBeVisible();
+    await app.evaluate(({ app, BrowserWindow }, path) => {
+      const fs = process.getBuiltinModule('fs') as typeof import('node:fs');
+      const parent = BrowserWindow.getAllWindows().find(w => !w.getParentWindow())!;
+      const contents = parent.webContents;
+      // Real destruction reaches the brief native-window/WebContents lifetime
+      // mismatch. Do not mock isDestroyed or the notification send method.
+      contents.once('destroyed', () => {
+        fs.writeFileSync(path, JSON.stringify({ shellDestroyed: contents.isDestroyed(), windowAlive: !parent.isDestroyed() }));
+        app.quit();
+      });
+      contents.close({ waitForBeforeUnload: false });
+    }, probe);
+    await expect.poll(() => child.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(probe, 'utf8'))).toEqual({ shellDestroyed: true, windowAlive: true });
+  } finally {
+    if (child.exitCode === null) await app.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 for (const mode of ['notification', 'queued invoke'] as const) {
   test(`Quit stops refresh reads and rejects ${mode} while still cleaning its live terminal`, async () => {

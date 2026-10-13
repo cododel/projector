@@ -533,7 +533,8 @@ app.on('before-quit', (event) => {
   quitting = true;
   notifications?.dispose();
   notifications = null;
-  if (window && !window.isDestroyed()) window.webContents.send('projector:shutdown');
+  if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
+    window.webContents.send('projector:shutdown');
   void quitAfterCleanup();
 });
 async function quitAfterCleanup() {
