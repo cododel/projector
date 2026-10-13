@@ -22,7 +22,7 @@ export function ProjectSessionRow({
   const text = useRef<HTMLSpanElement>(null);
   const engaged = hovered || focused;
   const title = session.title || 'Codex session';
-  const tailWidth = (session.processState === 'running' ? 12 : 0) + (session.worktreePath ? 21 : 0);
+  const tailWidth = session.worktreePath ? 21 : 0;
   useEffect(() => {
     const container = viewport.current!,
       content = text.current!;
@@ -63,6 +63,9 @@ export function ProjectSessionRow({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
       }}
     >
+      {session.processState === 'running' && (
+        <span className="runtime-dot session-status-dot" role="img" aria-label="Session running" />
+      )}
       <button
         className="session-select"
         title={`${title} · ${session.id} · ${session.processState === 'unknown' ? 'Process state unknown' : session.processState}`}
@@ -79,7 +82,6 @@ export function ProjectSessionRow({
       </button>
       {actions}
       <span className="session-indicators">
-        {session.processState === 'running' && <span className="runtime-dot" />}
         {session.worktreePath && (
           <span
             className="session-worktree"

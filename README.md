@@ -28,6 +28,14 @@ pnpm start
 
 Closing the last window on macOS leaves the local runtime and owned terminal processes running. Use **Projector → Quit Projector** to stop them. Restoring a workspace never starts a shell or resumes Codex; both require an operator action. There is no LaunchAgent or Projector cloud account.
 
+## Interface catalog
+
+Run `pnpm storybook` for the local component/state catalog at `http://127.0.0.1:6006/`.
+Notifications and project session rows are the first included families. The coverage
+map tracks the remaining interfaces; the catalog is not yet complete. See
+[development catalog instructions](dev/README.md) for stories, browser/a11y checks,
+visual baselines and safe fixture boundaries.
+
 ## Connect Codex
 
 Open a project folder. When calling `create_artifact`, the agent supplies `originSession` for that artifact; no project-level session binding is required. If the agent does not know its session ID, it asks you. Two artifacts in one project may belong to different sessions. The session link in artifact properties is metadata, not confirmation that the harness is alive.

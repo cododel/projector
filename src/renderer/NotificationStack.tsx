@@ -132,7 +132,7 @@ export function NotificationStack({ notifications, visible, maxHeight, bridge, h
     measure(); const observer = new ResizeObserver(measure); observer.observe(stack.current!);
     return () => observer.disconnect();
   }, [bridge]);
-  return <div ref={stack} className="notification-stack" aria-label="Notifications"
+  return <div ref={stack} className="notification-stack" role="group" aria-label="Notifications"
     style={{ maxHeight: Math.max(1, maxHeight - 16), minHeight: leaving.length && !notifications.length ? Math.min(lastHeight.current, maxHeight - 16) : undefined }}
     onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); bridge.command({ type: 'blur' }); } }}>
     {displayed.map(notice => <Alert key={notice.id} notice={notice} lifetime={lifetime(notice.id)} leaving={false} visible={visible} windowFocused={windowFocused} nativeHover={hoveredId === undefined ? undefined : hoveredId === notice.id} bridge={bridge} />)}

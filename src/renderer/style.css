@@ -1961,6 +1961,6 @@ button > svg {
 .session-indicators { display: flex; align-items: center; justify-content: flex-end; width: var(--session-tail-width); flex: none; gap: 6px; }
 .session-worktree { display: inline-flex; align-items: center; color: var(--muted); width: 15px; }
 
-.session-indicators .runtime-dot { flex: none; margin-right: 0; }
+.project-session-row .session-status-dot { position: absolute; left: 8px; top: calc(50% - 3px); margin-right: 0; }
 
 .notification-access { flex: none; margin-right: 8px; font-size: 11px; }
