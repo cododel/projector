@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, webContents, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, ipcMain, screen, webContents, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { notificationsSchema, notificationCommandSchema, type Notification, type NotificationCommand } from '../shared/notifications';
 import { e2eWindowOptions } from './e2e-window';
 
@@ -36,6 +36,16 @@ export class NotificationOverlay {
   private shell: Electron.WebContents;
   private returnFocus: Electron.WebContents | null = null;
   private focusPending = false;
+  private pointerTimer: ReturnType<typeof setInterval> | null = null;
+  private samplePointer = () => {
+    if (!this.child || this.child.isDestroyed() || !this.ready || !this.child.isVisible()) return;
+    const point = screen.getCursorScreenPoint(), bounds = this.child.getBounds();
+    this.child.webContents.send('projector:notification-pointer', { x: point.x - bounds.x, y: point.y - bounds.y });
+  };
+  private stopPointer = () => {
+    if (this.pointerTimer) clearInterval(this.pointerTimer);
+    this.pointerTimer = null;
+  };
   private sync = () => {
     if (this.disposed || this.parent.isDestroyed() || !this.child || this.child.isDestroyed()) return;
     const bounds = this.parent.getContentBounds();
@@ -49,6 +59,13 @@ export class NotificationOverlay {
     if (this.ready) this.child.webContents.send('projector:notification-state', {
       notifications: this.notices, visible, maxHeight: Math.floor(bounds.height * 0.6),
     });
+    // Forwarded mousemove is not guaranteed for an ignored, inactive native child
+    // (or when a new alert appears under a stationary cursor). Sample only while
+    // visible; the renderer owns hit testing including rounded corners and gaps.
+    if (visible && this.ready && this.child.isVisible()) {
+      if (!this.pointerTimer) this.pointerTimer = setInterval(this.samplePointer, 32);
+      this.samplePointer();
+    } else this.stopPointer();
   };
   constructor(private parent: BrowserWindow, private preload: string) {
     this.shell = parent.webContents;
@@ -66,7 +83,7 @@ export class NotificationOverlay {
     return !this.disposed && event.sender === this.child?.webContents && event.senderFrame === event.sender.mainFrame;
   }
   private reset = (_event: unknown, _url: string, inPlace: boolean, mainFrame: boolean) => {
-    if (mainFrame && !inPlace) { this.notices = []; this.child?.hide(); }
+    if (mainFrame && !inPlace) { this.notices = []; this.child?.hide(); this.stopPointer(); }
   };
   publish(notices: Notification[]): void {
     this.notices = notices;
@@ -74,13 +91,13 @@ export class NotificationOverlay {
     if (!this.child && notices.length) {
       const child = new BrowserWindow(e2eWindowOptions({ parent: this.parent, frame: false, transparent: true,
         backgroundColor: '#00000000', hasShadow: false, resizable: false, movable: false,
-        minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true, show: false,
+        minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true, show: false, acceptFirstMouse: true,
         width: 544, height: 100, webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false } }));
       this.child = child;
       child.setIgnoreMouseEvents(true, { forward: true });
       child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       child.webContents.on('will-navigate', event => event.preventDefault());
-      child.on('closed', () => { this.child = null; this.ready = false; });
+      child.on('closed', () => { this.stopPointer(); this.child = null; this.ready = false; });
       const contents = child.webContents;
       void child.loadURL('projector://app/notifications.html').catch(error => {
         if (!this.disposed && !retired.has(contents)) console.error(error);
@@ -94,7 +111,7 @@ export class NotificationOverlay {
     else if (command.type === 'layout') {
       this.size = { width: Math.ceil(command.width), height: Math.ceil(command.height) };
       this.sync();
-      if (!this.notices.length && command.height <= 32) this.child.hide();
+      if (!this.notices.length && command.height <= 32) { this.child.hide(); this.stopPointer(); }
     } else if (command.type === 'pointer') this.child.setIgnoreMouseEvents(!command.interactive, { forward: true });
     else if (command.type === 'blur') {
       if (!this.parent.isVisible()) return;
@@ -117,6 +134,7 @@ export class NotificationOverlay {
     this.child.focus(); this.child.webContents.focus(); this.child.webContents.send('projector:notification-focus');
   }
   private retireChild(): void {
+    this.stopPointer();
     if (this.child && !this.child.isDestroyed()) {
       retired.add(this.child.webContents);
       this.child.destroy();

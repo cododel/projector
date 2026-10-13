@@ -13,5 +13,10 @@ const bridge: NotificationOverlayBridge = {
     ipcRenderer.on('projector:notification-focus', listener);
     return () => ipcRenderer.removeListener('projector:notification-focus', listener);
   },
+  onPointer: callback => {
+    const listener = (_event: Electron.IpcRendererEvent, point: { x: number; y: number }) => callback(point);
+    ipcRenderer.on('projector:notification-pointer', listener);
+    return () => ipcRenderer.removeListener('projector:notification-pointer', listener);
+  },
 };
 contextBridge.exposeInMainWorld('projectorNotifications', bridge);

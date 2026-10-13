@@ -5,7 +5,7 @@ import { NotificationStack } from '../src/renderer/NotificationStack';
 import { NotificationController } from '../src/renderer/notifications';
 import type { Notification, NotificationOverlayBridge } from '../src/shared/notifications';
 
-const staticBridge: NotificationOverlayBridge = { command() {}, onState: () => () => {}, onFocus: () => () => {} };
+const staticBridge: NotificationOverlayBridge = { command() {}, onState: () => () => {}, onFocus: () => () => {}, onPointer: () => () => {} };
 const notice = (id: string, level: Notification['level'], title: string, body?: string, actions: string[] = []): Notification => ({ id, source: 'storyboard', context: id, operation: id, level, title, body, pending: false, repeats: 1, lifetime: 'sticky', actions: actions.map(label => ({ id: label, label })) });
 const info = notice('info', 'info', 'Operation completed', 'Local changes are confirmed.');
 const warning = notice('warning', 'warning', 'Session is in use', 'Close its current Codex process, then try archiving again.', ['Retry']);

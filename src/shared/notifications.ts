@@ -33,6 +33,7 @@ export interface NotificationOverlayBridge {
   command(command: NotificationCommand): void;
   onState(callback: (state: { notifications: Notification[]; visible: boolean; maxHeight: number }) => void): () => void;
   onFocus(callback: () => void): () => void;
+  onPointer(callback: (point: { x: number; y: number }) => void): () => void;
 }
 
 /** Only elapsed time while the entire alert is visible consumes its lifetime. */

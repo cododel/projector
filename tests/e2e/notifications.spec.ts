@@ -235,6 +235,9 @@ test('interrupted native stack reflow continues from the current visual position
   await first.evaluate(el => { for (const animation of el.getAnimations()) if (animation.effect?.getTiming().duration === 180) animation.finish(); });
   await emit('reflow-second');
   await expect(overlay.locator('[data-operation="reflow-second"]')).toBeVisible();
+  // Compare painted positions: child measurements and ResizeObserver origins
+  // must be delivered before freezing the reflow, not a transient pre-paint DOM.
+  await overlay.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   const before = await first.evaluate(el => {
     const motion = el.getAnimations().filter(a => a.effect?.getTiming().duration === 220).at(-1);
     if (!motion) throw new Error('Expected production reflow animation');
@@ -301,4 +304,63 @@ test('explicit notification focus reaches controls after a cold child is created
   const visible = await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => !w.getParentWindow())!.isVisible());
   if (visible) await expect(cold.getByRole('button', { name: 'Dismiss Waiting for local storage', exact: true })).toBeFocused();
   else expect(await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.getParentWindow())!.isVisible())).toBe(false);
+});
+
+test('native hit testing recovers without mousemove and leaves gaps and rounded corners transparent', async () => {
+  const { overlay } = await setup();
+  const visible = await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => !w.getParentWindow())!.isVisible());
+  // Only cursor coordinates are doubled. The real dedicated preload, DOM hit test,
+  // sender validation and native ignore-mouse switch remain on the production path.
+  await app!.evaluate(({ BrowserWindow, screen }) => {
+    const child = BrowserWindow.getAllWindows().find(w => w.getParentWindow())!;
+    const probe = { point: { x: -10000, y: -10000 }, ignored: true, samples: 0 };
+    Object.assign(globalThis, { notificationPointerProbe: probe });
+    screen.getCursorScreenPoint = () => { probe.samples++; return probe.point; };
+    const original = child.setIgnoreMouseEvents.bind(child);
+    child.setIgnoreMouseEvents = (ignore, options) => { probe.ignored = ignore; original(ignore, options); };
+    child.setIgnoreMouseEvents(true, { forward: true });
+    const parent = child.getParentWindow()!;
+    for (let i = 0; i < 3; i++) parent.webContents.send('projector:operation-status', { waiting: true, operationId: `pointer-${i}`, operation: 'native hit-test fixture' });
+  });
+  const alerts = overlay.locator('.notification-alert:not(.leaving)');
+  await expect(alerts).toHaveCount(3);
+  // Use settled geometry, including actual CSS border radius, rather than a
+  // test implementation of which portions of the native window are clickable.
+  await expect(alerts.first()).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
+  await overlay.waitForFunction(() => [...document.querySelectorAll('.notification-alert')].every(el => !el.getAnimations().some(a => a.playState === 'running')));
+  expect(await alerts.evaluateAll(els => els.every(el => (el as HTMLElement).offsetHeight >= (el.querySelector('.notification-alert-content') as HTMLElement).offsetHeight + 2))).toBe(true);
+  const rects = await alerts.evaluateAll(els => els.map(el => el.getBoundingClientRect().toJSON()));
+  const dismiss = await alerts.first().locator('.alert-dismiss').boundingBox();
+  expect(dismiss).not.toBeNull();
+  const point = async (x: number, y: number) => app!.evaluate(({ BrowserWindow }, value) => {
+    const child = BrowserWindow.getAllWindows().find(w => w.getParentWindow())!, bounds = child.getBounds();
+    const probe = (globalThis as unknown as { notificationPointerProbe: { point: { x: number; y: number } } }).notificationPointerProbe;
+    probe.point = { x: bounds.x + value.x, y: bounds.y + value.y };
+  }, { x, y });
+  const ignored = () => app!.evaluate(() => (globalThis as unknown as { notificationPointerProbe: { ignored: boolean } }).notificationPointerProbe.ignored);
+  await point(dismiss!.x + dismiss!.width / 2, dismiss!.y + dismiss!.height / 2);
+  if (!visible) {
+    await overlay.waitForTimeout(100);
+    expect(await ignored()).toBe(true);
+    expect(await app!.evaluate(() => (globalThis as unknown as { notificationPointerProbe: { samples: number } }).notificationPointerProbe.samples)).toBe(0);
+    return;
+  }
+  await expect.poll(ignored).toBe(false);
+  await point(rects[0].x + 1, rects[0].y + 1);
+  await expect.poll(ignored).toBe(true);
+  await point(rects[0].x + rects[0].width / 2, rects[0].bottom + 4);
+  await expect.poll(ignored).toBe(true);
+  await point(dismiss!.x + dismiss!.width / 2, dismiss!.y + dismiss!.height / 2);
+  await expect.poll(ignored).toBe(false);
+  // No synthetic mousemove primes the overlay before this click.
+  await app!.evaluate(({ BrowserWindow }, point) => {
+    const contents = BrowserWindow.getAllWindows().find(w => w.getParentWindow())!.webContents;
+    contents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
+    contents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
+  }, { x: Math.round(dismiss!.x + dismiss!.width / 2), y: Math.round(dismiss!.y + dismiss!.height / 2) });
+  await expect(alerts).toHaveCount(2);
+  await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => !w.getParentWindow())!.hide());
+  const samples = await app!.evaluate(() => (globalThis as unknown as { notificationPointerProbe: { samples: number } }).notificationPointerProbe.samples);
+  await overlay.waitForTimeout(100);
+  expect(await app!.evaluate(() => (globalThis as unknown as { notificationPointerProbe: { samples: number } }).notificationPointerProbe.samples)).toBe(samples);
 });
