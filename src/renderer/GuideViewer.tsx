@@ -1,4 +1,4 @@
-import { notifyError } from './notifications';
+import { useNotifyError } from './NotificationContext';
 import { NotificationAccess } from './NotificationAccess';
 import React, { useEffect, useRef, useState } from 'react';
 import type { GuideResponse } from '../guide';
@@ -10,6 +10,7 @@ export function GuideViewer({
   load: (input: { topic?: string; reference?: string }) => Promise<GuideResponse>;
   close: () => void;
 }): React.JSX.Element {
+  const notifyError = useNotifyError();
   const [guide, setGuide] = useState<GuideResponse | null>(null);
   const [selection, setSelection] = useState('topic:overview');
   const heading = useRef<HTMLButtonElement>(null);
@@ -31,7 +32,7 @@ export function GuideViewer({
     return () => {
       active = false;
     };
-  }, [selection, load]);
+  }, [selection, load, notifyError]);
   return (
     <div
       className="modal-backdrop"
@@ -45,7 +46,7 @@ export function GuideViewer({
         }
         if (event.key === 'Tab') {
           const elements = Array.from(
-            event.currentTarget.querySelectorAll<HTMLElement>('button,select'),
+            event.currentTarget.querySelectorAll<HTMLElement>('button,select,[tabindex="0"]'),
           );
           const first = elements[0],
             last = elements.at(-1);
@@ -94,7 +95,7 @@ export function GuideViewer({
             ))}
           </optgroup>
         </select>
-        <pre className="guide-content">{guide?.content}</pre>
+        <pre className="guide-content" tabIndex={0}>{guide?.content}</pre>
       </section>
     </div>
   );

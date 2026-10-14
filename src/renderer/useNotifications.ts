@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import type { Notification } from '../shared/notifications';
 import type { NotificationTransport } from '../shared/notifications';
-import { notifications, notifyError } from './notifications';
+import { notifications } from './notifications';
+import { useNotifyError } from './NotificationContext';
 
 export function useNotificationHost(transport: NotificationTransport | undefined, onPublished?: (snapshot: Notification[]) => void): number {
   const published = useRef(onPublished); published.current = onPublished;
@@ -34,5 +35,6 @@ export function useNotificationHost(transport: NotificationTransport | undefined
 
 /** Callers own operation guards; dismissing presentation cannot change them. */
 export function useErrorReporter(source: string, context: string): (error: string) => string | null {
-  return useCallback(value => value ? notifyError(value, source, context) : null, [source, context]);
+  const report = useNotifyError();
+  return useCallback(value => value ? report(value, source, context) : null, [report, source, context]);
 }

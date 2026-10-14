@@ -39,21 +39,31 @@ type Story = StoryObj<typeof meta>;
 const frame = (key: string) => notificationFrames.find(n => n.key === key)!.notices;
 
 export const Empty: Story = {
+  parameters: { catalog: { states: ["notification-stack.empty"], transitions: [] } },
   args: { notices: frame('empty') },
   play: async ({ canvas }) => { await expect(canvas.getByRole('group', { name: 'Notifications' })).toBeInTheDocument(); },
 };
-export const Info: Story = { args: { notices: frame('info') } };
-export const Warning: Story = { args: { notices: frame('warning') } };
-export const Error: Story = { args: { notices: frame('error') } };
-export const Undo: Story = { args: { notices: frame('undo') } };
+export const Info: Story = {
+  parameters: { catalog: { states: ["notification-stack.info"], transitions: [] } }, args: { notices: frame('info') } };
+export const Warning: Story = {
+  parameters: { catalog: { states: ["notification-stack.warning"], transitions: [] } }, args: { notices: frame('warning') } };
+export const Error: Story = {
+  parameters: { catalog: { states: ["notification-stack.error"], transitions: [] } }, args: { notices: frame('error') } };
+export const Undo: Story = {
+  parameters: { catalog: { states: ["notification-stack.undo"], transitions: [] } }, args: { notices: frame('undo') } };
 export const Pending: Story = {
+  parameters: { catalog: { states: ["notification-stack.pending"], transitions: [] } },
   args: { notices: [{ ...makeNotice('pending-action', 'warning', 'Archiving session', 'Local demonstration only.', ['Archive']), pending: true }] },
   play: async ({ canvas }) => { await expect(canvas.getByRole('button', { name: 'Working…' })).toBeDisabled(); },
 };
-export const Waiting: Story = { args: { notices: frame('pending') } };
-export const Repeated: Story = { args: { notices: [{ ...frame('warning')[0], repeats: 3 }] } };
-export const ThreeAlerts: Story = { args: { notices: frame('three') } };
+export const Waiting: Story = {
+  parameters: { catalog: { states: ["notification-stack.waiting"], transitions: [] } }, args: { notices: frame('pending') } };
+export const Repeated: Story = {
+  parameters: { catalog: { states: ["notification-stack.repeated"], transitions: [] } }, args: { notices: [{ ...frame('warning')[0], repeats: 3 }] } };
+export const ThreeAlerts: Story = {
+  parameters: { catalog: { states: ["notification-stack.three-alerts"], transitions: [] } }, args: { notices: frame('three') } };
 export const Overflow: Story = {
+  parameters: { catalog: { states: ["notification-stack.overflow"], transitions: ["notification-stack.overflow"] } },
   args: { notices: frame('overflow') },
   play: async ({ canvas, userEvent }) => {
     await expect(canvas.getAllByRole('button', { name: /^Dismiss / })).toHaveLength(3);
@@ -63,8 +73,10 @@ export const Overflow: Story = {
     await expect(canvas.getAllByRole('button', { name: /^Dismiss / })).toHaveLength(3);
   },
 };
-export const LongDetails: Story = { args: { notices: frame('long'), width: 360 } };
+export const LongDetails: Story = {
+  parameters: { catalog: { states: ["notification-stack.long-details"], transitions: [] } }, args: { notices: frame('long'), width: 360 } };
 export const ExpandedDetails: Story = {
+  parameters: { catalog: { states: ["notification-stack.expanded-details"], transitions: ["notification-stack.expand"] } },
   args: LongDetails.args,
   play: async ({ canvas, userEvent }) => {
     await userEvent.click(canvas.getByRole('button', { name: 'Show details' }));
@@ -73,6 +85,7 @@ export const ExpandedDetails: Story = {
   },
 };
 export const Dismiss: Story = {
+  parameters: { catalog: { states: ["notification-stack.warning", "notification-stack.dismissed"], transitions: ["notification-stack.dismiss"] } },
   args: { notices: frame('warning') },
   play: async ({ canvas, userEvent, args }) => {
     await userEvent.click(canvas.getByRole('button', { name: 'Dismiss Session is in use' }));
@@ -81,6 +94,7 @@ export const Dismiss: Story = {
   },
 };
 export const Keyboard: Story = {
+  parameters: { catalog: { states: ["notification-stack.keyboard"], transitions: [] } },
   args: { notices: frame('warning') },
   play: async ({ canvas, userEvent, args }) => {
     canvas.getByRole('button', { name: 'Retry' }).focus();
@@ -132,6 +146,7 @@ function NotificationPlayground() {
   </>;
 }
 export const Playground: Story = {
+  parameters: { catalog: { states: ["notification-stack.pending", "notification-stack.info", "notification-stack.warning", "notification-stack.undo", "notification-stack.dismissed", "notification-stack.visible-time-paused"], transitions: ["notification-stack.retry", "notification-stack.undo", "notification-stack.complete", "notification-stack.pause"] } },
   render: () => <NotificationPlayground />,
   play: async ({ canvas, userEvent }) => {
     await userEvent.click(canvas.getByRole('button', { name: 'Add warning' }));
@@ -145,11 +160,13 @@ export const Playground: Story = {
     await expect(await canvas.findByRole('button', { name: 'Working…' })).toBeDisabled();
     await userEvent.click(canvas.getByRole('button', { name: 'Complete pending operation' }));
     await expect(await canvas.findByText('Operation completed')).toBeInTheDocument();
+    await userEvent.click(canvas.getByRole('button', { name: 'Pause visible time' }));
+    await expect(canvas.getByRole('button', { name: 'Resume visible time' })).toHaveAttribute('aria-pressed', 'true');
   },
 };
 
 export const StateSheet: Story = {
-  parameters: { controls: { disable: true } },
+  parameters: { controls: { disable: true }, catalog: { sheet: true } },
   render: args => <div className="catalog-grid">{notificationFrames.map(frame => <section key={frame.key}>
     <h2>{frame.name}</h2><p>{frame.caption}</p>
     <NotificationFixture {...args} notices={frame.notices} width={544} maxHeight={800} />

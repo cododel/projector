@@ -42,7 +42,7 @@ async function applicationSnapshot(page: Page): Promise<ApplicationWorkspaceSnap
     ).projector.invoke('applicationSnapshot'),
   );
 }
-const tabs = (page: Page) => page.getByRole('tablist', { name: 'Workspace tabs' }).getByRole('tab');
+const tabs = (page: Page) => page.locator('.content-tabs').getByRole('tab');
 async function planTab(
   page: Page,
   artifactId: unknown,

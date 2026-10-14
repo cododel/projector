@@ -31,8 +31,9 @@ Closing the last window on macOS leaves the local runtime and owned terminal pro
 ## Interface catalog
 
 Run `pnpm storybook` for the local component/state catalog at `http://127.0.0.1:6006/`.
-Notifications and project session rows are the first included families. The coverage
-map tracks the remaining interfaces; the catalog is not yet complete. See
+The inventory tracks component families, composed screens, individual states and
+transitions, with a separate Electron matrix for native surfaces. UI changes require
+`pnpm test:catalog` alongside `pnpm check`. See
 [development catalog instructions](dev/README.md) for stories, browser/a11y checks,
 visual baselines and safe fixture boundaries.
 

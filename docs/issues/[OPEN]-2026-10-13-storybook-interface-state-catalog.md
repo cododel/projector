@@ -70,3 +70,14 @@ Issue остаётся Open до наполнения полного катал�
 - [PRD](../../PRD.md)
 - [Notification storyboard](../../dev/README.md)
 - [Testing boundaries](../testing/TESTING.md)
+
+## Expanded catalogue implementation
+
+The approved full-UI plan replaces file-level included/planned flags with explicit
+entities, reachable states, occurrence conditions and transitions. Renderer shell
+and document presentation are shared with the App; browser fixtures stay isolated.
+The overview distinguishes story presence, interactions, platform baselines and
+executed results. Native surfaces have a separate Electron matrix, with missing
+or physical/manual evidence retained explicitly. `pnpm test:catalog` is the separate
+required UI gate alongside `pnpm check`. Final qualification is recorded in the
+current task closeout; this entry does not infer native/physical verification.

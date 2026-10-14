@@ -182,7 +182,7 @@ test('settings record shortcuts, protect edits and preserve plan workspaces and 
   await page.getByRole('button', { name: 'Toggle project terminals', exact: true }).click();
   const bottom = page.getByRole('region', { name: 'Project terminals', exact: true });
   await bottom
-    .getByRole('tablist')
+    .getByRole('navigation', { name: 'Project terminal controls' })
     .getByRole('button', { name: 'New project terminal', exact: true })
     .click();
   await expect(bottom.locator('.xterm-helper-textarea')).toBeFocused();
@@ -322,7 +322,7 @@ test('settings record shortcuts, protect edits and preserve plan workspaces and 
   await page.keyboard.press('Meta+,');
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click();
-  const record = dialog.getByRole('button', { name: 'Shortcut for New tab', exact: true });
+  const record = dialog.getByRole('button', { name: /^Shortcut for New tab:/ });
   await record.click();
   await expect(record).toHaveText('Press combination…');
   await record.press('Escape');
@@ -351,9 +351,9 @@ test('settings record shortcuts, protect edits and preserve plan workspaces and 
   await dialog
     .getByRole('button', { name: 'Disable Project terminals shortcut', exact: true })
     .click();
-  await dialog.getByRole('button', { name: 'Shortcut for Project terminals', exact: true }).click();
+  await dialog.getByRole('button', { name: /^Shortcut for Project terminals:/ }).click();
   await dialog
-    .getByRole('button', { name: 'Shortcut for Project terminals', exact: true })
+    .getByRole('button', { name: /^Shortcut for Project terminals:/ })
     .press('Meta+Alt+y');
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(dialog).toHaveCount(0);

@@ -69,7 +69,7 @@ export function ProjectDashboard(props: Props) {
               {plan.title}
             </button>
             <small>{plan.archived ? 'Archived' : (plan.displayStatus ?? 'Draft')}</small>
-            {plan.privateChanges && <span className="private-dot" aria-label="Private changes" />}
+            {plan.privateChanges && <span className="private-dot" role="img" aria-label="Private changes" />}
             <button
               aria-label={`${plan.archived ? 'Restore' : 'Archive'} plan ${plan.title}`}
               disabled={props.busy || props.project?.available === false}

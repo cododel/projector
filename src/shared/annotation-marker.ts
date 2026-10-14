@@ -25,8 +25,9 @@ export function commentPosition(
   pointer: { x: number; y: number },
   viewport: { width: number; height: number },
   size: { width: number; height: number },
+  geometry: typeof markerGeometry = markerGeometry,
 ) {
-  const marker = markerGeometry(pointer, viewport);
+  const marker = geometry(pointer, viewport);
   const above = marker.cy - marker.radius - 8 - size.height;
   return {
     x: Math.max(12, Math.min(viewport.width - size.width - 12, pointer.x - size.width / 2)),

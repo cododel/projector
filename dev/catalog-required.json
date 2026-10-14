@@ -1,0 +1,968 @@
+[
+  {
+    "id": "notification-stack",
+    "states": [
+      "notification-stack.empty",
+      "notification-stack.info",
+      "notification-stack.warning",
+      "notification-stack.error",
+      "notification-stack.undo",
+      "notification-stack.pending",
+      "notification-stack.waiting",
+      "notification-stack.repeated",
+      "notification-stack.three-alerts",
+      "notification-stack.overflow",
+      "notification-stack.long-details",
+      "notification-stack.expanded-details",
+      "notification-stack.dismissed",
+      "notification-stack.keyboard",
+      "notification-stack.visible-time-paused"
+    ],
+    "transitions": [
+      "notification-stack.dismiss",
+      "notification-stack.expand",
+      "notification-stack.overflow",
+      "notification-stack.retry",
+      "notification-stack.undo",
+      "notification-stack.complete",
+      "notification-stack.pause"
+    ]
+  },
+  {
+    "id": "session-row",
+    "states": [
+      "session-row.short",
+      "session-row.long",
+      "session-row.fallback",
+      "session-row.selected",
+      "session-row.pinned",
+      "session-row.running",
+      "session-row.worktree",
+      "session-row.combined",
+      "session-row.narrow",
+      "session-row.pending",
+      "session-row.hover",
+      "session-row.focus",
+      "session-row.scroll-end",
+      "session-row.reset",
+      "session-row.reduced-motion"
+    ],
+    "transitions": [
+      "session-row.hover",
+      "session-row.focus",
+      "session-row.scroll",
+      "session-row.leave",
+      "session-row.pin",
+      "session-row.archive",
+      "session-row.select"
+    ]
+  },
+  {
+    "id": "notification-access",
+    "states": [
+      "notification-access.empty",
+      "notification-access.count",
+      "notification-access.no-transport",
+      "notification-access.dialog"
+    ],
+    "transitions": [
+      "notification-access.focus"
+    ]
+  },
+  {
+    "id": "icons",
+    "states": [
+      "icons.edit",
+      "icons.delete",
+      "icons.folder",
+      "icons.sidebar-left",
+      "icons.sidebar-right",
+      "icons.more",
+      "icons.plus",
+      "icons.refresh",
+      "icons.close",
+      "icons.back",
+      "icons.forward",
+      "icons.external",
+      "icons.split-right",
+      "icons.split-down",
+      "icons.terminal",
+      "icons.down",
+      "icons.right",
+      "icons.stop"
+    ],
+    "transitions": []
+  },
+  {
+    "id": "workspace-menu",
+    "states": [
+      "workspace-menu.closed",
+      "workspace-menu.open",
+      "workspace-menu.submenu",
+      "workspace-menu.empty-submenu",
+      "workspace-menu.disabled-trigger",
+      "workspace-menu.disabled-item",
+      "workspace-menu.edge-position",
+      "workspace-menu.keyboard"
+    ],
+    "transitions": [
+      "workspace-menu.open",
+      "workspace-menu.submenu",
+      "workspace-menu.back",
+      "workspace-menu.escape",
+      "workspace-menu.outside",
+      "workspace-menu.action"
+    ]
+  },
+  {
+    "id": "sidebar-resizer",
+    "states": [
+      "sidebar-resizer.left",
+      "sidebar-resizer.right",
+      "sidebar-resizer.minimum",
+      "sidebar-resizer.maximum",
+      "sidebar-resizer.drag",
+      "sidebar-resizer.collapsed"
+    ],
+    "transitions": [
+      "sidebar-resizer.resize",
+      "sidebar-resizer.commit",
+      "sidebar-resizer.cancel",
+      "sidebar-resizer.collapse",
+      "sidebar-resizer.reset",
+      "sidebar-resizer.keyboard"
+    ]
+  },
+  {
+    "id": "workspace-split",
+    "states": [
+      "workspace-split.single",
+      "workspace-split.horizontal",
+      "workspace-split.vertical",
+      "workspace-split.nested",
+      "workspace-split.active",
+      "workspace-split.minimum",
+      "workspace-split.maximum",
+      "workspace-split.drag"
+    ],
+    "transitions": [
+      "workspace-split.resize",
+      "workspace-split.commit",
+      "workspace-split.cancel",
+      "workspace-split.keyboard"
+    ]
+  },
+  {
+    "id": "project-dashboard",
+    "states": [
+      "project-dashboard.empty",
+      "project-dashboard.populated",
+      "project-dashboard.unavailable",
+      "project-dashboard.busy",
+      "project-dashboard.archived",
+      "project-dashboard.draft",
+      "project-dashboard.published",
+      "project-dashboard.approved",
+      "project-dashboard.private-changes",
+      "project-dashboard.long-titles"
+    ],
+    "transitions": [
+      "project-dashboard.show-archived",
+      "project-dashboard.archive",
+      "project-dashboard.restore",
+      "project-dashboard.open"
+    ]
+  },
+  {
+    "id": "comment-composer",
+    "states": [
+      "comment-composer.empty",
+      "comment-composer.text",
+      "comment-composer.multiline",
+      "comment-composer.editing",
+      "comment-composer.disabled",
+      "comment-composer.working",
+      "comment-composer.write-failure"
+    ],
+    "transitions": [
+      "comment-composer.type",
+      "comment-composer.newline",
+      "comment-composer.save",
+      "comment-composer.failure",
+      "comment-composer.retry",
+      "comment-composer.cancel",
+      "comment-composer.delete",
+      "comment-composer.outside"
+    ]
+  },
+  {
+    "id": "settings",
+    "states": [
+      "settings.general",
+      "settings.terminal",
+      "settings.harnesses",
+      "settings.shortcuts",
+      "settings.dirty",
+      "settings.invalid-arguments",
+      "settings.saving",
+      "settings.save-failure",
+      "settings.metadata-pending",
+      "settings.compatibility-unchecked",
+      "settings.compatibility-qualified",
+      "settings.compatibility-error",
+      "settings.mcp-statuses",
+      "settings.shortcut-search-empty",
+      "settings.shortcut-recording",
+      "settings.shortcut-unassigned",
+      "settings.shortcut-custom",
+      "settings.shortcut-conflict"
+    ],
+    "transitions": [
+      "settings.section",
+      "settings.edit",
+      "settings.save",
+      "settings.invalid",
+      "settings.failure",
+      "settings.shortcut",
+      "settings.review",
+      "settings.search"
+    ]
+  },
+  {
+    "id": "guide",
+    "states": [
+      "guide.loading",
+      "guide.loaded",
+      "guide.long-content",
+      "guide.topic",
+      "guide.reference",
+      "guide.load-failure"
+    ],
+    "transitions": [
+      "guide.load",
+      "guide.topic",
+      "guide.reference",
+      "guide.failure",
+      "guide.close"
+    ]
+  },
+  {
+    "id": "home-pane",
+    "states": [
+      "home-pane.empty",
+      "home-pane.address",
+      "home-pane.long-address",
+      "home-pane.busy"
+    ],
+    "transitions": [
+      "home-pane.edit",
+      "home-pane.open"
+    ]
+  },
+  {
+    "id": "plan-pane",
+    "states": [
+      "plan-pane.waiting",
+      "plan-pane.copy-message",
+      "plan-pane.load-failure"
+    ],
+    "transitions": [
+      "plan-pane.copy",
+      "plan-pane.new-tab"
+    ]
+  },
+  {
+    "id": "terminal-pane",
+    "states": [
+      "terminal-pane.running",
+      "terminal-pane.exited",
+      "terminal-pane.inactive",
+      "terminal-pane.error",
+      "terminal-pane.cleanup",
+      "terminal-pane.truncated",
+      "terminal-pane.codex-saved",
+      "terminal-pane.codex-no-resume",
+      "terminal-pane.active",
+      "terminal-pane.file-drop"
+    ],
+    "transitions": [
+      "terminal-pane.stop",
+      "terminal-pane.restart",
+      "terminal-pane.resume",
+      "terminal-pane.cleanup",
+      "terminal-pane.output",
+      "terminal-pane.input",
+      "terminal-pane.focus",
+      "terminal-pane.drop"
+    ]
+  },
+  {
+    "id": "window-chrome",
+    "states": [
+      "window-chrome.default",
+      "window-chrome.left-hidden",
+      "window-chrome.right-hidden",
+      "window-chrome.both-hidden",
+      "window-chrome.busy"
+    ],
+    "transitions": [
+      "window-chrome.left-toggle",
+      "window-chrome.right-toggle"
+    ]
+  },
+  {
+    "id": "project-tree",
+    "states": [
+      "project-tree.empty",
+      "project-tree.populated",
+      "project-tree.selected",
+      "project-tree.collapsed",
+      "project-tree.unavailable",
+      "project-tree.no-sessions",
+      "project-tree.many-sessions"
+    ],
+    "transitions": [
+      "project-tree.disclosure",
+      "project-tree.select",
+      "project-tree.open-folder"
+    ]
+  },
+  {
+    "id": "workspace-tabs",
+    "states": [
+      "workspace-tabs.document",
+      "workspace-tabs.browser",
+      "workspace-tabs.home",
+      "workspace-tabs.terminal",
+      "workspace-tabs.session",
+      "workspace-tabs.active",
+      "workspace-tabs.inactive",
+      "workspace-tabs.busy",
+      "workspace-tabs.split-count",
+      "workspace-tabs.many-tabs"
+    ],
+    "transitions": [
+      "workspace-tabs.select",
+      "workspace-tabs.close",
+      "workspace-tabs.new-tab"
+    ]
+  },
+  {
+    "id": "other-sessions",
+    "states": [
+      "other-sessions.collapsed",
+      "other-sessions.expanded",
+      "other-sessions.long-title",
+      "other-sessions.long-path",
+      "other-sessions.metadata"
+    ],
+    "transitions": [
+      "other-sessions.expand",
+      "other-sessions.metadata"
+    ]
+  },
+  {
+    "id": "session-home",
+    "states": [
+      "session-home.unknown",
+      "session-home.running",
+      "session-home.stopped",
+      "session-home.unavailable",
+      "session-home.details",
+      "session-home.busy"
+    ],
+    "transitions": [
+      "session-home.details",
+      "session-home.resume",
+      "session-home.open-terminal",
+      "session-home.new"
+    ]
+  },
+  {
+    "id": "plan-toolbar",
+    "states": [
+      "plan-toolbar.draft",
+      "plan-toolbar.review",
+      "plan-toolbar.approved",
+      "plan-toolbar.history",
+      "plan-toolbar.saving",
+      "plan-toolbar.saved",
+      "plan-toolbar.save-failed",
+      "plan-toolbar.annotating",
+      "plan-toolbar.annotation-disabled"
+    ],
+    "transitions": [
+      "plan-toolbar.version",
+      "plan-toolbar.annotate"
+    ]
+  },
+  {
+    "id": "browser-toolbar",
+    "states": [
+      "browser-toolbar.idle",
+      "browser-toolbar.loading",
+      "browser-toolbar.back-disabled",
+      "browser-toolbar.forward-disabled",
+      "browser-toolbar.address",
+      "browser-toolbar.zoom",
+      "browser-toolbar.annotating"
+    ],
+    "transitions": [
+      "browser-toolbar.navigate",
+      "browser-toolbar.stop",
+      "browser-toolbar.address",
+      "browser-toolbar.zoom",
+      "browser-toolbar.annotate"
+    ]
+  },
+  {
+    "id": "workspace-empty",
+    "states": [
+      "workspace-empty.welcome",
+      "workspace-empty.no-tabs",
+      "workspace-empty.waiting",
+      "workspace-empty.copied",
+      "workspace-empty.terminal-unavailable",
+      "workspace-empty.plan-unavailable",
+      "workspace-empty.project-unavailable"
+    ],
+    "transitions": [
+      "workspace-empty.copy",
+      "workspace-empty.open"
+    ]
+  },
+  {
+    "id": "bottom-terminals",
+    "states": [
+      "bottom-terminals.hidden",
+      "bottom-terminals.empty",
+      "bottom-terminals.populated",
+      "bottom-terminals.selected",
+      "bottom-terminals.resizing"
+    ],
+    "transitions": [
+      "bottom-terminals.toggle",
+      "bottom-terminals.new",
+      "bottom-terminals.select",
+      "bottom-terminals.close",
+      "bottom-terminals.resize"
+    ]
+  },
+  {
+    "id": "feedback",
+    "states": [
+      "feedback.empty",
+      "feedback.populated",
+      "feedback.origin-present",
+      "feedback.origin-absent",
+      "feedback.migration",
+      "feedback.downloads",
+      "feedback.text-annotation",
+      "feedback.area-annotation",
+      "feedback.editing",
+      "feedback.disabled",
+      "feedback.long-comment"
+    ],
+    "transitions": [
+      "feedback.edit",
+      "feedback.cancel",
+      "feedback.save",
+      "feedback.delete",
+      "feedback.jump"
+    ]
+  },
+  {
+    "id": "save-approval",
+    "states": [
+      "save-approval.dirty",
+      "save-approval.unchanged",
+      "save-approval.busy",
+      "save-approval.autosaving",
+      "save-approval.retry",
+      "save-approval.blocked",
+      "save-approval.approved",
+      "save-approval.revoke-blocked"
+    ],
+    "transitions": [
+      "save-approval.save",
+      "save-approval.retry",
+      "save-approval.approve",
+      "save-approval.revoke"
+    ]
+  },
+  {
+    "id": "handoff",
+    "states": [
+      "handoff.copy-only",
+      "handoff.running-session",
+      "handoff.resume-first",
+      "handoff.copied"
+    ],
+    "transitions": [
+      "handoff.select",
+      "handoff.copy"
+    ]
+  },
+  {
+    "id": "history",
+    "states": [
+      "history.empty",
+      "history.saved-states",
+      "history.legacy-packages",
+      "history.expanded"
+    ],
+    "transitions": [
+      "history.expand",
+      "history.copy"
+    ]
+  },
+  {
+    "id": "rename-plan",
+    "states": [
+      "rename-plan.empty",
+      "rename-plan.valid",
+      "rename-plan.long-title",
+      "rename-plan.busy",
+      "rename-plan.error",
+      "rename-plan.closed"
+    ],
+    "transitions": [
+      "rename-plan.edit",
+      "rename-plan.save",
+      "rename-plan.failure",
+      "rename-plan.cancel"
+    ]
+  },
+  {
+    "id": "session-metadata",
+    "states": [
+      "session-metadata.fallback",
+      "session-metadata.long-path",
+      "session-metadata.unknown",
+      "session-metadata.running",
+      "session-metadata.stopped"
+    ],
+    "transitions": [
+      "session-metadata.close"
+    ]
+  },
+  {
+    "id": "mcp-connection",
+    "states": [
+      "mcp-connection.packaged",
+      "mcp-connection.development",
+      "mcp-connection.source",
+      "mcp-connection.prompt-expanded",
+      "mcp-connection.config-expanded",
+      "mcp-connection.copied"
+    ],
+    "transitions": [
+      "mcp-connection.prompt",
+      "mcp-connection.config",
+      "mcp-connection.copy",
+      "mcp-connection.close"
+    ]
+  },
+  {
+    "id": "document-blocks",
+    "states": [
+      "document-blocks.heading",
+      "document-blocks.paragraph",
+      "document-blocks.emphasis",
+      "document-blocks.strong",
+      "document-blocks.delete",
+      "document-blocks.inline-code",
+      "document-blocks.code",
+      "document-blocks.blockquote",
+      "document-blocks.ordered-list",
+      "document-blocks.unordered-list",
+      "document-blocks.task-list",
+      "document-blocks.table",
+      "document-blocks.link",
+      "document-blocks.image-placeholder",
+      "document-blocks.divider",
+      "document-blocks.break",
+      "document-blocks.fallback",
+      "document-blocks.long-content"
+    ],
+    "transitions": []
+  },
+  {
+    "id": "document-details",
+    "states": [
+      "document-details.collapsed",
+      "document-details.expanded",
+      "document-details.locked",
+      "document-details.callout-title",
+      "document-details.callout-body"
+    ],
+    "transitions": [
+      "document-details.toggle"
+    ]
+  },
+  {
+    "id": "document-widget",
+    "states": [
+      "document-widget.choice-empty",
+      "document-widget.choice-selected",
+      "document-widget.choice-default",
+      "document-widget.checklist-empty",
+      "document-widget.checklist-selected",
+      "document-widget.text-empty",
+      "document-widget.text-filled",
+      "document-widget.text-long",
+      "document-widget.read-only",
+      "document-widget.draft",
+      "document-widget.preview",
+      "document-widget.context-pending"
+    ],
+    "transitions": [
+      "document-widget.choice",
+      "document-widget.check",
+      "document-widget.type"
+    ]
+  },
+  {
+    "id": "diagram",
+    "states": [
+      "diagram.loading",
+      "diagram.rendered",
+      "diagram.error",
+      "diagram.long-diagram"
+    ],
+    "transitions": [
+      "diagram.render",
+      "diagram.failure"
+    ]
+  },
+  {
+    "id": "document-surface",
+    "states": [
+      "document-surface.loading",
+      "document-surface.waiting",
+      "document-surface.draft",
+      "document-surface.compile-error",
+      "document-surface.published",
+      "document-surface.preview",
+      "document-surface.context-pending"
+    ],
+    "transitions": [
+      "document-surface.load",
+      "document-surface.preview",
+      "document-surface.return"
+    ]
+  },
+  {
+    "id": "document-annotations",
+    "states": [
+      "document-annotations.text-highlight",
+      "document-annotations.focused",
+      "document-annotations.area-marker",
+      "document-annotations.overlapping-markers",
+      "document-annotations.clipped-marker",
+      "document-annotations.candidate",
+      "document-annotations.editor-empty",
+      "document-annotations.editor-text",
+      "document-annotations.editor-pending",
+      "document-annotations.area-mode",
+      "document-annotations.hovered-block",
+      "document-annotations.drag-selection",
+      "document-annotations.keyboard-pointer",
+      "document-annotations.context-pending"
+    ],
+    "transitions": [
+      "document-annotations.focus",
+      "document-annotations.begin",
+      "document-annotations.type",
+      "document-annotations.save",
+      "document-annotations.cancel",
+      "document-annotations.area",
+      "document-annotations.capture-start",
+      "document-annotations.capture-complete",
+      "document-annotations.keyboard-begin"
+    ]
+  },
+  {
+    "id": "browser-overlay",
+    "states": [
+      "browser-overlay.live",
+      "browser-overlay.hover",
+      "browser-overlay.keyboard-pointer",
+      "browser-overlay.drag-selection",
+      "browser-overlay.selecting",
+      "browser-overlay.select-error",
+      "browser-overlay.captured",
+      "browser-overlay.composer-empty",
+      "browser-overlay.composer-text",
+      "browser-overlay.multiline",
+      "browser-overlay.saving",
+      "browser-overlay.write-error",
+      "browser-overlay.read-only"
+    ],
+    "transitions": [
+      "browser-overlay.hover",
+      "browser-overlay.select",
+      "browser-overlay.keyboard",
+      "browser-overlay.drag",
+      "browser-overlay.type",
+      "browser-overlay.newline",
+      "browser-overlay.save",
+      "browser-overlay.failure",
+      "browser-overlay.cancel"
+    ]
+  },
+  {
+    "id": "browser-marker",
+    "states": [
+      "browser-marker.normal",
+      "browser-marker.focus"
+    ],
+    "transitions": [
+      "browser-marker.focus",
+      "browser-marker.open"
+    ]
+  },
+  {
+    "id": "native-notifications",
+    "states": [
+      "native-notifications.cold",
+      "native-notifications.hidden",
+      "native-notifications.moved",
+      "native-notifications.resized",
+      "native-notifications.retired",
+      "native-notifications.gap-routing",
+      "native-notifications.rounded-corners",
+      "native-notifications.focus"
+    ],
+    "transitions": [
+      "native-notifications.hidden",
+      "native-notifications.moved",
+      "native-notifications.resized",
+      "native-notifications.retired",
+      "native-notifications.gap-routing",
+      "native-notifications.rounded-corners",
+      "native-notifications.focus"
+    ]
+  },
+  {
+    "id": "native-browser",
+    "states": [
+      "native-browser.attached",
+      "native-browser.loading",
+      "native-browser.error",
+      "native-browser.permission",
+      "native-browser.beforeunload",
+      "native-browser.download",
+      "native-browser.save-as",
+      "native-browser.permission-allowed",
+      "native-browser.permission-denied",
+      "native-browser.beforeunload-close",
+      "native-browser.beforeunload-cancel",
+      "native-browser.save-as-selected",
+      "native-browser.save-as-cancelled"
+    ],
+    "transitions": [
+      "native-browser.permission-allowed",
+      "native-browser.permission-denied",
+      "native-browser.beforeunload-close",
+      "native-browser.beforeunload-cancel",
+      "native-browser.save-as-selected",
+      "native-browser.save-as-cancelled"
+    ]
+  },
+  {
+    "id": "native-terminal",
+    "states": [
+      "native-terminal.pty",
+      "native-terminal.clipboard",
+      "native-terminal.ime",
+      "native-terminal.physical-input"
+    ],
+    "transitions": []
+  },
+  {
+    "id": "application-menu",
+    "states": [
+      "application-menu.open",
+      "application-menu.settings",
+      "application-menu.quit",
+      "application-menu.about",
+      "application-menu.runtime-note",
+      "application-menu.edit-menu",
+      "application-menu.view-menu",
+      "application-menu.window-menu"
+    ],
+    "transitions": [
+      "application-menu.settings",
+      "application-menu.quit",
+      "application-menu.about",
+      "application-menu.edit-menu",
+      "application-menu.view-menu",
+      "application-menu.window-menu"
+    ]
+  },
+  {
+    "id": "project-menu",
+    "states": [
+      "project-menu.open",
+      "project-menu.unavailable",
+      "project-menu.remove",
+      "project-menu.locate",
+      "project-menu.new-session",
+      "project-menu.refresh",
+      "project-menu.dismissed"
+    ],
+    "transitions": [
+      "project-menu.remove",
+      "project-menu.locate",
+      "project-menu.new-session",
+      "project-menu.refresh",
+      "project-menu.dismiss",
+      "project-menu.unavailable"
+    ]
+  },
+  {
+    "id": "plan-menu",
+    "states": [
+      "plan-menu.open",
+      "plan-menu.rename",
+      "plan-menu.archive",
+      "plan-menu.restore",
+      "plan-menu.dismissed"
+    ],
+    "transitions": [
+      "plan-menu.rename",
+      "plan-menu.archive",
+      "plan-menu.restore",
+      "plan-menu.dismiss"
+    ]
+  },
+  {
+    "id": "recovery-dialog",
+    "states": [
+      "recovery-dialog.shown",
+      "recovery-dialog.reload",
+      "recovery-dialog.cancel"
+    ],
+    "transitions": [
+      "recovery-dialog.reload",
+      "recovery-dialog.cancel"
+    ]
+  },
+  {
+    "id": "stop-terminal-dialog",
+    "states": [
+      "stop-terminal-dialog.shown",
+      "stop-terminal-dialog.confirm",
+      "stop-terminal-dialog.cancel"
+    ],
+    "transitions": [
+      "stop-terminal-dialog.confirm",
+      "stop-terminal-dialog.cancel"
+    ]
+  },
+  {
+    "id": "clear-profile-dialog",
+    "states": [
+      "clear-profile-dialog.shown",
+      "clear-profile-dialog.confirm",
+      "clear-profile-dialog.cancel"
+    ],
+    "transitions": [
+      "clear-profile-dialog.confirm",
+      "clear-profile-dialog.cancel"
+    ]
+  },
+  {
+    "id": "project-conflict-dialog",
+    "states": [
+      "project-conflict-dialog.shown",
+      "project-conflict-dialog.cancel",
+      "project-conflict-dialog.open-original",
+      "project-conflict-dialog.create-empty"
+    ],
+    "transitions": [
+      "project-conflict-dialog.cancel",
+      "project-conflict-dialog.open-original",
+      "project-conflict-dialog.create-empty"
+    ]
+  },
+  {
+    "id": "remove-project-dialog",
+    "states": [
+      "remove-project-dialog.shown",
+      "remove-project-dialog.confirm",
+      "remove-project-dialog.cancel"
+    ],
+    "transitions": [
+      "remove-project-dialog.confirm",
+      "remove-project-dialog.cancel"
+    ]
+  },
+  {
+    "id": "discard-draft-dialog",
+    "states": [
+      "discard-draft-dialog.shown",
+      "discard-draft-dialog.confirm",
+      "discard-draft-dialog.cancel"
+    ],
+    "transitions": [
+      "discard-draft-dialog.confirm",
+      "discard-draft-dialog.cancel"
+    ]
+  },
+  {
+    "id": "choose-project-dialog",
+    "states": [
+      "choose-project-dialog.shown",
+      "choose-project-dialog.selected",
+      "choose-project-dialog.cancel"
+    ],
+    "transitions": [
+      "choose-project-dialog.selected",
+      "choose-project-dialog.cancel"
+    ]
+  },
+  {
+    "id": "locate-project-dialog",
+    "states": [
+      "locate-project-dialog.shown",
+      "locate-project-dialog.selected",
+      "locate-project-dialog.cancel"
+    ],
+    "transitions": [
+      "locate-project-dialog.selected",
+      "locate-project-dialog.cancel"
+    ]
+  },
+  {
+    "id": "application-screen",
+    "states": [
+      "application-screen.welcome",
+      "application-screen.project",
+      "application-screen.session",
+      "application-screen.document",
+      "application-screen.browser",
+      "application-screen.terminal",
+      "application-screen.split"
+    ],
+    "transitions": [
+      "application-screen.project-session",
+      "application-screen.session-document",
+      "application-screen.document-browser",
+      "application-screen.terminal-split"
+    ]
+  },
+  {
+    "id": "browser-file-picker",
+    "states": [
+      "browser-file-picker.shown",
+      "browser-file-picker.selected",
+      "browser-file-picker.cancel"
+    ],
+    "transitions": [
+      "browser-file-picker.select",
+      "browser-file-picker.cancel"
+    ]
+  }
+]

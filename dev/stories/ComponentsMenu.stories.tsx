@@ -1,0 +1,19 @@
+import {CatalogSheet} from '../fixtures/CatalogSheet';
+import React from 'react';
+import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, fn, waitFor } from 'storybook/test';
+import { WorkspaceMenu } from '../../src/renderer/WorkspaceMenu';
+const meta = { title: 'Components/Workspace menu', component: WorkspaceMenu, args: { label: 'Workspace actions', icon: 'more', items: [{label:'New tab',action:fn()},{label:'Terminals',children:[{label:'Project terminal',action:fn()}]},{label:'Empty terminals',children:[]},{label:'Unavailable action',disabled:true}], onOpenChange:fn() } } satisfies Meta<typeof WorkspaceMenu>;
+export default meta;
+type Story = StoryObj<typeof meta>;
+const opened: NonNullable<Story['play']> = async ({canvas,userEvent}) => { await userEvent.click(canvas.getByRole('button',{name:'Workspace actions'})); await expect(canvas.getByRole('menu')).toBeVisible(); };
+export const Closed: Story = {parameters:{catalog:{states:["workspace-menu.closed"],transitions:[]}}};
+export const Open: Story = {parameters:{catalog:{states:["workspace-menu.open", "workspace-menu.disabled-item"],transitions:["workspace-menu.open"]}},play:opened};
+export const Submenu: Story = {parameters:{catalog:{states:["workspace-menu.submenu"],transitions:["workspace-menu.submenu"]}},play:async ctx=>{await opened(ctx);await ctx.userEvent.click(ctx.canvas.getByRole('menuitem',{name:'Terminals'}));await expect(ctx.canvas.getByRole('menuitem',{name:'Project terminal'})).toBeVisible();}};
+export const EmptySubmenu: Story = {parameters:{catalog:{states:["workspace-menu.empty-submenu"],transitions:[]}},play:async ctx=>{await opened(ctx);await ctx.userEvent.click(ctx.canvas.getByRole('menuitem',{name:'Empty terminals'}));await expect(ctx.canvas.getByText('No terminals running')).toBeVisible();}};
+export const DisabledTrigger: Story = {args:{disabled:true},parameters:{catalog:{states:["workspace-menu.disabled-trigger"],transitions:[]}},play:async({canvas})=>{await expect(canvas.getByRole('button')).toBeDisabled();}};
+export const Keyboard: Story = {parameters:{catalog:{states:["workspace-menu.keyboard"],transitions:["workspace-menu.back", "workspace-menu.escape", "workspace-menu.action"]}},play:async ctx=>{await opened(ctx);await ctx.userEvent.keyboard('{End}');await expect(ctx.canvas.getByRole('menuitem',{name:'Empty terminals'})).toHaveFocus();await ctx.userEvent.keyboard('{Home}{ArrowDown}{Enter}');await ctx.userEvent.click(ctx.canvas.getByRole('menuitem',{name:'Back'}));await expect(ctx.canvas.getByRole('menuitem',{name:'New tab'})).toBeVisible();await ctx.userEvent.keyboard('{Escape}');await expect(ctx.canvas.getByRole('button',{name:'Workspace actions'})).toHaveFocus();await opened(ctx);await ctx.userEvent.click(ctx.canvas.getByRole('menuitem',{name:'New tab'}));await waitFor(()=>expect(ctx.canvas.queryByRole('menu')).not.toBeInTheDocument());}};
+export const Outside: Story = {parameters:{catalog:{states:[],transitions:["workspace-menu.outside"]}},render:args=><div><WorkspaceMenu {...args}/><button>Outside menu</button></div>,play:async ctx=>{await opened(ctx);await ctx.userEvent.click(ctx.canvas.getByRole('button',{name:'Outside menu'}));await expect(ctx.canvas.queryByRole('menu')).not.toBeInTheDocument();}};
+export const EdgePosition: Story = {parameters:{catalog:{states:["workspace-menu.edge-position"],transitions:[]}},render:args=><div style={{display:'flex',justifyContent:'flex-end'}}><WorkspaceMenu {...args}/></div>,play:async ctx=>{await opened(ctx);const rect=ctx.canvas.getByRole('menu').getBoundingClientRect();await expect(rect.right).toBeLessThanOrEqual(innerWidth);await expect(rect.left).toBeGreaterThanOrEqual(8);}};
+
+export const StateSheet:Story={render:()=> <CatalogSheet height={500} frames={['closed', 'open', 'submenu', 'empty-submenu', 'disabled-trigger', 'edge-position'].map(name=>({label:name,storyId:`components-workspace-menu--${name}`}))}/>};

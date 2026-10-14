@@ -1,9 +1,6 @@
-:root { color-scheme: dark; font: 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-html, body, #root { margin: 0; background: transparent; }
-body { overflow: hidden; }
-button { font: inherit; cursor: pointer; }
-button:disabled { cursor: default; opacity: .45; }
-button:focus-visible { outline: 2px solid var(--alert-color, #6faeff); outline-offset: 3px; }
+.notification-stack button { font: inherit; cursor: pointer; }
+.notification-stack button:disabled { cursor: default; opacity: .45; }
+.notification-stack button:focus-visible { outline: 2px solid var(--alert-color, #6faeff); outline-offset: 3px; }
 .notification-stack { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 12px; box-sizing: border-box; overflow-y: auto; scrollbar-width: thin; }
 .notification-alert { --alert-color: #6faeff; width: 100%; max-width: 520px; box-sizing: border-box; flex: none; overflow: hidden; border: 1px solid var(--alert-color); border-radius: 26px; background: #050505; color: #f5f5f7; box-shadow: 0 4px 12px #0004; transform-origin: center; animation: alert-in 180ms cubic-bezier(.22,1,.36,1) both; transition: height 220ms cubic-bezier(.22,1,.36,1); }
 .notification-alert.warning { --alert-color: #f5bd58; }

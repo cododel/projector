@@ -10,7 +10,8 @@
     "resolveJsonModule": true,
     "types": ["node", "vite/client"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "noEmit": true
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   },
   "include": ["src", "tests", "dev", ".storybook", "*.ts"]
 }

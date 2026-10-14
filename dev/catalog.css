@@ -27,3 +27,17 @@ html, body { overflow: auto; background: #f5f6f8; }
 .catalog-grid section { background: white; border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
 .catalog-grid h2 { margin: 0 0 8px; font-size: 15px; }
 .catalog-grid p { margin-top: 0; color: #596475; }
+.catalog-entry { background: white; border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin: 12px 0; }
+.catalog-entry summary { cursor: pointer; line-height: 1.6; }
+.catalog-entry small { display: block; font-weight: normal; color: #596475; }
+.catalog-missing { color: #a72f2f; }
+.catalog-controls label { display: flex; align-items: center; gap: 6px; }
+.catalog-controls input[type="checkbox"] { width: auto; }
+.catalog-stats { flex-wrap: wrap; }
+
+.catalog-screen-sheet .catalog-grid { grid-template-columns: 1fr; }
+.catalog-isolated-sheet { grid-template-columns: 1fr; }
+
+/* Fixed comparison frames show completed states. Offscreen Chromium frames can
+   leave finite entrance animations at time zero; interactive stories keep motion. */
+.catalog-static-frame *, .catalog-static-frame *::before, .catalog-static-frame *::after { animation: none !important; transition: none !important; }

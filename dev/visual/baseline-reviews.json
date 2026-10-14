@@ -1,0 +1,173 @@
+{
+  "annotations-comment-composer-darwin.png": {
+    "sha256": "169cda5aedfb1a4ce2986685c7ffa6b2086eed402276f3e1ff79cfc0f8eae965",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "root"
+  },
+  "projects-dashboard-darwin.png": {
+    "sha256": "10c32226829378baf10e4e71d68e6a0af6a85b57d2164066c19009b07014f9f6",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_components"
+  },
+  "help-guide-darwin.png": {
+    "sha256": "a38f77ce8abe4b2b734af766ec054335e93fbed90b798279a4ad5ac5b29b523e",
+    "reviewedAt": "2026-10-14T18:09:29.214252Z",
+    "reviewer": "root"
+  },
+  "workspace-home-darwin.png": {
+    "sha256": "3f5a5f5a5117cd4a3e0e78ffba5285e73d256be88c8cf8b026f6733c98b7525d",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_components"
+  },
+  "components-icons-darwin.png": {
+    "sha256": "ada0c268cd45cb10a8930086aebf60d694ddc8351c7c00babd54cefb9f130471",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "root"
+  },
+  "layout-sidebar-resizer-darwin.png": {
+    "sha256": "128662ad0c9d7e05cd6724f149640d5f38120999f0de2d4592f863a1c96d00fa",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_components"
+  },
+  "components-workspace-menu-darwin.png": {
+    "sha256": "fdbda1e2b5d87474bc8bc23d5319e0a7ba7dad83dc621443cab9977ceae3c1b0",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "root"
+  },
+  "notifications-access-darwin.png": {
+    "sha256": "ccd182904b716cd29f7973d786d0eca9556fb69961f03c16a0687ee9539efdeb",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_components"
+  },
+  "workspace-plan-pane-darwin.png": {
+    "sha256": "9fb6307a9d69e66adfed81883873d5a6c6dd79d41a57b389bee452bd821566cf",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_components"
+  },
+  "settings-application-darwin.png": {
+    "sha256": "5c9b57fcebf277b86a5dec2d08074d20462fee81b558923b70bc1a5442d139a7",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_components"
+  },
+  "layout-workspace-split-darwin.png": {
+    "sha256": "0732dec5b19b3db51743ffc3ae40a1b2659007a1bc1c4cab0a990c9b2b054bac",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_components"
+  },
+  "terminals-pane-darwin.png": {
+    "sha256": "b99bae9c00c956b75e8b431343ac3311c218dc7936117975715ed1be4bc17b6a",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_components"
+  },
+  "document-annotations-darwin.png": {
+    "sha256": "0246c21ea5e1f4129ae0ff10fe124d226641a9a0ad3d59789fc43edacb5e7495",
+    "reviewedAt": "2026-10-14T18:51:43.201Z",
+    "reviewer": "Codex primary agent",
+    "note": "Inspected all ten real annotation state panels, including context pending shield with editor absent; preserved highlight/marker/editor/area alignment."
+  },
+  "document-browser-overlay-darwin.png": {
+    "sha256": "2068da3b0aa77d1e8d3ae422cbd3a89f4da5d8384fa7dd2f60fd0c0a3498cdbd",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_document"
+  },
+  "document-content-darwin.png": {
+    "sha256": "b93901d6968d3e72dcae1b8fa7a545e3c5efa6c8c3744e429be39f7e0df38681",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_document"
+  },
+  "notifications-darwin.png": {
+    "sha256": "50e29e3b671c3d3509d6737c6fd36ed50640913db936194affc99e55159a4008",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "root"
+  },
+  "sessions-darwin.png": {
+    "sha256": "f2c7d7760005320275ada0ad0d7ac5218409010581a8afff1b34d0135d6a6d75",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "root"
+  },
+  "shell-project-terminal-panel-darwin.png": {
+    "sha256": "94e1357a1345e7d143caae09539addf07917f2a55270a067eb2db476dc6e77fb",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-browser-toolbar-darwin.png": {
+    "sha256": "5ebf446b1736cb6513ef86934167592a93e755493a3a6edd74aa56a1e2f7a536",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-feedback-panel-darwin.png": {
+    "sha256": "131d571fbdc58e68dd988d77b868a15b3ae3ffabb66add3e03c3e15a1dd7ccc5",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-update-handoff-darwin.png": {
+    "sha256": "10c192feffc5f0916ca8398599131043545da3aba2e1f8836a116a1a1a38687e",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-saved-state-history-darwin.png": {
+    "sha256": "2c744ccb79113a3ce3e21f1efe4d80e70f3045e89005b5de2f8e6db2a2df7da8",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-mcp-connection-dialog-darwin.png": {
+    "sha256": "67c824b585869e1550fb3ce6e3dff1a931a66ab6eec8366cfadbeb9dd05db32d",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-other-sessions-darwin.png": {
+    "sha256": "18819db2aa04b36bbe2b89bba4689c203426269dae00cd1b3a650ca2213811e9",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-document-toolbar-darwin.png": {
+    "sha256": "dcc4e370d23da1046540f70d0615c68106b89a845ae26dada13bdb38d48eed37",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-project-sidebar-darwin.png": {
+    "sha256": "a6236de99a5aa85e18441555b28beb7dfbbf91075afe748a43d9e22396f5e0ff",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-rename-plan-dialog-darwin.png": {
+    "sha256": "61f5866f443e1e675ceeea0fbe4912af1b3623cd1b0a3840926a88b456c9222e",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-save-and-approval-darwin.png": {
+    "sha256": "179a009ad7e16afdf4676ee24e4c066353df7e3dc7a58256a22bd80bb008ace9",
+    "reviewedAt": "2026-10-13T20:31:22.538Z",
+    "reviewer": "catalog_shell"
+  },
+  "screens-application-darwin.png": {
+    "sha256": "36d5b11a97433d9231f4fb55f4e5ea3c82cf4c7bedfae545d5e6c37031330312",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-session-home-darwin.png": {
+    "sha256": "64fe5f4fd2f82ae990ba384c34638501337fb2c7de4f41f8e139e4d3ec60c51b",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-session-metadata-dialog-darwin.png": {
+    "sha256": "b351842a1ff5fa6d2944368bd4963d35f8b28c5a7890bbf8111d189fbd688148",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-application-chrome-darwin.png": {
+    "sha256": "2c9fd7684bd1884c7819c1838d344afd117427e68ae7edd484f1f171368e67c6",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-empty-workspace-views-darwin.png": {
+    "sha256": "ff5bb663b8d77ffb08360b3198da23fcf98676a27686cb5325e30416f324d2fe",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  },
+  "shell-workspace-tabs-darwin.png": {
+    "sha256": "5fbab50453fe8edf74d02ab66534d506db4161707c8db55f38aac47660856591",
+    "reviewedAt": "2026-10-13T20:28:40.034Z",
+    "reviewer": "catalog_shell"
+  }
+}

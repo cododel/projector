@@ -33,11 +33,16 @@ const meta = {
 } satisfies Meta<typeof SessionFixture>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-export const Short: Story = {};
-export const Long: Story = { args: { title: longTitle } };
-export const FallbackTitle: Story = { args: { title: '' } };
-export const Selected: Story = { args: { active: true } };
-export const Pinned: Story = { args: { pinned: true } };
+export const Short: Story = {
+  parameters: { catalog: { states: ["session-row.short"], transitions: [] } },};
+export const Long: Story = {
+  parameters: { catalog: { states: ["session-row.long"], transitions: [] } }, args: { title: longTitle } };
+export const FallbackTitle: Story = {
+  parameters: { catalog: { states: ["session-row.fallback"], transitions: [] } }, args: { title: '' } };
+export const Selected: Story = {
+  parameters: { catalog: { states: ["session-row.selected"], transitions: [] } }, args: { active: true } };
+export const Pinned: Story = {
+  parameters: { catalog: { states: ["session-row.pinned"], transitions: [] } }, args: { pinned: true } };
 const dotStaysLeft: NonNullable<Story['play']> = async ({ canvas, canvasElement, userEvent }) => {
   const dot = canvasElement.querySelector<HTMLElement>('.runtime-dot')!;
   const title = canvasElement.querySelector<HTMLElement>('.session-title')!;
@@ -53,11 +58,16 @@ const dotStaysLeft: NonNullable<Story['play']> = async ({ canvas, canvasElement,
   await userEvent.hover(select);
   await check();
 };
-export const Running: Story = { args: { running: true }, play: dotStaysLeft };
-export const Worktree: Story = { args: { worktree: true } };
-export const SelectedPinnedWorktree: Story = { args: { ...Long.args, active: true, pinned: true, running: true, worktree: true }, play: dotStaysLeft };
-export const Narrow: Story = { args: { ...Long.args, width: 220, worktree: true } };
+export const Running: Story = {
+  parameters: { catalog: { states: ["session-row.running"], transitions: [] } }, args: { running: true }, play: dotStaysLeft };
+export const Worktree: Story = {
+  parameters: { catalog: { states: ["session-row.worktree"], transitions: [] } }, args: { worktree: true } };
+export const SelectedPinnedWorktree: Story = {
+  parameters: { catalog: { states: ["session-row.combined"], transitions: [] } }, args: { ...Long.args, active: true, pinned: true, running: true, worktree: true }, play: dotStaysLeft };
+export const Narrow: Story = {
+  parameters: { catalog: { states: ["session-row.narrow"], transitions: [] } }, args: { ...Long.args, width: 220, worktree: true } };
 export const PendingActions: Story = {
+  parameters: { catalog: { states: ["session-row.pending"], transitions: [] } },
   args: { pending: true },
   play: async ({ canvas, userEvent }) => {
     await userEvent.hover(canvas.getByRole('button', { name: 'Review notifications' }));
@@ -66,6 +76,7 @@ export const PendingActions: Story = {
   },
 };
 export const Hover: Story = {
+  parameters: { catalog: { states: ["session-row.hover"], transitions: ["session-row.hover"] } },
   args: Long.args,
   play: async ({ canvas, userEvent, canvasElement }) => {
     await userEvent.hover(canvas.getByRole('button', { name: longTitle }));
@@ -75,6 +86,7 @@ export const Hover: Story = {
   },
 };
 export const KeyboardFocus: Story = {
+  parameters: { catalog: { states: ["session-row.focus"], transitions: ["session-row.focus"] } },
   args: SelectedPinnedWorktree.args,
   play: async ({ canvas, userEvent, args }) => {
     canvas.getByRole('button', { name: longTitle }).focus();
@@ -90,6 +102,7 @@ export const KeyboardFocus: Story = {
   },
 };
 export const ScrollAndReset: Story = {
+  parameters: { catalog: { states: ["session-row.long", "session-row.reset", "session-row.reduced-motion"], transitions: ["session-row.leave"] } },
   args: Long.args,
   play: async ({ canvas, userEvent, canvasElement }) => {
     const text = canvasElement.querySelector<HTMLElement>('.session-title-text')!;
@@ -117,6 +130,7 @@ function SessionPlayground(args: RowProps) {
   </>;
 }
 export const Playground: Story = {
+  parameters: { catalog: { states: ["session-row.pinned", "session-row.reset"], transitions: ["session-row.pin", "session-row.archive"] } },
   render: args => <SessionPlayground {...args} />,
   play: async ({ canvas, userEvent }) => {
     canvas.getByRole('button', { name: longTitle }).focus();
@@ -132,7 +146,7 @@ export const Playground: Story = {
 };
 
 export const StateSheet: Story = {
-  parameters: { controls: { disable: true } },
+  parameters: { controls: { disable: true }, catalog: { sheet: true } },
   render: args => <div className="catalog-grid">{[
     { name: 'Short', props: {} }, { name: 'Long / fade', props: Long.args },
     { name: 'Selected', props: Selected.args }, { name: 'Pinned', props: Pinned.args },
@@ -140,4 +154,36 @@ export const StateSheet: Story = {
     { name: 'Selected + pinned + running + worktree', props: SelectedPinnedWorktree.args },
     { name: 'Pending actions', props: PendingActions.args }, { name: 'Fallback title', props: FallbackTitle.args },
   ].map(state => <section key={state.name}><h2>{state.name}</h2><SessionFixture {...args} {...state.props} width={320} /></section>)}</div>,
+};
+
+export const ScrollToEnd: Story = {
+  args: { title: 'A long title with visible final words', width: 240 },
+  parameters: { catalog: { states: ['session-row.scroll-end'], transitions: ['session-row.scroll'] } },
+  play: async ({ canvas, canvasElement, userEvent }) => {
+    const button = canvas.getByRole('button', { name: 'A long title with visible final words' });
+    await userEvent.hover(button);
+    const viewport = canvasElement.querySelector<HTMLElement>('.session-title')!;
+    const text = canvasElement.querySelector<HTMLElement>('.session-title-text')!;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      await expect(text.getAnimations()).toHaveLength(0);
+      await expect(button).toHaveAttribute('title', expect.stringContaining('A long title with visible final words'));
+    } else {
+      await waitFor(() => expect(viewport).toHaveClass('at-end'), { timeout: 20000 });
+      const distance = text.scrollWidth - viewport.clientWidth;
+      await expect(new DOMMatrix(getComputedStyle(text).transform).m41).toBeCloseTo(-distance, 0);
+      await expect(getComputedStyle(viewport).maskImage).toBe('none');
+    }
+  },
+};
+function SelectionFixture(args: RowProps) {
+  const [selected, setSelected] = useState(false);
+  return <SessionFixture {...args} active={selected} onSelect={() => setSelected(true)} />;
+}
+export const Select: Story = {
+  render: args => <SelectionFixture {...args} />,
+  parameters: { catalog: { states: ['session-row.selected'], transitions: ['session-row.select'] } },
+  play: async ({ canvas, canvasElement, userEvent }) => {
+    await userEvent.click(canvas.getByRole('button', { name: 'Review notifications' }));
+    await expect(canvasElement.querySelector('.project-session-row')).toHaveClass('active');
+  },
 };

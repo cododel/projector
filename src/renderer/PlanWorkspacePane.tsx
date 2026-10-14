@@ -1,4 +1,4 @@
-import { notifications, notifyError } from './notifications';
+import { useNotificationEnvironment, useNotifyError } from './NotificationContext';
 import React, { useEffect, useRef, useState } from 'react';
 import type { PaneContent } from '../shared/application-workspace';
 
@@ -25,6 +25,7 @@ export function PlanDocumentPane({
   onNewTab,
   onCopy,
   message,
+  initialWaiting = false,
 }: {
   content: PlanContent;
   paneId: string;
@@ -36,8 +37,11 @@ export function PlanDocumentPane({
   onNewTab(): void;
   onCopy(): void;
   message: string;
+  /** Initial waiting presentation while an injected document read is unresolved. */
+  initialWaiting?: boolean;
 }): React.JSX.Element {
-  const [waiting, setWaiting] = useState(false);
+  const notifyError = useNotifyError();
+  const [waiting, setWaiting] = useState(initialWaiting);
   const frame = useRef<HTMLIFrameElement>(null);
   const revisionId = content.tab.kind === 'document' ? content.tab.revisionId : null;
   useEffect(() => {
@@ -58,7 +62,7 @@ export function PlanDocumentPane({
     return () => {
       alive = false;
     };
-  }, [workspaceKey, paneId, content.artifactId, revisionId, bridge, refreshToken]);
+  }, [workspaceKey, paneId, content.artifactId, revisionId, bridge, refreshToken, notifyError]);
   useEffect(() => {
     if (waiting || !frame.current) {
       register(paneId, null);
@@ -125,6 +129,7 @@ export function BrowserWorkspacePane({
   register(paneId: string, value: { nativeId?: string; element: HTMLDivElement } | null): void;
   onFocus(): void;
 }): React.JSX.Element {
+  const { controller: notifications } = useNotificationEnvironment();
   const element = useRef<HTMLDivElement>(null);
   useEffect(() => {
     register(paneId, element.current ? { nativeId, element: element.current } : null);
@@ -137,7 +142,7 @@ export function BrowserWorkspacePane({
       if (existing) notifications.update(existing.id, { body: error });
       else notifications.push({ source: 'browser', context, operation: 'load', level: 'error', title: 'Browser could not load', body: error });
     }
-  }, [error, nativeId, paneId]);
+  }, [error, nativeId, paneId, notifications]);
   return (
     <>
       <div

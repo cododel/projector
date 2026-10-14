@@ -353,6 +353,11 @@ test('document area capture stays private until Save and opens its numbered froz
     await frame.getByLabel('Annotation comment').fill('Clicked paragraph element');
     await frame.getByRole('button', { name: 'Save private annotation' }).click();
     await expect(frame.getByLabel('Annotation comment')).toHaveCount(0);
+    // Composer closure precedes the asynchronous frozen-capture presentation.
+    // Establish its second capture before a later jump can reuse the old #1 DOM.
+    await expect(overlay.locator('#capture')).toBeVisible();
+    await expect(overlay.locator('#number')).toHaveText('2');
+    await expect(overlay.locator('#composer')).toBeHidden();
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.locator('.submit-area')).toContainText('Saved state is unchanged');
     const clicked = JSON.parse(

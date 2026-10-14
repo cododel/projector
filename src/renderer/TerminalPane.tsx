@@ -1,5 +1,5 @@
 import { useErrorReporter } from './useNotifications';
-import { notifications } from './notifications';
+import { useNotificationEnvironment } from './NotificationContext';
 import { terminalWheelController } from './terminal-wheel-controller';
 import { terminalFilePaths } from './terminal-drop';
 import React, { useEffect, useRef, useState } from 'react';
@@ -41,6 +41,7 @@ export function TerminalPane({
   onResume?(): void;
   onActivateForDrop?(): Promise<boolean>;
 }): React.JSX.Element {
+  const { controller: notifications } = useNotificationEnvironment();
   const container = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -61,7 +62,7 @@ export function TerminalPane({
       if (existing) notifications.update(existing.id, { level: 'error', body: record.error, lifetime: 'sticky' });
       else notifications.push({ source: 'terminal-status', context: record.id, operation: record.id, level: 'error', title: 'Terminal needs attention', body: record.error });
     } else if (existing) notifications.update(existing.id, { level: 'info', title: 'Terminal saving recovered', body: 'Local saving is confirmed.', lifetime: 'visible' });
-  }, [record.id, record.error]);
+  }, [record.id, record.error, notifications]);
   const [truncated, setTruncated] = useState(false);
   activeRef.current = active;
   const running = record.status === 'running';
@@ -372,12 +373,12 @@ export function TerminalPane({
           }}
         >
           {cleanup
-            ? 'Retry cleanup'
+            ? 'Retry terminal cleanup'
             : running
               ? 'Stop'
               : record.kind === 'codex'
                 ? 'Resume'
-                : 'Start shell'}
+                : 'Restart terminal'}
         </button>
       </div>
       {record.kind === 'codex' && !running && !cleanup && (

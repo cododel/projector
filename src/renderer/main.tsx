@@ -1,11 +1,32 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import mermaid from 'mermaid';
 import type { DocumentNode, WidgetDefinition } from '../document/types';
 import './style.css';
+import { AnnotationList } from './document/AnnotationList';
+import { DocumentContent, DocumentArticle } from './document/DocumentContent';
+import { DocumentSelection } from './document/DocumentSelection';
+import { DocumentAreaSelection } from './document/DocumentAreaSelection';
+import { DocumentAnnotations } from './document/DocumentAnnotations';
+import { DocumentStatus, DocumentWaiting } from './document/DocumentStatus';
 import { Icon } from './Icon';
+import { SidebarUtilities, SidebarToggle } from './shell/SidebarUtilities';
+import { ShellLayout, ShellSidebar, ShellWorkspace } from './shell/ShellLayout';
+import { WorkspaceUnavailable, NoOpenTabs, WaitingForAgent } from './shell/WorkspaceEmpty';
+import { ArtifactProperties } from './shell/ArtifactProperties';
+import { BottomTerminals, BottomResizer } from './shell/BottomTerminals';
+import { WindowTitlebar } from './shell/WindowTitlebar';
+import { WorkspaceTabs } from './shell/WorkspaceTabs';
+import { PlanToolbar } from './shell/PlanToolbar';
+import { FeedbackHistory } from './shell/FeedbackHistory';
+import { Handoff } from './shell/Handoff';
+import { SaveApproval } from './shell/SaveApproval';
+import { Welcome } from './shell/Welcome';
+import { ProjectTree } from './shell/ProjectTree';
+import { BrowserToolbar } from './shell/BrowserToolbar';
+import { SessionHome, SessionUnavailable } from './shell/SessionHome';
+import { RenamePlanDialog, SessionMetadataDialog, McpConnectionDialog } from './shell/ShellDialogs';
 import { WorkspaceMenu } from './WorkspaceMenu';
-import { markerGeometry, commentPosition } from '../shared/annotation-marker';
+import { commentPosition } from '../shared/annotation-marker';
 import { SidebarResizer } from './SidebarResizer';
 import { fitSidebars, SIDEBAR_DEFAULT } from '../shared/sidebar-layout';
 import { GuideViewer } from './GuideViewer';
@@ -16,12 +37,10 @@ import { captureTextSelection, anchorRange } from './anchors';
 import { annotationClip } from './annotation-visibility';
 import { RefreshQueue } from './refresh-queue';
 import { TerminalPane } from './TerminalPane';
-import { ProjectSessionRow } from './ProjectSessionRow';
 import { SessionActions, type ArchivedChat } from './SessionActions';
 import { notifications, notifyError } from './notifications';
 import { useNotificationHost, useErrorReporter } from './useNotifications';
 import { useDocumentError } from './document-notifications';
-import { NotificationAccess } from './NotificationAccess';
 import type { NotificationTransport } from '../shared/notifications';
 import type { HarnessArchiveResult } from '../shared/harness';
 import { WorkspaceSplit } from './WorkspaceSplit';
@@ -1695,22 +1714,8 @@ function App(): React.JSX.Element {
   function agentMessage(plan: Artifact): string {
     return `Prepare the existing Projector plan. Project ID: ${plan.projectId}. Artifact ID: ${plan.id}. Read read_artifact with artifactId and part="manifest" for the sourcePath and sourceFile. Explicitly attach your known originSession with attach_artifact_session (artifactId, originSession, operationId); ask me if you do not know your session ID, never infer it. Write the MDX source into the returned sourceFile and publish the first revision of this same artifact. Keep its existing private workspace and annotations. Do not create a replacement artifact.`;
   }
-  function sidebarToggle(side: 'left' | 'right') {
-    const visible = side === 'left' ? leftSidebarVisible : rightSidebarVisible;
-    const label = `${visible ? 'Hide' : 'Show'} ${side === 'left' ? 'projects' : 'feedback'} sidebar`;
-    return (
-      <button
-        className="sidebar-toggle"
-        aria-label={label}
-        title={label}
-        aria-pressed={visible}
-        disabled={side === 'right' && !feedbackAvailable}
-        onClick={() => void toggleSidebar(side)}
-      >
-        <Icon name={side === 'left' ? 'sidebar-left' : 'sidebar-right'} />
-      </button>
-    );
-  }
+  function sidebarToggle(side: 'left' | 'right') { return <SidebarToggle side={side} visible={side === 'left' ? leftSidebarVisible : rightSidebarVisible} disabled={side === 'right' && !feedbackAvailable} onToggle={() => void toggleSidebar(side)} />; }
+
   const requestedLeft =
     sidebarPreview?.side === 'left'
       ? sidebarPreview.width || (workspace.layout.leftSidebarWidth ?? SIDEBAR_DEFAULT.left)
@@ -1727,69 +1732,15 @@ function App(): React.JSX.Element {
   function renderSessionHome(sessionId: string): React.ReactNode {
     const knownSession = application?.harnesses.sessions.find(item => item.id === sessionId);
     if (!knownSession && application && !application.harnesses.error) {
-      return <div className="session-home new-tab-home">
-        <h2>Session unavailable</h2>
-        <p className="muted">This session is no longer available in Codex.</p>
-        <button className="primary" disabled={busy} onClick={() => void applicationCommand('newCodex', {
-          operationId: crypto.randomUUID(),
-        })}>Start new session</button>
-      </div>;
+      return <SessionUnavailable busy={busy} onStart={() => void applicationCommand('newCodex', { operationId: crypto.randomUUID() })} />;
     }
     const session = knownSession ?? {
       id: sessionId, title: 'Codex session', cwd: snapshot.projects.find(item => item.id === sessionWorkspace?.projectId)?.path ?? '',
       processState: 'unknown', terminalId: undefined,
     };
-    return (
-              <div className="session-home new-tab-home">
-                <h2>{session.title || 'Codex session'}</h2>
-                <p className="muted session-summary">{session.processState === 'unknown'
-                  ? 'Session from history · external process state unknown'
-                  : `Process: ${session.processState}`}</p>
-                <details className="session-details"><summary>Details</summary><dl>
-                  <dt>Session ID</dt>
-                  <dd>{session.id}</dd>
-                  <dt>Working folder</dt>
-                  <dd>{session.cwd}</dd>
-                  <dt>Process</dt>
-                  <dd>
-                    {session.processState === 'unknown'
-                      ? 'Unknown · this session was discovered from history'
-                      : session.processState}
-                  </dd>
-                </dl>
-                  <button onClick={() => void copy(session.id)}>Copy session ID</button>
-                  <button onClick={() => void copy(session.cwd)}>Copy working folder</button>
-                </details>
-                {session.processState === 'running' && session.terminalId ? (
-                  <button
-                    className="primary"
-                    onClick={() =>
-                      void applicationCommand('showTerminal', {
-                        terminalId: session.terminalId,
-                      })
-                    }
-                  >
-                    Open terminal
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      className="primary"
-                      disabled={busy}
-                      onClick={() =>
-                        void applicationCommand('newCodex', {
-                          sessionId: session.id,
-                          operationId: crypto.randomUUID(),
-                        })
-                      }
-                    >
-                      Resume
-                    </button>
-                  </>
-                )}
-              </div>
-    );
+    return <SessionHome session={session} busy={busy} onCopy={value => void copy(value)} onOpenTerminal={() => void applicationCommand('showTerminal', { terminalId: session.terminalId })} onResume={() => void applicationCommand('newCodex', { sessionId: session.id, operationId: crypto.randomUUID() })} />;
   }
+
   function renderApplicationPane(
     pane: Extract<PaneNode, { kind: 'pane' }>,
     active: boolean,
@@ -1834,14 +1785,14 @@ function App(): React.JSX.Element {
           }
         />
       ) : (
-        <div className="new-tab-home">Terminal unavailable</div>
+        <WorkspaceUnavailable kind="terminal" />
       );
     }
     const plan = snapshot.artifacts.find((plan) => plan.id === content.artifactId);
-    if (!plan) return <div className="new-tab-home">Plan unavailable</div>;
+    if (!plan) return <WorkspaceUnavailable kind="plan" />;
     const owningProject = snapshot.projects.find(project => project.id === plan.projectId);
     if (!owningProject || owningProject.available === false)
-      return <div className="new-tab-home">Project folder unavailable</div>;
+      return <WorkspaceUnavailable kind="project" />;
     if (content.tab.kind === 'document')
       return (
         <PlanDocumentPane
@@ -1904,7 +1855,7 @@ function App(): React.JSX.Element {
     if (activeBrowser?.error) notifyError(activeBrowser.error, 'browser', activeBrowser.id);
   }, [activeBrowser?.id, activeBrowser?.error]);
   return (
-    <div
+    <ShellLayout leftVisible={leftSidebarVisible} rightVisible={rightSidebarVisible} animating={sidebarAnimating}
       style={
         {
           '--left-sidebar-width': `${fitted.left}px`,
@@ -1913,161 +1864,20 @@ function App(): React.JSX.Element {
           '--right-sidebar-content-width': `${sidebarAnimationWidths.right}px`,
         } as React.CSSProperties
       }
-      className={`app ${sidebarAnimating ? 'sidebar-animating' : ''} ${!leftSidebarVisible ? 'left-sidebar-hidden' : ''} ${!rightSidebarVisible ? 'right-sidebar-hidden' : ''}`}
     >
-      <header className="window-titlebar" role="toolbar" aria-label="Window toolbar">
-        {leftSidebarVisible && (
-          <div className="titlebar-section titlebar-left">
-            <div className="titlebar-brand" aria-label="Projector">
-              <span className="titlebar-brand-mark" aria-hidden="true">P</span>
-              <span className="titlebar-brand-name">Projector</span>
-            </div>
-            {sidebarToggle('left')}
-          </div>
-        )}
-        <div className="titlebar-section titlebar-center">
-          {!leftSidebarVisible && sidebarToggle('left')}
-          {appMode ? (
-            <nav
-              className="content-tabs"
-              role="tablist"
-              aria-label="Workspace tabs"
-              ref={titlebarTabs}
-            >
-              {(!projectOverview ? (sessionWorkspace?.tabs ?? []) : []).map((tab) => {
-                const panes = paneLeaves(tab.root),
-                  content =
-                    panes.find((pane) => pane.id === sessionWorkspace?.activePaneId)?.content ??
-                    panes[0].content;
-                const pinned = panes.some(pane => pane.content.kind === 'session');
-                const terminal =
-                  content.kind === 'terminal' || content.kind === 'session'
-                    ? application?.terminals.find((record) => record.id === content.terminalId)
-                    : null;
-                const title =
-                  pinned || content.kind === 'session' ? 'Codex' : content.kind === 'terminal'
-                    ? (terminal?.title ?? 'Terminal')
-                    : content.tab.kind === 'document'
-                      ? 'Plan'
-                      : content.tab.kind === 'home'
-                        ? 'New tab'
-                        : content.tab.title || 'Browser';
-                return (
-                  <div
-                    className={`content-tab ${applicationTab?.id === tab.id ? 'active' : ''}`}
-                    key={tab.id}
-                  >
-                    <button
-                      role="tab"
-                      aria-selected={applicationTab?.id === tab.id}
-                      disabled={busy}
-                      title={pinned ? 'Session tab: cannot be closed' : title}
-                      onMouseDown={(event) => {
-                        if (event.button === 1) event.preventDefault();
-                      }}
-                      onAuxClick={(event) => {
-                        if (event.button === 1) {
-                          event.preventDefault();
-                          if (pinned) return;
-                          void applicationCommand('closeTab', { tabId: tab.id });
-                        }
-                      }}
-                      onClick={() => {
-                        setBottomFocused(false);
-                        void applicationCommand('selectTab', { tabId: tab.id });
-                      }}
-                    >
-                      <span aria-hidden="true">
-                        {pinned || content.kind === 'terminal' || content.kind === 'session'
-                          ? '›_'
-                          : content.tab.kind === 'document'
-                            ? '▤'
-                            : '◎'}
-                      </span>
-                      <span>
-                        {title}
-                        {panes.length > 1 ? ` · ${panes.length}` : ''}
-                      </span>
-                    </button>
-                    {!pinned && (
-                    <button
-                      className="tab-close"
-                      disabled={busy}
-                      aria-label={`Close ${title.toLowerCase()} tab`}
-                      onClick={() => void applicationCommand('closeTab', { tabId: tab.id })}
-                    >
-                      <Icon name="close" />
-                    </button>
-                    )}
-                  </div>
-                );
-              })}
-            </nav>
-          ) : (
-            selected && (
-              <nav
-                className="content-tabs"
-                role="tablist"
-                aria-label="Plan tabs"
-                ref={titlebarTabs}
-              >
-                {planTabs?.tabs.map((tab) => (
-                  <div
-                    className={`content-tab ${activeTab?.id === tab.id ? 'active' : ''}`}
-                    key={tab.id}
-                  >
-                    <button
-                      role="tab"
-                      aria-selected={activeTab?.id === tab.id}
-                      disabled={busy}
-                      onAuxClick={(e) => {
-                        if (e.button === 1) {
-                          e.preventDefault();
-                          void tabCommand('close', tab.id);
-                        }
-                      }}
-                      onMouseDown={(e) => {
-                        if (e.button === 1) e.preventDefault();
-                      }}
-                      onClick={() => void tabCommand('select', tab.id)}
-                      title={
-                        tab.kind === 'browser'
-                          ? tab.title
-                          : tab.kind === 'home'
-                            ? 'New tab'
-                            : artifact?.title
-                      }
-                    >
-                      <span aria-hidden="true">{tab.kind === 'document' ? '▤' : '◎'}</span>
-                      <span>
-                        {tab.kind === 'document'
-                          ? 'Plan'
-                          : tab.kind === 'home'
-                            ? 'New tab'
-                            : tab.title || 'Browser'}
-                      </span>
-                    </button>
-                    <button
-                      className="tab-close"
-                      disabled={busy}
-                      aria-label={`Close ${tab.kind === 'document' ? 'plan' : tab.kind === 'home' ? 'new tab' : tab.title || 'browser'} tab`}
-                      onClick={() => void tabCommand('close', tab.id)}
-                    >
-                      <Icon name="close" />
-                    </button>
-                  </div>
-                ))}
-              </nav>
-            )
-          )}
+      <WindowTitlebar leftSidebarVisible={leftSidebarVisible} rightSidebarVisible={rightSidebarVisible} sidebarToggle={sidebarToggle} tabs={<>           <WorkspaceTabs tabsRef={titlebarTabs} label={appMode ? 'Workspace tabs' : 'Plan tabs'} busy={busy} items={appMode ? (!projectOverview ? (sessionWorkspace?.tabs ?? []) : []).map(tab => {
+            const panes = paneLeaves(tab.root), content = panes.find(pane => pane.id === sessionWorkspace?.activePaneId)?.content ?? panes[0].content;
+            const pinned = panes.some(pane => pane.content.kind === 'session');
+            const terminal = content.kind === 'terminal' || content.kind === 'session' ? application?.terminals.find(record => record.id === content.terminalId) : null;
+            const title = pinned || content.kind === 'session' ? 'Codex' : content.kind === 'terminal' ? (terminal?.title ?? 'Terminal') : content.tab.kind === 'document' ? 'Plan' : content.tab.kind === 'home' ? 'New tab' : content.tab.title || 'Browser';
+            return {id: tab.id, title, tooltip: pinned ? 'Session tab: cannot be closed' : title, glyph: pinned || content.kind === 'terminal' || content.kind === 'session' ? '›_' : content.tab.kind === 'document' ? '▤' : '◎', pinned, active: applicationTab?.id === tab.id, count: panes.length, closeLabel: `Close ${title.toLowerCase()} tab`};
+          }) : selected ? (planTabs?.tabs ?? []).map(tab => ({id: tab.id, title: tab.kind === 'document' ? 'Plan' : tab.kind === 'home' ? 'New tab' : tab.title || 'Browser', tooltip: tab.kind === 'browser' ? tab.title : tab.kind === 'home' ? 'New tab' : artifact?.title, glyph: tab.kind === 'document' ? '▤' : '◎', pinned: false, active: activeTab?.id === tab.id, closeLabel: `Close ${tab.kind === 'document' ? 'plan' : tab.kind === 'home' ? 'new tab' : tab.title || 'browser'} tab`})) : []} onSelect={id => {if(appMode) {setBottomFocused(false); void applicationCommand('selectTab', {tabId: id});} else void tabCommand('select', id);}} onClose={id => {if(appMode) void applicationCommand('closeTab', {tabId: id}); else void tabCommand('close', id);}} visible={appMode || Boolean(selected)} />
           {appMode ? <WorkspaceMenu label="New tab" icon="plus" onOpenChange={open => workspaceMenuChanged('New tab',open)} disabled={busy} items={[
             {label: 'New terminal', action: () => void applicationCommand('newTerminal', {operationId: crypto.randomUUID()})},
             {label: 'New browser tab', disabled: !selected && !lastPlan, action: () => shortcut('newTab')},
           ]} /> : <button className="new-tab" title="New tab" aria-label="New tab"
             disabled={busy || !selected} onClick={() => void tabCommand('new')}><Icon name="plus" /></button>}
-          <span className="titlebar-drag-space" />
-
-          {appMode && <div className="titlebar-workspace-actions" role="toolbar" aria-label="Workspace controls">
+ </>} actions={<>           {appMode && <div className="titlebar-workspace-actions" role="toolbar" aria-label="Workspace controls">
             <button aria-label="Toggle project terminals" title="Project terminals" aria-pressed={bottom?.visible ?? false}
               onClick={() => shortcut('bottomPanel')}><Icon name="terminal" /></button>
             <WorkspaceMenu label="Workspace actions" icon="more" onOpenChange={open => workspaceMenuChanged('Workspace actions',open)} disabled={busy} items={[
@@ -2080,16 +1890,8 @@ function App(): React.JSX.Element {
               }))},
             ]} />
           </div>}
-          {(notificationCount > 0 || application?.metadataPending) && <button className="notification-access" onClick={() => application?.metadataPending ? reviewPendingWrite() : bridge.notifications?.focus()}>Notifications · {notificationCount}</button>}
-          {!rightSidebarVisible && sidebarToggle('right')}
-        </div>
-        {rightSidebarVisible && (
-          <div className="titlebar-section titlebar-right">
-            {sidebarToggle('right')}
-            <span className="titlebar-drag-space" />
-          </div>
-        )}
-      </header>
+ </>} notification={<>           {(notificationCount > 0 || application?.metadataPending) && <button className="notification-access" onClick={() => application?.metadataPending ? reviewPendingWrite() : bridge.notifications?.focus()}>Notifications · {notificationCount}</button>}
+ </>} />
       {(['left', 'right'] as const).map(
         (side) =>
           ((side === 'left' ? leftSidebarVisible : rightSidebarVisible) ||
@@ -2129,326 +1931,17 @@ function App(): React.JSX.Element {
           ),
       )}
       {sidebarPreview && <div className="sidebar-resize-shield" />}
-      <div className="sidebar-viewport">
-        <aside className="sidebar" ref={leftSidebarContent}>
-          <div className="project-tree">
-            <div className="tree-heading">Projects</div>
-            {snapshot.projects.map((item) => (
-              <section key={item.id}>
-                <div
-                  className="project-row"
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    void openProjectMenu(item);
-                  }}
-                >
-                  <button className="project-toggle" aria-label={`${collapsed.has(item.id) ? 'Expand' : 'Collapse'} sessions in ${item.path.split('/').at(-1)}`}
-                    aria-expanded={!collapsed.has(item.id)} onClick={() => setCollapsed(previous => {
-                      const next = new Set(previous); if (next.has(item.id)) next.delete(item.id); else next.add(item.id); return next;
-                    })}><Icon name={collapsed.has(item.id) ? 'right' : 'down'} /></button>
-                  <button className={`project-name ${item.id === projectId ? 'current' : ''}`} title={item.path}
-                    disabled={busy} aria-label={`Open project ${item.path.split('/').at(-1)}`} onClick={() => void showProject(item)}>
-                    {item.path.split('/').filter(Boolean).at(-1)}
-                  </button>
-                  <div className="project-row-actions">
-                    <button
-                      aria-label={`Project actions for ${item.path.split('/').at(-1)}`}
-                      title="Project actions"
-                      disabled={busy}
-                      onClick={() => void openProjectMenu(item)}
-                    >
-                      <Icon name="more" />
-                    </button>
-                    <button
-                      aria-label={`New Codex session in ${item.path.split('/').at(-1)}`}
-                      title="New Codex session"
-                      disabled={busy || item.available === false}
-                      onClick={() => void startProjectSession(item)}
-                    >
-                      <Icon name="plus" />
-                    </button>
-                  </div>
-                </div>
-                {item.available === false && !collapsed.has(item.id) && (
-                  <small className="project-unavailable">Folder unavailable</small>
-                )}
-                {!collapsed.has(item.id) && (
-                  <div className="project-sessions">
-                    {application?.harnesses.sessions
-                      .filter((session) => session.projectId === item.id)
-                      .sort(pinOrder)
-                      .map((session) => (
-                        <ProjectSessionRow key={session.id} session={session}
-                          active={sessionWorkspace?.sessionId === session.id && sessionWorkspace.projectId === item.id}
-                          pinned={pinnedSessions.includes(session.id)} actions={sessionActions(session)}
-                          onSelect={() => {
-                            setBottomFocused(false);
-                            void transition(() => invoke('applicationCommand', {
-                              action: 'select', projectId: item.id, sessionId: session.id,
-                            }));
-                          }} />
-                      ))}
-                    {!application?.harnesses.sessions.some(
-                      (session) => session.projectId === item.id,
-                    ) && <small className="tree-empty">No sessions to display</small>}
-                  </div>
-                )}
-              </section>
-            ))}
-            {(application?.harnesses.sessions.filter((session) => session.projectId === null)
-              .length ?? 0) > 0 && (
-              <details className="other-sessions">
-                <summary>Other sessions</summary>
-                {application?.harnesses.sessions
-                  .filter((session) => session.projectId === null)
-                  .sort(pinOrder)
-                  .map((session) => (
-                    <div key={session.id}>
-                      <div className="other-session-heading"><strong>{session.title || 'Codex session'}</strong>{sessionActions(session)}</div>
-                      <small title={session.cwd}>{session.cwd}</small>
-                      <small>Process state unknown · open its project folder to resume.</small>
-                      <button
-                        onClick={() =>
-                          void transition(async () => {
-                            const metadata = await invoke<HarnessSession>('harnessRead', {
-                              sessionId: session.id,
-                            });
-                            await invoke('browserSelect', { tabId: null });
-                            setSessionMetadata(metadata);
-                          })
-                        }
-                      >
-                        Read metadata
-                      </button>
-                    </div>
-                  ))}
-              </details>
-            )}
-            <button
-              className="subtle full"
-              disabled={busy}
-              onClick={() => void transition(() => invoke('chooseProject'))}
-            >
-              + Open project folder
-            </button>
-          </div>
-          <nav className="sidebar-bottom" aria-label="Application utilities">
-            <button className="sidebar-utility" onClick={openSettings}>
-              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3z" /><circle cx="12" cy="12" r="3" /></svg>
-              <span>Settings</span>
-            </button>
-            <button
-              className="sidebar-utility"
-              onClick={() =>
-                void transition(async () => {
-                  informationBrowser.current = activeBrowser?.id ?? null;
-                  informationFocus.current = window.document.activeElement as HTMLElement;
-                  await invoke('browserSelect', { tabId: null });
-                  setGuideOpen(true);
-                })
-              }
-            >
-              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M4 3h12a2 2 0 0 1 2 2v16H6a2 2 0 0 1-2-2V3Zm0 14h14M8 7h6M8 10h6" /></svg>
-              <span>Projector guide</span>
-            </button>
-            <button
-              className="sidebar-utility"
-              aria-label="MCP connection"
-              title="MCP connection · Local runtime active"
-              onClick={() =>
-                void transition(async () => {
-                  const connection = await invoke<import('../shared/protocol').McpSetup>('setup');
-                  informationBrowser.current = activeBrowser?.id ?? null;
-                  informationFocus.current = window.document.activeElement as HTMLElement;
-                  await invoke('browserSelect', { tabId: null });
-                  setSetup(connection);
-                })
-              }
-            >
-              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M8 3v5m8-5v5M6 8h12v3a6 6 0 0 1-12 0V8Zm6 9v4" /></svg>
-              <span>MCP connection</span>
-              <span className="runtime-dot footer-runtime" role="img" aria-label="Local runtime active" />
-            </button>
-          </nav>
-        </aside>
-      </div>
-      <main className="workspace">
+      <ShellSidebar side="left" contentRef={leftSidebarContent}>
+          <ProjectTree projects={snapshot.projects} sessions={application?.harnesses.sessions ?? []} projectId={projectId} activeProjectId={sessionWorkspace?.projectId} activeSessionId={sessionWorkspace?.sessionId} collapsed={collapsed} pinnedSessions={pinnedSessions} busy={busy} onCollapsed={setCollapsed} pinOrder={pinOrder} sessionActions={sessionActions} onProjectMenu={item => void openProjectMenu(item)} onProject={item => void showProject(item)} onNewSession={item => void startProjectSession(item)} onSession={(projectId, sessionId) => {setBottomFocused(false); void transition(() => invoke('applicationCommand', {action: 'select', projectId, sessionId}));}} onMetadata={session => void transition(async () => { const metadata = await invoke<HarnessSession>('harnessRead', {sessionId: session.id}); await invoke('browserSelect', {tabId: null}); setSessionMetadata(metadata); })} onChooseProject={() => void transition(() => invoke('chooseProject'))} />
+          <SidebarUtilities onSettings={openSettings} onGuide={() => void transition(async () => {informationBrowser.current = activeBrowser?.id ?? null; informationFocus.current = window.document.activeElement as HTMLElement; await invoke('browserSelect', {tabId: null});setGuideOpen(true);})} onMcp={() => void transition(async () => {const connection = await invoke<import('../shared/protocol').McpSetup>('setup');informationBrowser.current = activeBrowser?.id ?? null;informationFocus.current = window.document.activeElement as HTMLElement;await invoke('browserSelect', {tabId: null});setSetup(connection);})} />
+      </ShellSidebar>
+      <ShellWorkspace>
         {selected && (
           <header className={`plan-header ${activeBrowser ? 'browser-plan-header' : ''}`}>
-            {selected && (
-              <div className="version-tools">
-                {selected.revisionId && (
-                  <label>
-                    <select
-                      disabled={busy}
-                      aria-label="Document version"
-                      value={selected.revisionId}
-                      onChange={(e) => {
-                        const revisionId = e.currentTarget.value;
-                        void transition(() =>
-                          invoke(
-                            appMode ? 'applicationCommand' : 'openArtifact',
-                            appMode
-                              ? {
-                                  action: 'selectVersion',
-                                  projectId: sessionWorkspace?.projectId,
-                                  key: currentKey,
-                                  paneId: activePane?.id,
-                                  revisionId,
-                                }
-                              : { artifactId: selected.artifactId, revisionId },
-                          ),
-                        );
-                      }}
-                    >
-                      {(artifact?.revisions ?? [selected.revisionId]).map((r, i) => {
-                        const id = typeof r === 'string' ? r : r.id;
-                        return (
-                          <option key={id} value={id}>
-                            Version {i + 1}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </label>
-                )}
-                <span className={`status ${document?.approved ? 'approved' : ''}`}>
-                  {document?.draft
-                    ? 'Draft preview'
-                    : document?.approved
-                      ? 'Approved'
-                      : 'In review'}
-                </span>
-              </div>
-            )}
-            {activeTab?.kind === 'document' && (
-              <>
-                <span
-                  className={`document-save-status ${documentToolbar.saveStatus === 'Save failed' ? 'save-error' : ''}`}
-                  role="status"
-                >
-                  {document?.draft ? 'Read-only preview' : documentToolbar.saveStatus}
-                </span>
-                <button
-                  className={`annotate-tool ${documentToolbar.areaMode ? 'active' : ''}`}
-                  aria-label="Annotate document"
-                  aria-pressed={documentToolbar.areaMode}
-                  disabled={busy || !documentToolbar.canAnnotate || document?.draft}
-                  onClick={() =>
-                    void transition(async () => {
-                      frame.current?.contentWindow?.postMessage(
-                        { type: 'projector-toggle-annotate' },
-                        'projector://document',
-                      );
-                    })
-                  }
-                >
-                  Annotate
-                </button>
-              </>
-            )}
+            <PlanToolbar revisionId={selected.revisionId} revisions={artifact?.revisions} approved={Boolean(document?.approved)} draft={Boolean(document?.draft)} busy={busy} documentActive={activeTab?.kind === 'document'} saveStatus={documentToolbar.saveStatus} areaMode={documentToolbar.areaMode} canAnnotate={documentToolbar.canAnnotate} onVersion={revisionId => void transition(() => invoke(appMode ? 'applicationCommand' : 'openArtifact', appMode ? {action: 'selectVersion', projectId: sessionWorkspace?.projectId, key: currentKey, paneId: activePane?.id, revisionId} : {artifactId: selected.artifactId, revisionId}))} onAnnotate={() => void transition(async () => {frame.current?.contentWindow?.postMessage({type: 'projector-toggle-annotate'}, 'projector://document');})} />
             {activeBrowser && <span className="toolbar-divider" aria-hidden="true" />}
             {activeBrowser && (
-              <div className="browser-toolbar">
-                <button
-                  aria-label="Back"
-                  disabled={!activeBrowser.canGoBack}
-                  onClick={() =>
-                    void transition(() =>
-                      invoke('browserCommand', { tabId: activeBrowser.id, action: 'back' }),
-                    )
-                  }
-                >
-                  <Icon name="back" />
-                </button>
-                <button
-                  aria-label="Forward"
-                  disabled={!activeBrowser.canGoForward}
-                  onClick={() =>
-                    void transition(() =>
-                      invoke('browserCommand', { tabId: activeBrowser.id, action: 'forward' }),
-                    )
-                  }
-                >
-                  <Icon name="forward" />
-                </button>
-                <button
-                  aria-label={activeBrowser.loading ? 'Stop' : 'Reload'}
-                  onClick={() =>
-                    void transition(() =>
-                      invoke('browserCommand', {
-                        tabId: activeBrowser.id,
-                        action: activeBrowser.loading ? 'stop' : 'reload',
-                      }),
-                    )
-                  }
-                >
-                  <Icon name={activeBrowser.loading ? 'stop' : 'refresh'} />
-                </button>
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void transition(() =>
-                      invoke('browserCommand', {
-                        tabId: activeBrowser.id,
-                        action: 'navigate',
-                        url,
-                      }),
-                    );
-                  }}
-                >
-                  <input
-                    aria-label="Browser address"
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                  />
-                </form>
-                <select
-                  aria-label="Browser zoom"
-                  title="Browser zoom · select 100% to reset"
-                  value={activeBrowser.zoomFactor ?? 1}
-                  onChange={(event) => {
-                    const zoomFactor = Number(event.currentTarget.value);
-                    void transition(() =>
-                      invoke('browserCommand', {
-                        tabId: activeBrowser.id,
-                        action: 'zoom',
-                        zoomFactor,
-                      }),
-                    );
-                  }}
-                >
-                  {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((factor) => (
-                    <option key={factor} value={factor}>
-                      {Math.round(factor * 100) + '%'}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  aria-label="Open page in external browser"
-                  title="Open externally · sign-in remains in that browser"
-                  onClick={() =>
-                    void action(() =>
-                      invoke('browserCommand', { tabId: activeBrowser.id, action: 'external' }),
-                    )
-                  }
-                >
-                  <Icon name="external" />
-                </button>
-
-                <button
-                  className={browser.annotating ? 'active' : ''}
-                  aria-label="Annotate browser"
-                  aria-pressed={browser.annotating}
-                  onClick={() =>
-                    void action(() =>
-                      invoke('browserCommand', { tabId: activeBrowser.id, action: 'annotate' }),
-                    )
-                  }
-                >
-                  Annotate
-                </button>
-              </div>
+              <BrowserToolbar activeBrowser={activeBrowser} url={url} annotating={browser.annotating} onAddress={setUrl} onCommand={(command, params) => void (command === 'external' || command === 'annotate' ? action : transition)(() => invoke('browserCommand', {tabId: activeBrowser.id, action: command, ...params}))} />
             )}
           </header>
         )}
@@ -2486,24 +1979,7 @@ function App(): React.JSX.Element {
             ) : sessionWorkspace?.sessionId && !application?.harnesses.error ? (
               renderSessionHome(sessionWorkspace.sessionId)
             ) : (
-              <div className="new-tab-home">
-                <h2>No open tabs</h2>
-                <p className="muted">Open a plan from the project overview or start a project terminal.</p>
-                {lastPlan && (
-                  <>
-                    <button onClick={() => void openPlan(lastPlan, planRevision(lastPlan))}>
-                      Open plan
-                    </button>
-                    <button
-                      onClick={() =>
-                        void applicationCommand('openHome', { artifactId: lastPlan.id })
-                      }
-                    >
-                      New tab
-                    </button>
-                  </>
-                )}
-              </div>
+              <NoOpenTabs application hasPlan={Boolean(lastPlan)} onOpen={() => {if(lastPlan) void openPlan(lastPlan, planRevision(lastPlan));}} onNew={() => {if(lastPlan) void applicationCommand('openHome', {artifactId: lastPlan.id});}} />
             )}
           </div>
         ) : selected ? (
@@ -2547,17 +2023,7 @@ function App(): React.JSX.Element {
               !document?.source &&
               !document?.preview &&
               artifact ? (
-              <div className="new-tab-home empty-plan-home">
-                <h2>Waiting for your agent</h2>
-                <p className="muted">
-                  This plan is ready as a private workspace. Ask your agent to write and publish its
-                  first document.
-                </p>
-                <button className="primary" onClick={() => void copy(agentMessage(artifact))}>
-                  {copiedText === agentMessage(artifact) ? 'Copied' : 'Copy message for agent'}
-                </button>
-                <button onClick={() => void tabCommand('new')}>New tab</button>
-              </div>
+              <WaitingForAgent copied={copiedText === agentMessage(artifact)} onCopy={() => void copy(agentMessage(artifact))} onNew={() => void tabCommand('new')} />
             ) : activeTab?.kind === 'document' ? (
               <iframe
                 ref={frame}
@@ -2571,57 +2037,15 @@ function App(): React.JSX.Element {
                 }}
               />
             ) : (
-              <div className="new-tab-home">
-                <h2>No open tabs</h2>
-                <button
-                  onClick={() =>
-                    void transition(() =>
-                      invoke('openArtifact', {
-                        artifactId: selected.artifactId,
-                        revisionId: selected.revisionId,
-                      }),
-                    )
-                  }
-                >
-                  Open plan
-                </button>
-                <button onClick={() => void tabCommand('new')}>New tab</button>
-              </div>
+              <NoOpenTabs onOpen={() => void transition(() => invoke('openArtifact', {artifactId: selected.artifactId, revisionId: selected.revisionId}))} onNew={() => void tabCommand('new')} />
             )}
           </>
         ) : (
           <>
-            <div className="welcome">
-              <div className="welcome-symbol">◇</div>
-              <h2>Make decisions before implementation</h2>
-              <p>
-                Connect your agent through MCP, publish a plan, and save answers and annotations for
-                the same session.
-              </p>
-              <button
-                className="primary"
-                onClick={() => void action(() => invoke('chooseProject'))}
-              >
-                Open project folder
-              </button>
-            </div>
+            <Welcome onChooseProject={() => void action(() => invoke('chooseProject'))} />
           </>
         )}
-        {appMode && bottom?.visible && (
-          <section
-            className="project-terminal-panel"
-            style={{ height: bottomHeightPreview ?? bottom.height }}
-            aria-label="Project terminals"
-          >
-            <div
-              className="bottom-resizer"
-              role="separator"
-              tabIndex={0}
-              aria-orientation="horizontal"
-              aria-label="Resize project terminals"
-              aria-valuemin={120}
-              aria-valuemax={800}
-              aria-valuenow={bottom.height}
+        {appMode && bottom?.visible && <BottomTerminals height={bottomHeightPreview ?? bottom.height} tabs={bottom.tabs} activeTerminalId={bottom.activeTerminalId} terminals={application?.terminals ?? []} busy={busy} resizer={<BottomResizer height={bottom.height}
               onPointerDown={(event) => {
                 bottomDrag.current = {
                   pointerId: event.pointerId,
@@ -2669,53 +2093,7 @@ function App(): React.JSX.Element {
                   );
                 }
               }}
-            />
-            <nav className="bottom-terminal-tabs" role="tablist" aria-label="Project terminal tabs">
-              {bottom.tabs.map((id) => {
-                const record = application?.terminals.find((record) => record.id === id);
-                return (
-                  <div className={bottom.activeTerminalId === id ? 'active' : ''} key={id}>
-                    <button
-                      role="tab"
-                      aria-selected={bottom.activeTerminalId === id}
-                      onClick={() => {
-                        setBottomFocused(true);
-                        void applicationCommand('bottomSelect', { terminalId: id });
-                      }}
-                    >
-                      {record?.title ?? 'Terminal'}
-                    </button>
-                    <button
-                      aria-label={`Close ${record?.title ?? 'project terminal'} view`}
-                      onClick={() => void applicationCommand('bottomClose', { terminalId: id })}
-                    >
-                      <Icon name="close" />
-                    </button>
-                  </div>
-                );
-              })}
-              <button
-                aria-label="New project terminal"
-                disabled={busy}
-                onClick={() => {
-                  setBottomFocused(true);
-                  void applicationCommand('newTerminal', {
-                    area: 'bottom',
-                    operationId: crypto.randomUUID(),
-                  });
-                }}
-              >
-                <Icon name="plus" />
-              </button>
-              <button
-                className="bottom-hide"
-                aria-label="Hide project terminals"
-                onClick={() => void applicationCommand('bottomToggle')}
-              >
-                <Icon name="down" />
-              </button>
-            </nav>
-            {application?.terminals.find((record) => record.id === bottom.activeTerminalId) ? (
+            />} onSelect={id => {setBottomFocused(true); void applicationCommand('bottomSelect', {terminalId: id});}} onClose={id => void applicationCommand('bottomClose', {terminalId: id})} onNew={() => {setBottomFocused(true); void applicationCommand('newTerminal', {area: 'bottom', operationId: crypto.randomUUID()});}} onHide={() => void applicationCommand('bottomToggle')}>{application?.terminals.find((record) => record.id === bottom.activeTerminalId) ? (
               <TerminalPane
                 record={application.terminals.find(
                   (record) => record.id === bottom.activeTerminalId,
@@ -2751,104 +2129,14 @@ function App(): React.JSX.Element {
                   New project terminal
                 </button>
               </div>
-            )}
-          </section>
-        )}
-      </main>
-      <div className="feedback-viewport">
-        <aside className="feedback-panel" ref={rightSidebarContent}>
+            )}</BottomTerminals>}
+      </ShellWorkspace>
+      <ShellSidebar side="right" contentRef={rightSidebarContent}>
           <h2>Feedback</h2>
           <p className="muted">Working changes stay private until Save.</p>
-          {artifact && (
-            <details className="artifact-properties">
-              <summary>Artifact properties</summary>
-              <p className="muted">
-                Some sign-in providers block embedded browsers. Open the page externally;
-                authentication is not imported back.
-              </p>
-              <button
-                className="secondary full"
-                onClick={() =>
-                  void transition(() =>
-                    invoke('browserClearProfile', { projectId: artifact.projectId }),
-                  )
-                }
-              >
-                Clear project browser profile
-              </button>
-              {artifact.originSession ? (
-                <>
-                  <small>Origin: {artifact.originSession.harness} · availability unverified</small>
-                  <button
-                    className="secondary full"
-                    onClick={() => {
-                      if (artifact.originSession)
-                        void copy(`codex://threads/${artifact.originSession.sessionId}`);
-                    }}
-                  >
-                    Copy session link
-                  </button>
-                </>
-              ) : (
-                <small>No agent session attached</small>
-              )}
-            </details>
-          )}
-          {document?.migrationSummary && artifact && (artifact.revisions?.length ?? 0) > 1 && (
-            <details className="migration-summary">
-              <summary>Answers in this version</summary>
-              {(['retained', 'added', 'requiresResponse', 'removed'] as const).map((key) => (
-                <p key={key}>
-                  <strong>
-                    {
-                      {
-                        retained: 'Retained',
-                        added: 'New',
-                        requiresResponse: 'Requires response',
-                        removed: 'Removed',
-                      }[key]
-                    }
-                  </strong>
-                  : {document.migrationSummary![key].join(', ') || 'None'}
-                </p>
-              ))}
-              <small>
-                Authored defaults are not confirmed answers. Previous versions retain their state.
-              </small>
-            </details>
-          )}
-          {(browser.downloads?.length ?? 0) > 0 && (
-            <details className="package-history">
-              <summary>Downloads</summary>
-              {browser.downloads?.map((download) => (
-                <p key={download.id} role="status">
-                  {download.filename} · {download.status}
-                </p>
-              ))}
-            </details>
-          )}
-          <div className="section-label spaced">
-            ANNOTATIONS <span>{annotations.length}</span>
-          </div>
-          <div className="annotations">
-            {annotations.length === 0 ? (
-              <div className="empty-note">
-                Select a passage, then choose Annotate. Answers are autosaved privately.
-              </div>
-            ) : (
-              annotations.map((annotation, i) => (
-                <article className="annotation" key={annotation.id}>
-                  <div className="annotation-heading">
-                    <button className="annotation-jump" onClick={() => void jumpTo(annotation)}>
-                      <AnnotationBadge number={annotation.number ?? i + 1} />
-                      <blockquote>{annotation.quote || 'Selected area'}</blockquote>
-                    </button>
-                    <div className="annotation-actions">
-                      <button
-                        disabled={busy || documentEditing || Boolean(editing) || browser.annotating}
-                        title="Edit annotation"
-                        aria-label={`Edit annotation ${i + 1}`}
-                        onClick={() => {
+          <ArtifactProperties artifact={artifact} migrationSummary={document?.migrationSummary} downloads={browser.downloads ?? []} onClearProfile={() => void transition(() => invoke('browserClearProfile', {projectId: artifact?.projectId}))} onCopyOrigin={() => {if(artifact?.originSession) void copy(`codex://threads/${artifact.originSession.sessionId}`);}} />
+          <AnnotationList annotations={annotations} editingId={editing?.id} disabled={busy || documentEditing || Boolean(editing) || browser.annotating} onJump={(annotation) => void jumpTo(annotation)}
+onEdit={(annotation) => {
                           restoredEditing.current = annotation.id;
                           void action(async () => {
                             if (annotation.kind !== 'browser-area')
@@ -2871,24 +2159,8 @@ function App(): React.JSX.Element {
                             setComment(annotation.comment);
                           });
                         }}
-                      >
-                        <Icon name="edit" />
-                      </button>
-                      <button
-                        disabled={busy || documentEditing || Boolean(editing) || browser.annotating}
-                        title="Delete annotation"
-                        aria-label={`Delete annotation ${i + 1}`}
-                        onClick={() =>
-                          void action(() =>
-                            invoke('deleteAnnotation', { annotationId: annotation.id }),
-                          )
-                        }
-                      >
-                        <Icon name="delete" />
-                      </button>
-                    </div>
-                  </div>
-                  {editing?.id === annotation.id ? (
+            onDelete={(annotation) => void action(() => invoke('deleteAnnotation', { annotationId: annotation.id }))}
+            renderEditor={(annotation) => (
                     <CommentComposer
                       ref={editComposer}
                       editing
@@ -2902,17 +2174,8 @@ function App(): React.JSX.Element {
                       onDelete={() => finishEdit(annotation, 'delete')}
                       onError={(error) => setError(message(error))}
                     />
-                  ) : (
-                    <p onClick={() => void jumpTo(annotation)}>{annotation.comment}</p>
-                  )}
-                </article>
-              ))
-            )}
-          </div>
-          <div className="submit-area">
-            <button
-              className="primary full"
-              disabled={
+            )} />
+          <SaveApproval busy={busy} autosaving={savingCount > 0} retry={saveIntents.current.has(JSON.stringify(selected))} saveDisabled={
                 busy ||
                 savingCount > 0 ||
                 Array.from(failedAutosaves).some((key) =>
@@ -2923,8 +2186,18 @@ function App(): React.JSX.Element {
                 browser.annotating ||
                 Boolean(editing) ||
                 !selected?.revisionId
-              }
-              onClick={() =>
+              } approvalDisabled={
+                  busy ||
+                  savingCount > 0 ||
+                  documentEditing ||
+                  documentPreview ||
+                  browser.annotating ||
+                  Array.from(failedAutosaves).some((key) =>
+                    key.startsWith(`${selected?.artifactId}:`),
+                  ) ||
+                  Boolean(editing) ||
+                  Boolean(!document?.approved && document?.dirty)
+                } projectOverview={projectOverview} unpublished={!artifact?.latestRevision} dirty={Boolean(document?.dirty)} approved={Boolean(document?.approved)} hasRevision={Boolean(selected?.revisionId)} handoff={notification && <Handoff sessions={application?.harnesses.sessions ?? []} projectId={artifact?.projectId} handoffSessionId={handoffSessionId} copied={copiedText === notification} onSelect={setHandoffSessionId} onCopy={() => void transition(() => copyUpdate(notification))} />} onSave={() =>
                 void action(async () => {
                   const key = JSON.stringify(selected);
                   const intent = saveIntents.current.get(key) ?? {
@@ -2951,80 +2224,9 @@ function App(): React.JSX.Element {
                     throw e;
                   }
                 })
-              }
-            >
-              {busy
-                ? 'Working…'
-                : savingCount > 0
-                  ? 'Autosaving…'
-                  : saveIntents.current.has(JSON.stringify(selected))
-                    ? 'Retry Save'
-                    : 'Save'}
-            </button>
-            <small>
-              {projectOverview ? (
-                'Open a plan to review its answers and annotations.'
-              ) : !artifact?.latestRevision ? (
-                'Save and approval become available after the agent publishes the first document. Your workspace is autosaved privately.'
-              ) : (
-                <>
-                  {document?.dirty ? 'Unsaved working changes' : 'Saved state is unchanged'} · Save
-                  keeps annotations and creates an immutable snapshot.
-                </>
-              )}
-            </small>
-            {notification && (
-              <div className="notification">
-                <label className="handoff-session-label">
-                  Target session
-                  <select
-                    aria-label="Target Codex session"
-                    value={handoffSessionId}
-                    onChange={(event) => setHandoffSessionId(event.target.value)}
-                  >
-                    <option value="">Copy only</option>
-                    {application?.harnesses.sessions
-                      .filter((session) => session.projectId === artifact?.projectId)
-                      .map((session) => (
-                        <option
-                          key={session.id}
-                          value={session.id}
-                          disabled={!session.terminalId || session.processState !== 'running'}
-                        >
-                          {session.title || session.id}
-                          {session.terminalId && session.processState === 'running'
-                            ? ''
-                            : ' · Resume first'}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <button
-                  className="secondary full"
-                  onClick={() => void transition(() => copyUpdate(notification))}
-                >
-                  {copiedText === notification ? 'Copied' : 'Copy update message'}
-                </button>
-                <small>Saved · notify your agent manually</small>
-              </div>
-            )}
-            {selected?.revisionId && (
-              <button
-                className="subtle full"
-                disabled={
-                  busy ||
-                  savingCount > 0 ||
-                  documentEditing ||
-                  documentPreview ||
-                  browser.annotating ||
-                  Array.from(failedAutosaves).some((key) =>
-                    key.startsWith(`${selected?.artifactId}:`),
-                  ) ||
-                  Boolean(editing) ||
-                  (!document?.approved && document?.dirty)
-                }
-                onClick={() =>
+              } onApproval={() =>
                   void action(async () => {
+                    if (!selected) return;
                     if (document?.approved) {
                       if (
                         revokeIntent.current?.artifactId !== selected.artifactId ||
@@ -3036,115 +2238,10 @@ function App(): React.JSX.Element {
                       revokeIntent.current = null;
                     } else await invoke('approve', selected ?? {});
                   })
-                }
-              >
-                {document?.approved ? 'Revoke approval' : 'Approve this version'}
-              </button>
-            )}
-            <small>Approval records agreement. It does not authorize implementation.</small>
-          </div>
-          {(snapshot.savedStates ?? []).filter((state) => state.artifactId === artifact?.id)
-            .length > 0 && (
-            <details className="package-history">
-              <summary>Saved states</summary>
-              {snapshot.savedStates
-                ?.filter((state) => state.artifactId === artifact?.id)
-                .map((state) => (
-                  <div key={state.id}>
-                    <small>{new Date(state.createdAt).toLocaleString()}</small>
-                    {state.notification && (
-                      <button
-                        onClick={() =>
-                          void transition(() =>
-                            copyUpdate(
-                              state.notification ?? '',
-                              state.artifactId
-                                ? { artifactId: state.artifactId, savedStateId: state.id }
-                                : null,
-                            ),
-                          )
-                        }
-                      >
-                        Copy update message
-                      </button>
-                    )}
-                  </div>
-                ))}
-            </details>
-          )}
-          {snapshot.packages.filter((p) => !p.projectId || p.projectId === projectId).length >
-            0 && (
-            <details className="package-history">
-              <summary>Legacy submitted packages</summary>
-              {snapshot.packages
-                .filter((p) => !p.projectId || p.projectId === projectId)
-                .map((p) => (
-                  <div key={p.id}>
-                    <small>{new Date(p.createdAt).toLocaleString()}</small>
-                    {p.notification && (
-                      <button onClick={() => void copy(p.notification ?? '')}>
-                        Copy legacy notification
-                      </button>
-                    )}
-                  </div>
-                ))}
-            </details>
-          )}
-        </aside>
-      </div>
-      {renaming && (
-        <div
-          className="modal-backdrop"
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              event.stopPropagation();
-              closeRename();
-            }
-          }}
-        >
-          <section
-            className="modal rename-plan-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Rename plan"
-          >
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void saveRename();
-              }}
-            >
-              <h2>Rename plan</h2>
-              {renameError && (
-                <p role="alert" className="error-banner">
-                  {renameError}
-                </p>
-              )}
-              <label htmlFor="plan-name">Plan name</label>
-              <NotificationAccess />
-              <input
-                id="plan-name"
-                disabled={renameBusy}
-                autoFocus
-                value={renaming.title}
-                onChange={(event) => setRenaming({ ...renaming, title: event.target.value })}
-              />
-              <div className="rename-plan-actions">
-                <button type="button" disabled={renameBusy} onClick={closeRename}>
-                  Cancel
-                </button>
-                <button
-                  className="primary"
-                  type="submit"
-                  disabled={renameBusy || !renaming.title.trim()}
-                >
-                  Save
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
-      )}
+                } />
+          <FeedbackHistory savedStates={(snapshot.savedStates ?? []).filter(state => state.artifactId === artifact?.id)} packages={snapshot.packages.filter(p => !p.projectId || p.projectId === projectId)} onSavedCopy={state => void transition(() => copyUpdate(state.notification ?? '', state.artifactId ? {artifactId: state.artifactId, savedStateId: state.id} : null))} onLegacyCopy={state => void copy(state.notification ?? '')} />
+      </ShellSidebar>
+      {renaming && <RenamePlanDialog title={renaming.title} busy={renameBusy} error={renameError} onChange={title => setRenaming({ ...renaming, title })} onSave={() => void saveRename()} onClose={closeRename} />}
       {settingsOpen && (
         <ApplicationSettings
           settings={currentSettings}
@@ -3173,230 +2270,10 @@ function App(): React.JSX.Element {
           onReviewPendingWrite={reviewPendingWrite}
         />
       )}
-      {sessionMetadata && (
-        <div
-          className="modal-backdrop"
-          onPointerDown={(event) => {
-            if (event.target === event.currentTarget) setSessionMetadata(null);
-          }}
-        >
-          <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Codex session metadata"
-          >
-            <div className="modal-heading">
-              <h2>{sessionMetadata.title || 'Codex session'}</h2>
-              <button onClick={() => setSessionMetadata(null)}>Close</button>
-            </div>
-            <dl>
-              <dt>Session ID</dt>
-              <dd>{sessionMetadata.id}</dd>
-              <dt>Working folder</dt>
-              <dd>{sessionMetadata.cwd}</dd>
-              <dt>Process</dt>
-              <dd>
-                {sessionMetadata.processState === 'unknown'
-                  ? 'Unknown'
-                  : sessionMetadata.processState}
-              </dd>
-            </dl>
-            <p className="muted">
-              Open this session's project folder in Projector to enable explicit Resume.
-            </p>
-          </section>
-        </div>
-      )}
+      {sessionMetadata && <SessionMetadataDialog session={sessionMetadata} onClose={() => setSessionMetadata(null)} />}
       {guideOpen && <GuideViewer load={guideLoad} close={closeInformation} />}
-      {setup && (
-        <div
-          className="modal-backdrop"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) closeInformation();
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              event.stopPropagation();
-              closeInformation();
-            }
-          }}
-        >
-          <section className="modal" role="dialog" aria-modal="true" aria-label="MCP connection">
-            <div className="modal-heading">
-              <h2>Connect Projector through MCP</h2>
-              <button className="subtle" onClick={closeInformation}>
-                Close
-              </button>
-            </div>
-            <p>Copy the setup prompt and paste it into your agent. Keep Projector running.</p>
-            <button className="primary" onClick={() => void copy(setup.prompt)}>
-              {copiedText === setup.prompt ? 'Copied' : 'Copy setup prompt'}
-            </button>
-            <p className="muted">
-              The prompt configures your user-level MCP connection across projects. Keep personal
-              paths out of project configuration. You may need to reconnect MCP before tools appear
-              in this session.
-            </p>
-            <details>
-              <summary>Preview setup prompt</summary>
-              <pre>{setup.prompt}</pre>
-            </details>
-            <details>
-              <summary>Connection details and manual configuration</summary>
-              <p className="muted">
-                {setup.mode === 'packaged'
-                  ? 'Packaged application — uses the bundled MCP helper and Node runtime.'
-                  : setup.mode === 'development'
-                    ? 'Development — uses the source bridge and your Node.js installation.'
-                    : 'Production build from source — uses the source bridge and your Node.js installation.'}
-              </p>
-              <p>
-                MCP calls reach this application through an authenticated loopback HTTP runtime.
-              </p>
-              <label>Runtime descriptor</label>
-              <pre>{setup.descriptorPath}</pre>
-              <label>Stdio command</label>
-              <pre>{setup.command}</pre>
-              <label>Configuration</label>
-              <pre>{setup.config}</pre>
-              <button className="secondary" onClick={() => void copy(setup.config)}>
-                {copiedText === setup.config ? 'Copied' : 'Copy configuration'}
-              </button>
-            </details>
-            <p className="muted">
-              Projector does not edit your configuration. The prompt asks your agent to configure
-              only this MCP connection.
-            </p>
-          </section>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AnnotationBadge({ number }: { number: number }): React.JSX.Element {
-  const { cx, cy, path } = markerGeometry({ x: 3.75, y: 24.25 }, { width: 28, height: 28 });
-  return (
-    <svg className="annotation-number" viewBox="0 0 28 28" aria-hidden="true">
-      <path d={path} fill="#4263da" stroke="white" strokeWidth="1.5" strokeLinejoin="round" />
-      <text
-        x={cx}
-        y={cy}
-        dominantBaseline="central"
-        textAnchor="middle"
-        fontSize="10"
-        fontWeight="600"
-        fontFamily="sans-serif"
-        fill="white"
-      >
-        {number}
-      </text>
-    </svg>
-  );
-}
-
-function Diagram({ source }: { source: string }): React.JSX.Element {
-  const container = useRef<HTMLDivElement>(null);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    let active = true;
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'strict',
-      theme: 'neutral',
-      suppressErrorRendering: true,
-    });
-    void mermaid
-      .render(`diagram-${crypto.randomUUID()}`, source)
-      .then((result) => {
-        if (active && container.current) container.current.innerHTML = result.svg;
-      })
-      .catch((cause) => {
-        if (active) setError(message(cause));
-      });
-    return () => {
-      active = false;
-    };
-  }, [source]);
-  return error ? (
-    <div className="diagram-error">
-      Diagram unavailable: {error}
-      <pre>{source}</pre>
-    </div>
-  ) : (
-    <div ref={container} className="diagram" />
-  );
-}
-
-function Widget({
-  definition,
-  value,
-  update,
-  readOnly = false,
-}: {
-  definition: WidgetDefinition;
-  value: Value | undefined;
-  update: (id: string, value: Value) => void;
-  readOnly?: boolean;
-}): React.JSX.Element {
-  const options = (definition.options ?? []).map((option) =>
-    typeof option === 'string' ? { value: option, label: option } : option,
-  );
-  const current =
-    value ?? definition.defaultValue ?? (definition.kind.toLowerCase().includes('check') ? [] : '');
-  return (
-    <section className="widget" data-widget-id={definition.id}>
-      <div className="widget-label">{definition.meaning}</div>
-      {definition.kind.toLowerCase().includes('choice') ? (
-        <div className="choices">
-          {options.map((option) => (
-            <label key={option.value} className={current === option.value ? 'selected' : ''}>
-              <input
-                type="radio"
-                disabled={readOnly}
-                name={definition.id}
-                value={option.value}
-                checked={current === option.value}
-                onChange={() => update(definition.id, option.value)}
-              />
-              <span>{option.label}</span>
-            </label>
-          ))}
-        </div>
-      ) : definition.kind.toLowerCase().includes('check') ? (
-        <div className="checklist">
-          {options.map((option) => (
-            <label key={option.value}>
-              <input
-                type="checkbox"
-                disabled={readOnly}
-                checked={Array.isArray(current) && current.includes(option.value)}
-                onChange={(event) => {
-                  const values = Array.isArray(current) ? current : [];
-                  update(
-                    definition.id,
-                    event.target.checked
-                      ? [...values, option.value]
-                      : values.filter((item) => item !== option.value),
-                  );
-                }}
-              />
-              {option.label}
-            </label>
-          ))}
-        </div>
-      ) : (
-        <textarea
-          aria-label={definition.meaning}
-          disabled={readOnly}
-          value={typeof current === 'string' ? current : ''}
-          placeholder="Your answer…"
-          onChange={(event) => update(definition.id, event.target.value)}
-        />
-      )}
-      <small>Your answer is private until Save.</small>
-    </section>
+      {setup && <McpConnectionDialog setup={setup} copied={copiedText} onCopy={text => void copy(text)} onClose={closeInformation} />}
+    </ShellLayout>
   );
 }
 
@@ -4046,300 +2923,26 @@ function DocumentSurface(): React.JSX.Element {
       complete();
     }
   }
-  function render(node: DocumentNode, key: string): React.ReactNode {
-    const children = node.children?.map((child, index) => render(child, `${key}-${index}`));
-    const props = node.props ?? {};
-    const widgetId =
-      typeof props.widgetId === 'string'
-        ? props.widgetId
-        : typeof props.id === 'string'
-          ? props.id
-          : node.id;
-    const widget = parsed?.widgets.find((item) => item.id === widgetId);
-    if (widget)
-      return (
-        <Widget
-          key={key}
-          definition={widget}
-          value={displayValues[widget.id]}
-          update={update}
-          readOnly={data?.draft || Boolean(previewState) || contextPending || Boolean(selection)}
-        />
-      );
-    const common = { 'data-block-id': node.id ?? key };
-    switch (node.type) {
-      case 'root':
-        return <React.Fragment key={key}>{children}</React.Fragment>;
-      case 'text':
-        return (
-          <span key={key} data-text-path={JSON.stringify(key.split('-').map(Number))}>
-            {node.value}
-          </span>
-        );
-      case 'paragraph':
-        return <p key={key} {...common}>{children}</p>;
-      case 'heading': {
-        const Heading =
-          `h${Math.max(1, Math.min(6, typeof props.depth === 'number' ? props.depth : 2))}` as
-            'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
-        return <Heading key={key} {...common}>{children}</Heading>;
-      }
-      case 'strong':
-        return <strong key={key}>{children}</strong>;
-      case 'emphasis':
-        return <em key={key}>{children}</em>;
-      case 'delete':
-        return <del key={key}>{children}</del>;
-      case 'inlineCode':
-        return (
-          <code key={key}>
-            <span data-text-path={JSON.stringify(key.split('-').map(Number))}>{node.value}</span>
-          </code>
-        );
-      case 'code':
-        return props.language === 'mermaid' ? (
-          <Diagram key={key} source={node.value ?? ''} />
-        ) : (
-          <pre key={key} {...common}>
-            <code>
-              <span data-text-path={JSON.stringify(key.split('-').map(Number))}>{node.value}</span>
-            </code>
-          </pre>
-        );
-      case 'blockquote':
-        return <blockquote key={key} {...common}>{children}</blockquote>;
-      case 'list':
-        return props.ordered ? (
-          <ol key={key} {...common} start={typeof props.start === 'number' ? props.start : 1}>
-            {children}
-          </ol>
-        ) : (
-          <ul key={key} {...common}>{children}</ul>
-        );
-      case 'listItem':
-        return (
-          <li key={key} {...common}>
-            {typeof props.checked === 'boolean' && (
-              <input type="checkbox" checked={props.checked} disabled />
-            )}
-            {children}
-          </li>
-        );
-      case 'table':
-        return (
-          <div className="table-wrap" key={key}>
-            <table data-block-id={node.id ?? key}>
-              <tbody>{children}</tbody>
-            </table>
-          </div>
-        );
-      case 'tableRow':
-        return <tr key={key}>{children}</tr>;
-      case 'tableCell':
-        return <td key={key} {...common}>{children}</td>;
-      case 'link':
-        return (
-          <span
-            key={key}
-            className="document-link"
-            title={typeof props.url === 'string' ? props.url : ''}
-          >
-            {children}
-          </span>
-        );
-      case 'image':
-        return (
-          <span key={key} {...common} className="image-placeholder">
-            {typeof props.alt === 'string' ? props.alt : 'Image'} · external image preview
-            unavailable in Alpha 1
-          </span>
-        );
-      case 'thematicBreak':
-        return <hr key={key} {...common} />;
-      case 'break':
-        return <br key={key} />;
-      case 'Details':
-      case 'details':
-        return (
-          <details
-            key={key} {...common}
-            open={displayDetails[node.id ?? key] ?? false}
-            onToggle={(e) => {
-              if (data?.draft || previewState) return;
-              const open = e.currentTarget.open,
-                id = node.id ?? key;
-              if (details[id] === open) return;
-              const next = { ...details, [id]: open };
-              setDetails(next);
-              void queue(
-                () => invoke('setViewState', { artifactId, revisionId, view: { details: next } }),
-                'view',
-              );
-            }}
-          >
-            <summary
-              onClick={(e) => {
-                if (previewState || contextPending || selection) e.preventDefault();
-              }}
-              aria-disabled={Boolean(previewState || contextPending || selection)}
-            >
-              {typeof props.title === 'string' ? props.title : 'Details'}
-            </summary>
-            {children}
-          </details>
-        );
-      case 'Callout':
-      case 'callout':
-        return (
-          <aside key={key} {...common} className="callout">
-            {typeof props.title === 'string' && <strong>{props.title}</strong>}
-            {children}
-          </aside>
-        );
-      case 'Mermaid':
-        return (
-          <Diagram
-            key={key}
-            source={typeof props.source === 'string' ? props.source : (node.value ?? '')}
-          />
-        );
-      case 'component':
-      case 'mdxJsxFlowElement':
-      case 'mdxJsxTextElement': {
-        const name =
-          typeof props.name === 'string'
-            ? props.name
-            : (node as DocumentNode & { name?: string }).name;
-        if (name) return render({ ...node, type: name }, key);
-        return <div key={key} {...common}>{children}</div>;
-      }
-      default:
-        return <div key={key} {...common}>{node.value ?? children}</div>;
-    }
-  }
   return (
     <div className="surface">
-      {data?.error && (
-        <section className="draft-diagnostic">
-          <div role="alert" className="error-banner">
-            {data.error}
-          </div>
-          <pre>{data.source}</pre>
-        </section>
-      )}
-      {previewState && (
-        <div className="state-preview-banner" role="status">
-          Annotation state preview · read-only
-          <button
-            onClick={() => {
-              pendingJump.current = null;
-              setPreviewState(null);
-              setFocused('');
-            }}
-          >
-            Return to working state
-          </button>
-        </div>
-      )}
-      <article
+      <DocumentStatus error={data?.error} source={data?.source} preview={Boolean(previewState)} onReturn={() => { pendingJump.current = null; setPreviewState(null); setFocused(''); }} />
+      <DocumentArticle
         ref={article}
         inert={contextPending}
-        className="plan-document"
-        data-block-id="document"
         onMouseUp={captureSelection}
         onKeyUp={captureSelection}
       >
         {parsed ? (
-          parsed.blocks.map((node, index) => render(node, String(index)))
+          <DocumentContent blocks={parsed.blocks} widgets={parsed.widgets} values={displayValues} details={displayDetails}
+            widgetsReadOnly={data?.draft || Boolean(previewState) || contextPending || Boolean(selection)}
+            detailsReadOnly={data?.draft || Boolean(previewState)} detailsLocked={Boolean(previewState || contextPending || selection)} update={update}
+            onDetailsChange={(id, open) => { const next = { ...details, [id]: open }; setDetails(next); void queue(() => invoke('setViewState', { artifactId, revisionId, view: { details: next } }), 'view'); }} />
         ) : (
-          <p className="muted">
-            {data?.draft ? 'Waiting for the agent to write the MDX source.' : 'Loading document…'}
-          </p>
+          <DocumentWaiting draft={data?.draft} />
         )}
-      </article>
-      <div className="annotation-layer" aria-hidden="true">
-        {highlights.map((a, annotationIndex) => (
-          <React.Fragment key={a.id}>
-            {a.rects.map((r, i) => (
-              <span
-                key={i}
-                className={`text-highlight ${focused === a.id ? 'focused' : ''}`}
-                style={{ left: r.x, top: r.y, width: r.width, height: r.height }}
-              />
-            ))}
-            {a.markerVisible &&
-              a.pointer &&
-              (() => {
-                const pointer = {
-                  x: a.pointer.x - window.scrollX,
-                  y: a.pointer.y - window.scrollY,
-                };
-                const overlap = highlights
-                  .slice(0, annotationIndex)
-                  .filter(
-                    (previous) =>
-                      previous.markerVisible &&
-                      previous.pointer &&
-                      Math.abs(previous.pointer.x - a.pointer!.x) < 8 &&
-                      Math.abs(previous.pointer.y - a.pointer!.y) < 8,
-                  ).length;
-                const base = markerGeometry(pointer, { width: innerWidth, height: innerHeight });
-                const center = overlap ? { x: base.cx + overlap * 24, y: base.cy } : undefined;
-                const { cx, cy, path } = markerGeometry(
-                  pointer,
-                  { width: innerWidth, height: innerHeight },
-                  center,
-                );
-                return (
-                  <svg
-                    className="area-annotation-number inline-annotation-number"
-                    data-pointer-x={a.pointer.x}
-                    data-pointer-y={a.pointer.y}
-                    style={{ left: window.scrollX, top: window.scrollY }}
-                    width={innerWidth}
-                    height={innerHeight}
-                    aria-label={`Annotation ${a.number}`}
-                  >
-                    <path
-                      d={path}
-                      fill="#4263da"
-                      stroke="white"
-                      strokeWidth="1.5"
-                      strokeLinejoin="round"
-                    />
-                    <text
-                      x={cx}
-                      y={cy}
-                      dominantBaseline="central"
-                      textAnchor="middle"
-                      fontSize="10"
-                      fontWeight="600"
-                      fill="white"
-                    >
-                      {a.number}
-                    </text>
-                  </svg>
-                );
-              })()}
-          </React.Fragment>
-        ))}
-      </div>
-      {candidate && !selection && (
-        <button
-          className="selection-annotate"
-          style={{ left: popover.x, top: popover.y }}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => void begin()}
-        >
-          Annotate
-        </button>
-      )}
-      {selection && !contextPending && (
-        <div
-          ref={popoverElement}
-          className="annotation-popover"
-          style={{ left: popover.x, top: popover.y }}
-        >
+      </DocumentArticle>
+      <DocumentAnnotations highlights={highlights} focused={focused} />
+      <DocumentSelection candidate={Boolean(candidate)} selection={Boolean(selection)} contextPending={contextPending} position={popover} onBegin={() => void begin()} popoverRef={popoverElement}>
           <CommentComposer
             ref={composer}
             label="Annotation comment"
@@ -4359,15 +2962,8 @@ function DocumentSurface(): React.JSX.Element {
             onCancel={dismiss}
             onError={(error) => setError(message(error))}
           />
-        </div>
-      )}
-      {contextPending && <div className="capture-input-shield" aria-hidden="true" />}
-      {areaMode && (
-        <div
-          className="area-selection-overlay"
-          role="application"
-          aria-label="Select annotation area"
-          tabIndex={0}
+      </DocumentSelection>
+      {areaMode && <DocumentAreaSelection hovered={hovered} areaStart={areaStart} areaEnd={areaEnd}
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId);
             const point = { x: e.clientX, y: e.clientY };
@@ -4446,34 +3042,7 @@ function DocumentSurface(): React.JSX.Element {
               setAreaEnd(null);
             }
           }}
-        >
-          <span className="area-instructions">
-            Click an element or drag an area · ↑/↓ select · Enter annotate · Escape cancel
-          </span>
-          {hovered && !areaStart && (
-            <div
-              className="element-hover-outline"
-              style={{
-                left: hovered.x,
-                top: hovered.y,
-                width: hovered.width,
-                height: hovered.height,
-              }}
-            />
-          )}
-          {areaStart && areaEnd && (
-            <div
-              className="area-rectangle"
-              style={{
-                left: Math.min(areaStart.x, areaEnd.x),
-                top: Math.min(areaStart.y, areaEnd.y),
-                width: Math.abs(areaStart.x - areaEnd.x),
-                height: Math.abs(areaStart.y - areaEnd.y),
-              }}
-            />
-          )}
-        </div>
-      )}
+      />}
     </div>
   );
 }

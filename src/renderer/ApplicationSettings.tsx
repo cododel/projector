@@ -1,4 +1,4 @@
-import { notifyError } from './notifications';
+import { useNotifyError } from './NotificationContext';
 import { NotificationAccess } from './NotificationAccess';
 import { Icon } from './Icon';
 import React, { useEffect, useRef, useState } from 'react';
@@ -41,6 +41,7 @@ export function ApplicationSettings({
   onReviewPendingWrite(): void;
   onClose(): void;
 }): React.JSX.Element {
+  const notifyError = useNotifyError();
   const [section, setSection] = useState('General');
   const [draft, setDraft] = useState(() => structuredClone(settings));
   const [shellArgs, setShellArgs] = useState(() => JSON.stringify(settings.shellArgs));
@@ -332,7 +333,7 @@ export function ApplicationSettings({
                       <div className="shortcut-controls" key={action}>
                         <button
                           type="button"
-                          aria-label={`Shortcut for ${name}`}
+                          aria-label={`Shortcut for ${name}: ${recording === action ? 'Press combination…' : (draft.shortcuts[action] ?? 'Unassigned')}`}
                           onClick={() => setRecording(action)}
                           onBlur={() =>
                             setRecording((current) => (current === action ? null : current))

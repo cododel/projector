@@ -25,8 +25,9 @@
     "storyboard:notifications": "node scripts/notifications-storyboard.mjs",
     "storybook": "STORYBOOK_DISABLE_TELEMETRY=1 storybook dev --host 127.0.0.1 -p 6006 --no-open",
     "build:storybook": "STORYBOOK_DISABLE_TELEMETRY=1 storybook build --output-dir .tmp/storybook-static",
-    "test:storybook": "STORYBOOK_DISABLE_TELEMETRY=1 vitest run --config vitest.storybook.config.ts",
-    "test:storybook:visual": "playwright test --config playwright.storybook.config.ts"
+    "test:storybook": "STORYBOOK_DISABLE_TELEMETRY=1 node scripts/test-storybook.mjs",
+    "test:storybook:visual": "pnpm build:storybook && playwright test --config playwright.storybook.config.ts",
+    "test:catalog": "STORYBOOK_DISABLE_TELEMETRY=1 node scripts/catalog-gate.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

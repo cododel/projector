@@ -1,5 +1,11 @@
 # Local and pre-push checks
 
+UI changes require both `pnpm test:catalog` and `pnpm check`. The catalogue gate
+validates the reviewed inventory, source/story links, every story in Chromium with
+axe in both motion modes, and reviewed state-sheet screenshots without updating
+baselines. Its exact-source execution report is separate from story presence and
+native Electron qualification. See [the catalogue guide](../../dev/README.md).
+
 `pnpm check` runs typecheck, lint, unit/infrastructure tests and hidden Electron E2E.
 `pnpm test:e2e` retains the hidden, no-focus default. This mode covers app logic,
 persistence, DOM interactions and MCP; it does not prove native desktop composition,
@@ -67,6 +73,12 @@ streams and real shell tests cover SIGINT and EOF. The resize race test temporar
 SIGSTOPs only its own named utility service and always SIGCONTs it in `finally`.
 Synthetic keyboard events do not qualify physical keyboard layouts, native
 clipboard integration or OS IME composition.
+The exit scenario waits for confirmed Projector MCP startup before typing the
+idle TUI's exit chord: its model header appears earlier, and Ctrl+C during startup
+cancels initialization rather than exiting. An exited record awaiting descendant
+cleanup is not a live process. PTY exit publishes its status before that cleanup;
+a real-PTY regression verifies the notification and retained input rejection.
+Neither synchronization boundary allows unexpected diagnostics.
 
 
 Terminal wheel regressions use the installed xterm and real PTYs in both mouse-reporting and alternate-buffer arrow modes. They assert proportional counts, fractional accumulation, direction changes, bounded frame packets, parser mode resets and inactive-pane isolation. Ordinary scrollback is checked with browser-generated wheel input and must send no PTY input. The warmed measurement test attaches `wheel-measurements.json`: 100 measured actions after 10 warmups, normalized rows, IPC packets, wheel-to-output notification and output-to-DOM latencies. These are fixture pipeline measurements, not physical presentation timing or proof of a Codex CPU/GPU bottleneck. Visible installed Codex qualification uses isolated local history and no model turn; native synthesized gestures do not qualify physical trackpad hardware.
@@ -149,6 +161,10 @@ senders receive a recoverable capture error; the process-owned IPC dispatcher
 releases its manager reference. Quit drains admitted RPC acknowledgements within
 its existing deadline. Native GPU/compositor errors remain blocking diagnostics;
 the gate does not disable hardware acceleration or globally allow them.
+Notification lifetime regressions destroy a real Electron child synchronously
+during its bounds update, with ordinary close as the negative control. They
+verify that pending layout/ready work cannot continue against a retired child.
+This controlled native boundary does not qualify physical desktop input.
 
 Runtime, compiler and terminal-service channels carry their protocol/data through
 IPC, not stdout. Unknown stdout on those internal service streams therefore fails
