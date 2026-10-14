@@ -46,23 +46,40 @@ export class NotificationOverlay {
     if (this.pointerTimer) clearInterval(this.pointerTimer);
     this.pointerTimer = null;
   };
+  private ownsLiveChild(child: BrowserWindow): boolean {
+    return !this.disposed && !this.parent.isDestroyed() && this.child === child && !child.isDestroyed();
+  }
   private sync = () => {
-    if (this.disposed || this.parent.isDestroyed() || !this.child || this.child.isDestroyed()) return;
+    const child = this.child;
+    if (!child || !this.ownsLiveChild(child)) return;
     const bounds = this.parent.getContentBounds();
+    if (!this.ownsLiveChild(child)) return;
     const width = Math.min(this.size.width, bounds.width);
     const height = Math.min(this.size.height, Math.floor(bounds.height * 0.6));
     // 40px shell titlebar + 12px visible gap - 8px stack padding.
-    this.child.setBounds({ x: Math.round(bounds.x + (bounds.width - width) / 2), y: bounds.y + 44, width: Math.max(1, width), height: Math.max(1, height) });
-    const visible = this.parent.isVisible() && !this.parent.isMinimized();
-    if (!visible) this.child.hide();
-    else if (this.notices.length && this.ready && !this.child.isVisible()) this.child.showInactive();
-    if (this.ready) this.child.webContents.send('projector:notification-state', {
+    // Native window calls can synchronously retire the child through its closed
+    // event. Never continue a command against that child or its replacement.
+    child.setBounds({ x: Math.round(bounds.x + (bounds.width - width) / 2), y: bounds.y + 44, width: Math.max(1, width), height: Math.max(1, height) });
+    if (!this.ownsLiveChild(child)) return;
+    let visible = this.parent.isVisible();
+    if (!this.ownsLiveChild(child)) return;
+    if (visible) visible = !this.parent.isMinimized();
+    if (!this.ownsLiveChild(child)) return;
+    let showing = child.isVisible();
+    if (!this.ownsLiveChild(child)) return;
+    if (!visible) child.hide();
+    else if (this.notices.length && this.ready && !showing) child.showInactive();
+    if (!this.ownsLiveChild(child)) return;
+    if (this.ready) child.webContents.send('projector:notification-state', {
       notifications: this.notices, visible, maxHeight: Math.floor(bounds.height * 0.6),
     });
+    if (!this.ownsLiveChild(child)) return;
+    showing = child.isVisible();
+    if (!this.ownsLiveChild(child)) return;
     // Forwarded mousemove is not guaranteed for an ignored, inactive native child
     // (or when a new alert appears under a stationary cursor). Sample only while
     // visible; the renderer owns hit testing including rounded corners and gaps.
-    if (visible && this.ready && this.child.isVisible()) {
+    if (visible && this.ready && showing) {
       if (!this.pointerTimer) this.pointerTimer = setInterval(this.samplePointer, 32);
       this.samplePointer();
     } else this.stopPointer();
@@ -106,13 +123,14 @@ export class NotificationOverlay {
     this.sync();
   }
   command(command: NotificationCommand): void {
-    if (this.disposed || !this.child || this.child.isDestroyed()) return;
-    if (command.type === 'ready') { this.ready = true; this.sync(); if (this.focusPending) this.focus(); }
+    const child = this.child;
+    if (!child || !this.ownsLiveChild(child)) return;
+    if (command.type === 'ready') { this.ready = true; this.sync(); if (this.ownsLiveChild(child) && this.focusPending) this.focus(); }
     else if (command.type === 'layout') {
       this.size = { width: Math.ceil(command.width), height: Math.ceil(command.height) };
       this.sync();
-      if (!this.notices.length && command.height <= 32) { this.child.hide(); this.stopPointer(); }
-    } else if (command.type === 'pointer') this.child.setIgnoreMouseEvents(!command.interactive, { forward: true });
+      if (this.ownsLiveChild(child) && !this.notices.length && command.height <= 32) { child.hide(); this.stopPointer(); }
+    } else if (command.type === 'pointer') child.setIgnoreMouseEvents(!command.interactive, { forward: true });
     else if (command.type === 'blur') {
       if (!this.parent.isVisible()) return;
       this.parent.focus();
