@@ -56,6 +56,11 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
         { name, args },
       );
     const snapshot = () => invoke<Snapshot>('applicationSnapshot');
+    // A model header does not prove startup has completed. Qualify the exact
+    // owned TUI before sending its idle exit chord rather than cancelling MCP.
+    const ready = (terminalId: string) => expect.poll(async () =>
+      (await snapshot()).harnesses.mcpStartup.find(connection => connection.terminalId === terminalId)?.status,
+    ).toBe('ready');
     await app.evaluate(({ dialog }, project) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] });
     }, project);
@@ -74,6 +79,7 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
     const created = (await snapshot()).terminals[0];
     const keyboard = page.locator('.terminal-pane .xterm-helper-textarea');
     await expect(page.locator('.terminal-pane .xterm-rows')).toContainText(/gpt-6\.1-sol/i);
+    await ready(created.id);
     await keyboard.focus();
     await keyboard.press('Control+d');
     await expect.poll(async () => (await snapshot()).terminals).toEqual([]);
@@ -83,12 +89,14 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
       operationId: randomUUID(),
     });
     await expect.poll(async () => (await snapshot()).terminals[0]?.harnessSessionId).toBeTruthy();
-    expect((await snapshot()).terminals[0].harnessSessionId).not.toBe(created.harnessSessionId);
+    const next = (await snapshot()).terminals[0];
+    expect(next.harnessSessionId).not.toBe(created.harnessSessionId);
     await expect(page.locator('.terminal-pane .xterm-rows')).toContainText(/gpt-6\.1-sol/i);
+    await ready(next.id);
     await keyboard.focus();
     await keyboard.press('Control+c');
-    // Codex may ask for a second Ctrl+C at idle. Never replace either with Stop.
-    if ((await snapshot()).terminals.length) await keyboard.press('Control+c');
+    // The fully initialized installed TUI must exit on the actual idle chord.
+    // Never send another chord to an exited record retained during cleanup.
     await expect.poll(async () => (await snapshot()).terminals).toEqual([]);
     await expect(page.locator('.terminal-pane')).toHaveCount(0);
   } finally {

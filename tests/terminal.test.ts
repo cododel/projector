@@ -374,6 +374,24 @@ it('drops legacy inactive and exited screens on startup without touching unrelat
   ).rejects.toMatchObject({ code: 'TERMINAL_PROCESS_ENDED' });
 });
 
+it('publishes PTY exit before descendant cleanup and keeps input forbidden', async () => {
+  const { service, data, output, changes } = await setup();
+  const terminal = await service.create({
+    projectId: 'project', cwd: data, kind: 'shell', executable: '/bin/sh',
+    args: ['-c', 'stty -echo; printf "EXIT_READY\\n"; read finish; exit 0'],
+  });
+  await until(() => output.some(event => event.data.includes('EXIT_READY')));
+  service.resize(terminal.id, { cols: 80, rows: 24, viewId: 'active', active: true });
+  service.input(terminal.id, '\r', 'active');
+  await until(() => service.snapshot().some(record => record.id === terminal.id && record.status === 'exited'));
+  // The real PTY has ended; descendant cleanup still owns the record. The renderer
+  // must learn that input is disabled before that asynchronous cleanup completes.
+  expect(changes.at(-1)?.find(record => record.id === terminal.id)?.status).toBe('exited');
+  expect(() => service.input(terminal.id, '\x03', 'active')).toThrow('Start or resume this terminal explicitly.');
+  await until(() => service.snapshot().length === 0);
+  expect(changes.at(-1)).toEqual([]);
+});
+
 it('ignores late geometry for an ended process without enabling terminal input', async () => {
   const {service,data} = await setup();
   const record = await service.create({projectId:'project',cwd:data,kind:'shell',executable:'/bin/sh',args:['-i']});

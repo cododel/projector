@@ -439,6 +439,9 @@ export class TerminalService {
         context.record.signal = exitSignal;
         context.resolveExit?.();
         if (!context.registered) return;
+        // Disable renderer input as soon as the PTY ends, before asynchronous
+        // descendant/storage cleanup removes its record and views.
+        this.changed();
         void this.retire(context).catch(error => bindDiagnosticError(error, diagnostic('terminal-service', 'retire-error', String(error), 'error', {workerId:context.record.id,stack:error instanceof Error ? error.stack : undefined})));
       });
     } catch {
