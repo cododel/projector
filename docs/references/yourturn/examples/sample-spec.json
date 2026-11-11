@@ -1,0 +1,60 @@
+{
+  "title": "Tell us about you",
+  "spec": {
+    "root": "page",
+    "state": { "form": { "name": "", "role": "", "notes": "", "remote": false } },
+    "elements": {
+      "page": {
+        "type": "Page",
+        "props": { "overview": "A few questions so I can set up **your profile**." },
+        "children": ["who", "work"]
+      },
+      "who": {
+        "type": "Section",
+        "props": { "heading": "Who you are" },
+        "children": ["intro", "name", "role"]
+      },
+      "intro": {
+        "type": "Text",
+        "props": { "text": "Your name and role go on the team page. Nothing else is shared." }
+      },
+      "name": {
+        "type": "TextField",
+        "props": {
+          "label": "Name",
+          "value": { "$bindState": "/form/name" },
+          "placeholder": "Ada Lovelace",
+          "required": true
+        }
+      },
+      "role": {
+        "type": "Select",
+        "props": {
+          "label": "Role",
+          "value": { "$bindState": "/form/role" },
+          "options": ["Engineering", "Design", "Product"]
+        }
+      },
+      "work": {
+        "type": "Section",
+        "props": { "heading": "How you work" },
+        "children": ["remote", "notes"]
+      },
+      "remote": {
+        "type": "Checkbox",
+        "props": {
+          "label": "Works remotely",
+          "checked": { "$bindState": "/form/remote" }
+        }
+      },
+      "notes": {
+        "type": "Textarea",
+        "props": {
+          "label": "Notes",
+          "value": { "$bindState": "/form/notes" },
+          "rows": 3
+        }
+      }
+    }
+  }
+}
