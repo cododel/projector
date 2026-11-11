@@ -47,8 +47,8 @@ void app.whenReady().then(async () => {
     },
     process.env.PROJECTOR_BROWSER_TEST_DATA,
   );
+  manager.setBounds({ x: 20, y: 80, width: 840, height: 540 });
   globalThis.browserTest = { manager, drafts, annotations };
   await window.loadURL('data:text/html,<h1>Browser manager test shell</h1>');
-  manager.setBounds({ x: 20, y: 80, width: 840, height: 540 });
 });
 app.on('window-all-closed', () => app.quit());

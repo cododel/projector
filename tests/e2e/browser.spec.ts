@@ -9,7 +9,7 @@ import { build } from 'esbuild';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
 
 let app: ElectronApplication;
 let root: string;
@@ -18,6 +18,11 @@ let url: string;
 test.beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'bp-browser-'));
   server = createServer((request, response) => {
+    if (request.url?.startsWith('/interrupted-')) return;
+    if (request.url === '/network-failure') {
+      request.socket.destroy();
+      return;
+    }
     response.setHeader('Content-Type', 'text/html');
     if (request.url?.startsWith('/pixels')) {
       const second = request.url.includes('state=2');
@@ -150,6 +155,57 @@ test('native external views isolate project profiles and reject privileged navig
     first.id,
   );
   await expect(external.getByRole('heading', { name: 'External page' })).toBeVisible();
+});
+
+test('cancelled initial and toolbar loads do not report browser errors', async ({ diagnostics }) => {
+  const requestStarted = (path: string) => new Promise<void>((resolve) => {
+    const onRequest = (request: IncomingMessage) => {
+      if (request.url !== path) return;
+      server.off('request', onRequest);
+      resolve();
+    };
+    server.on('request', onRequest);
+  });
+  const opening = requestStarted('/interrupted-open');
+  const tab = await app.evaluate((_electron, url) =>
+    globalThis.browserTest.manager.open({ artifactId: 'artifact-a', projectId: 'project-a', url }),
+  url + 'interrupted-open');
+  await opening;
+  const navigate = (target: string) => app.evaluate((_electron, { tabId, url }) =>
+    globalThis.browserTest.manager.command({ tabId, action: 'navigate', url }),
+  { tabId: tab.id, url: target });
+  await navigate(url + 'replacement-open');
+  const state = () => app.evaluate((_electron, tabId) =>
+    globalThis.browserTest.manager.snapshot().tabs.find((entry) => entry.id === tabId),
+  tab.id);
+  await expect.poll(state).toMatchObject({
+    url: url + 'replacement-open',
+    loading: false,
+    error: null,
+  });
+
+  const navigating = requestStarted('/interrupted-navigation');
+  const navigation = navigate(url + 'interrupted-navigation').then(
+    () => null,
+    (error: Error) => error.message,
+  );
+  await navigating;
+  await navigate(url + 'replacement-navigation');
+  expect(await navigation).toBeNull();
+  await expect.poll(state).toMatchObject({
+    url: url + 'replacement-navigation',
+    loading: false,
+    error: null,
+  });
+  diagnostics.expect({
+    role: 'main',
+    kind: 'console-error',
+    phase: 'test',
+    message: /^\(node:\d+\) electron: Failed to load URL: http:\/\/127\.0\.0\.1:\d+\/network-failure with error: ERR_EMPTY_RESPONSE\n\(Use `Electron --trace-warnings \.\.\.` to show where the warning was created\)$/,
+    count: 1,
+  });
+  await expect(navigate(url + 'network-failure')).rejects.toThrow('ERR_EMPTY_RESPONSE');
+  await expect.poll(state).toMatchObject({ loading: false, error: 'ERR_EMPTY_RESPONSE' });
 });
 
 test('area annotation uses frozen viewport, private composer, and numbered captured PNG', async () => {

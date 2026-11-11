@@ -23,6 +23,13 @@ import {
   type AreaRect,
 } from './browser-policy';
 
+const abortedNavigation = -3;
+function isAbortedNavigation(error: unknown): boolean {
+  return error instanceof Error &&
+    (('errno' in error && error.errno === abortedNavigation) ||
+      ('code' in error && error.code === 'ERR_ABORTED'));
+}
+
 type OverlayHandler = (event: Electron.IpcMainInvokeEvent, action: unknown, value: unknown) => unknown;
 const retiredOverlayContents = new WeakSet<WebContents>();
 let overlayHandler: OverlayHandler | undefined;
@@ -445,7 +452,7 @@ export class BrowserManager {
       update();
     });
     contents.on('did-fail-load', (_event, code, description, _url, mainFrame) => {
-      if (mainFrame && code !== -3) {
+      if (mainFrame && code !== abortedNavigation) {
         state.error = description;
         update();
       }
@@ -458,9 +465,9 @@ export class BrowserManager {
     if (!args.background) this.select(state.id);
     void this.refreshAnnotations().catch(() => {});
     // Publication/show_content does not focus the window or remote web contents.
-    void contents.loadURL(url).catch((error: Error) => {
-      if (!contents.isDestroyed()) {
-        state.error = error.message;
+    void contents.loadURL(url).catch((error: unknown) => {
+      if (!contents.isDestroyed() && !isAbortedNavigation(error)) {
+        state.error = error instanceof Error ? error.message : String(error);
         state.loading = false;
         this.hooks.onChange();
       }
@@ -925,7 +932,11 @@ export class BrowserManager {
         break;
       case 'navigate':
         tab.downloadNavigation = browserUrl(args.url ?? '');
-        await contents.loadURL(tab.downloadNavigation);
+        try {
+          await contents.loadURL(tab.downloadNavigation);
+        } catch (error) {
+          if (!isAbortedNavigation(error)) throw error;
+        }
         break;
       case 'close': {
         const cancelled = await this.closeTab(tab);
