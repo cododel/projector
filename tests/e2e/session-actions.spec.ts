@@ -279,3 +279,36 @@ test('busy Archive updates a deduplicated alert, retries without takeover and re
   expect(calls.filter(call => call.method === 'thread/unarchive')).toHaveLength(1);
   await expect(row).toBeVisible();
 });
+
+for (const phase of ['metadata', 'resume'] as const) {
+  test(`Resume shows one warning for a writer conflict during ${phase}`, async () => {
+    root = await realpath(await mkdtemp(join(tmpdir(), 'bp-resume-conflict-')));
+    const project = join(root, 'project');
+    await mkdir(project);
+    app = await electron.launch({ args: [resolve('.')], env: {
+      ...process.env, PROJECTOR_DATA: join(root, 'data'), CODEX_HOME: join(root, 'home'),
+      PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'), CODEX_FIXTURE_PROJECT: project,
+      CODEX_FIXTURE_EMPTY: '0',
+      CODEX_FIXTURE_ACTIVE_WRITER: phase === 'metadata' ? 'thread-exact-fixture' : '',
+      CODEX_FIXTURE_RESUME_WRITER: phase === 'resume' ? 'thread-exact-fixture' : '',
+    } });
+    const page = await app.firstWindow();
+    await app.evaluate(({ dialog }, project) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [project] });
+    }, project);
+    await page.getByRole('button', { name: '+ Open project folder', exact: true }).click();
+    await page.getByRole('button', { name: 'Exact fixture session', exact: true }).click();
+    await page.getByRole('button', { name: 'Resume', exact: true }).click();
+    const notices = (await notificationWindow(app)).locator('.notification-alert');
+    await expect(notices.filter({ hasText: 'Session is in use' })).toHaveCount(1);
+    await expect(notices.filter({ hasText: 'Operation failed' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
+    await expect.poll(() => page.evaluate(() =>
+      (window as unknown as { projector: { invoke(name: string): Promise<{
+        harnesses: { error: string | null }; terminals: unknown[];
+      }> } }).projector.invoke('applicationSnapshot').then(({ harnesses, terminals }) => ({
+        error: harnesses.error, terminals,
+      })),
+    )).toEqual({ error: null, terminals: [] });
+  });
+}

@@ -275,7 +275,7 @@ export function ApplicationSettings({
                 )}
                 <p className="muted">
                   {harnesses.compatibility
-                    ? `${harnesses.compatibility.version ?? 'Version unavailable'} · ${harnesses.compatibility.qualified ? 'Protocol qualified' : 'Not qualified'}`
+                    ? `${harnesses.compatibility.version ?? 'Version unavailable'} · ${harnesses.compatibility.qualified ? 'CLI detected' : 'CLI check failed'}`
                     : 'Compatibility has not been checked.'}
                 </p>
                 {harnesses.compatibility?.error && (

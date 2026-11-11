@@ -29,7 +29,7 @@ import { ApplicationWorkspace, applicationSettingsSchema } from './application-w
 import { TerminalManager } from './terminals';
 import { HarnessSync } from './harness-sync';
 import { TerminalOutputDelivery } from './terminal-delivery';
-import { CodexManager } from './codex';
+import { CodexManager, sessionInUse } from './codex';
 import { paneLeaves } from '../shared/application-workspace';
 import { matchShortcut } from '../shared/keyboard-shortcuts';
 import type { McpSetup } from '../shared/protocol';
@@ -76,7 +76,11 @@ const terminals = new TerminalManager({
     if (window && !window.isDestroyed()) terminalDelivery.offer(output);
   },
 });
+function notifyResumeBlocked(sessionId: string) {
+  if (window && !window.isDestroyed()) window.webContents.send('projector:resume-blocked', sessionId);
+}
 const codex = new CodexManager({
+  onResumeBlocked: notifyResumeBlocked,
   getExecutable: () => {
     const path = applicationWorkspace.snapshot().settings.codexExecutable;
     return path === 'codex' ? process.env.PROJECTOR_E2E_CODEX_EXECUTABLE ?? path : path;
@@ -1024,7 +1028,15 @@ void app
               value.operationId ? records.find(record => record.operationId === value.operationId) : undefined;
             if (value.action === 'showTerminal' && !terminal) throw new Error('TERMINAL_NOT_FOUND');
             if (!terminal && value.action === 'newCodex') {
-              const launch = value.sessionId ? await codex.launchResume(project.id, project.path, value.sessionId) : await codex.launchNew(project.id, project.path);
+              const launch = await (value.sessionId
+                ? codex.launchResume(project.id, project.path, value.sessionId)
+                : codex.launchNew(project.id, project.path)
+              ).catch(error => {
+                if (!value.sessionId || !sessionInUse(error, value.sessionId)) throw error;
+                notifyResumeBlocked(value.sessionId);
+                return null;
+              });
+              if (!launch) return applicationWorkspace.snapshot();
               try {
                 terminal = await terminals.create({ projectId: project.id, cwd: launch.cwd, kind: 'codex', executable: launch.executable,
                   args: launch.args, env: launch.env, operationId: value.operationId, harnessSessionId: value.sessionId ?? undefined });

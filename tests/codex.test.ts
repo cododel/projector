@@ -26,6 +26,7 @@ async function setup(extra: Record<string, string> = {}) {
   const audit = join(root, 'audit.jsonl');
   const identities: { terminalId: string; sessionId: string }[] = [];
   const errors: string[] = [];
+  const resumeBlocked: string[] = [];
   const manager = new CodexManager({
     getExecutable: () => resolve('tests/fixtures/codex-cli.mjs'),
     getEnvironment: () => ({
@@ -41,9 +42,10 @@ async function setup(extra: Record<string, string> = {}) {
     }),
     onIdentity: (terminalId, sessionId) => identities.push({ terminalId, sessionId }),
     onError: (error) => errors.push(error),
+    onResumeBlocked: (sessionId: string) => resumeBlocked.push(sessionId),
   });
   managers.push(manager);
-  return { manager, root, project, other, audit, identities, errors };
+  return { manager, root, project, other, audit, identities, errors, resumeBlocked };
 }
 async function auditRequests(path: string) {
   return (await readFile(path, 'utf8'))
@@ -424,14 +426,16 @@ it('rejects unauthenticated or browser-origin access to the TUI control gateway'
   }
   expect(identities).toEqual([]);
 });
-it('does not launch an unsupported version or accept an override of user policy', async () => {
-  const { manager, project, audit } = await setup({ CODEX_FIXTURE_VERSION: '0.999.0' });
-  diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'test',message:'CODEX_VERSION_UNQUALIFIED: 0.999.0; qualified 0.162.1',count:1});
-  await expect(manager.launchNew('project', project)).rejects.toThrow('CODEX_VERSION_UNQUALIFIED');
-  expect((await auditRequests(audit)).every((value) => !value.args?.includes('app-server'))).toBe(
-    true,
-  );
-  expect(manager.snapshot().compatibility).toMatchObject({ version: '0.999.0', qualified: false });
+it('discovers sessions and launches with a newer Codex CLI version', async () => {
+  const { manager, project } = await setup({ CODEX_FIXTURE_VERSION: '0.167.1' });
+  const sessions = await manager.discover([{ id: 'project', path: project }]);
+  expect(sessions.some((session) => session.id === 'thread-exact-fixture')).toBe(true);
+  await expect(manager.launchNew('project', project)).resolves.toBeDefined();
+  expect(manager.snapshot().compatibility).toMatchObject({ version: '0.167.1', qualified: true });
+});
+
+it('does not accept an override of user policy', async () => {
+  const { project } = await setup();
   const restricted = new CodexManager({
     getExecutable: () => resolve('tests/fixtures/codex-cli.mjs'),
     getMcpOverrides: () => ({ approval_policy: 'never' }),
@@ -628,13 +632,33 @@ it('rejects an undo response for another thread', async () => {
 it('reports an active writer as a session conflict without starting or resuming a process', async () => {
   const { manager, project, audit } = await setup({ CODEX_FIXTURE_ACTIVE_WRITER: 'thread-exact-fixture' });
   await manager.discover([{ id: 'project', path: project }]);
-  diagnostics().expect({role:'codex-manager',kind:'adapter-error',phase:'test',message:'CODEX_SESSION_IN_USE: This session is already in use by another Codex process. Return to the existing launch, or retry after it releases the session. Projector will not take it over.',count:1});
   await expect(manager.launchResume('project', project, 'thread-exact-fixture')).rejects.toThrow('CODEX_SESSION_IN_USE: This session is already in use by another Codex process.');
   expect(manager.snapshot().sessions.find(session => session.id === 'thread-exact-fixture')?.processState).toBe('unknown');
+  expect(manager.snapshot().error).toBeNull();
   expect(manager.snapshot().mcpStartup).toHaveLength(0);
   expect((await auditRequests(audit)).some(request => request.method === 'thread/start' || request.method === 'thread/resume')).toBe(false);
   // The refused read must not poison the connection or block unrelated sessions.
   await expect(manager.read('other-thread')).resolves.toMatchObject({ id: 'other-thread' });
+});
+
+it('reports a writer conflict at TUI resume and retires only the attempted launch', async () => {
+  const sessionId = 'thread-exact-fixture';
+  const { manager, project, identities, resumeBlocked } = await setup({
+    CODEX_FIXTURE_RESUME_WRITER: sessionId,
+  });
+  const launch = await manager.launchResume('project', project, sessionId);
+  manager.bindTerminal(launch.launchId, 'resume-conflict-terminal');
+  const gateway = await controlGateway(launch);
+  const closed = new Promise<void>(done => gateway.socket.once('close', () => done()));
+  gateway.socket.send(JSON.stringify({ id: 'resume-conflict', method: 'thread/resume', params: { threadId: sessionId, cwd: project } }));
+  await closed;
+  await until(() => manager.snapshot().mcpStartup.some(
+    item => item.launchId === launch.launchId && item.status === 'stopped',
+  ));
+  expect(resumeBlocked).toEqual([sessionId]);
+  expect(identities).toEqual([]);
+  expect(manager.snapshot().error).toBeNull();
+  expect(manager.snapshot().sessions.find(session => session.id === sessionId)?.processState).toBe('unknown');
 });
 
 it('retains exact live ownership when discovery finishes after Resume identification', async () => {

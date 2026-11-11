@@ -216,6 +216,10 @@ if (args.includes('--remote')) {
         result = { thread: { ...thread(id), status: { type: 'idle' } } };
         break;
       case 'thread/resume':
+        if (process.env.CODEX_FIXTURE_RESUME_WRITER === value.params.threadId) {
+          send({ id: value.id, error: { code: -32600, message: `thread ${value.params.threadId} already has an active writer` } });
+          return;
+        }
         result = {
           thread: {
             ...thread(

@@ -186,6 +186,7 @@ interface Bridge {
   onShutdown?(callback: () => void): () => void;
   getPathForFile?(file: File): string;
   onTerminalOutput?(callback: (output: TerminalOutput) => void): () => void;
+  onResumeBlocked?(callback: (sessionId: string) => void): () => void;
   onOpenSettings?(callback: () => void): () => void;
   onShortcut?(callback: (action: ShortcutAction) => void): () => void;
   onPaneFocus?(callback: (pane: { key: string; paneId: string }) => void): () => void;
@@ -855,6 +856,14 @@ function App(): React.JSX.Element {
     if (useTransition) await transition(execute);
     else await action(execute);
   }
+  useEffect(() => bridge.onResumeBlocked?.(sessionId => {
+    notifications.push({
+      source: 'session-resume', context: sessionId, operation: 'resume',
+      level: 'warning', title: 'Session is in use',
+      body: 'Continue in the app that has this session open, or release it there and try Resume again.',
+      actions: [], lifetime: 'sticky',
+    });
+  }), []);
   const pinnedSessions = application?.pinnedSessionIds ?? [];
   function pinOrder(a: HarnessSession, b: HarnessSession): number {
     return Number(pinnedSessions.includes(b.id)) - Number(pinnedSessions.includes(a.id));

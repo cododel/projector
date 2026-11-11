@@ -1,4 +1,5 @@
 import { test, expect, electron, type ElectronApplication } from './test';
+import { notificationWindow } from './notification-window';
 import { spawnSync } from '../support/process';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -80,6 +81,16 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
     const keyboard = page.locator('.terminal-pane .xterm-helper-textarea');
     await expect(page.locator('.terminal-pane .xterm-rows')).toContainText(/gpt-6\.1-sol/i);
     await ready(created.id);
+    const row = page.locator('.project-session-row').filter({
+      has: page.getByRole('button', { name: 'Untitled session', exact: true }),
+    });
+    await row.hover();
+    await row.getByRole('button', { name: 'Archive Untitled session', exact: true }).click();
+    const notices = (await notificationWindow(app)).locator('.notification-alert');
+    await expect(notices.filter({ hasText: 'Session is in use' })).toHaveCount(1);
+    await expect(notices.filter({ hasText: 'thread not loaded' })).toHaveCount(0);
+    expect((await snapshot()).terminals[0].harnessSessionId).toBe(created.harnessSessionId);
+    expect((await snapshot()).harnesses.error).toBeNull();
     await keyboard.focus();
     await keyboard.press('Control+d');
     await expect.poll(async () => (await snapshot()).terminals).toEqual([]);

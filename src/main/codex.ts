@@ -20,19 +20,21 @@ import type {
   HarnessMcpStartup,
 } from '../shared/harness';
 
-function sessionInUse(error: unknown, sessionId: string): boolean {
-  const rpc = z.object({ code: z.number(), message: z.string() }).safeParse(
-    error instanceof Error ? error.cause : undefined,
-  );
+export function sessionInUse(error: unknown, sessionId: string): boolean {
+  return writerConflict(error instanceof Error ? error.cause : undefined, sessionId);
+}
+
+function writerConflict(value: unknown, sessionId: string): boolean {
+  const rpc = z.object({ code: z.number(), message: z.string() }).safeParse(value);
+  const conflict = `thread ${sessionId} already has an active writer`;
   return rpc.success && rpc.data.code === -32600 &&
-    rpc.data.message === `thread ${sessionId} already has an active writer`;
+    (rpc.data.message === conflict || rpc.data.message === `thread-store conflict: ${conflict}`);
 }
 
 class CodexShutdownError extends Error {
   constructor() { super('CODEX_MANAGER_STOPPED'); }
 }
 
-const QUALIFIED_VERSION = '0.162.1';
 const RPC_TIMEOUT_MS = 10_000;
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
 const ownedGroups = new WeakSet<ChildProcessWithoutNullStreams>();
@@ -95,6 +97,7 @@ export interface CodexManagerOptions {
   getProfile?: () => string | undefined;
   /** Dot-path TOML overrides for the app-owned Projector MCP bridge only. */
   getMcpOverrides: () => Record<string, unknown>;
+  onResumeBlocked?: (sessionId: string) => void;
   onIdentity?: (terminalId: string, sessionId: string) => void;
   onChange?: () => void;
   onError?: (message: string) => void;
@@ -376,8 +379,6 @@ export class CodexManager {
       });
       const version = /codex-cli\s+(\d+\.\d+\.\d+)/.exec(stdout)?.[1];
       if (!version) throw new Error('CODEX_VERSION_INVALID');
-      if (version !== QUALIFIED_VERSION)
-        throw new Error(`CODEX_VERSION_UNQUALIFIED: ${version}; qualified ${QUALIFIED_VERSION}`);
       this.compatibility = { executable, version, qualified: true };
       this.error = null;
     } catch (error) {
@@ -388,7 +389,7 @@ export class CodexManager {
     this.changed();
     return { ...this.compatibility };
   }
-  private async qualified() {
+  private async requireCli() {
     const compatibility = await this.checkCompatibility();
     if (!compatibility.qualified) throw new Error(compatibility.error);
   }
@@ -407,7 +408,7 @@ export class CodexManager {
     if (this.discovery && isAlive(this.discovery.child)) return this.discovery;
     if (this.discoveryStarting) return this.discoveryStarting;
     const starting = (async () => {
-      await this.qualified();
+      await this.requireCli();
       const child = spawn(
         this.options.getExecutable(),
         [...this.profileArguments(), 'app-server', '--listen', 'stdio://', ...this.mcpArguments()],
@@ -594,6 +595,11 @@ export class CodexManager {
   async setArchived(sessionId: string, archived: boolean): Promise<HarnessArchiveResult> {
     z.string().min(1).max(512).parse(sessionId);
     const blocked = (): HarnessArchiveResult => ({ status: 'blocked', sessionId, reason: 'session-in-use' });
+    // A newly started thread can exist only on its owning backend until its
+    // first turn. The discovery backend cannot read that thread for Archive.
+    if (archived && !this.listedIds.has(sessionId) && [...this.launches.values()].some(
+      (record) => record.mode === 'new' && !record.stopped && record.sessionId === sessionId,
+    )) return blocked();
     try {
       await this.read(sessionId, { reportSessionConflict: !archived });
     } catch (error) {
@@ -643,7 +649,7 @@ export class CodexManager {
   async launchResume(projectId: string, cwd: string, sessionId: string) {
     if (this.sessions.get(sessionId)?.processState === 'running')
       throw new Error('CODEX_SESSION_ALREADY_RUNNING');
-    const session = await this.read(sessionId);
+    const session = await this.read(sessionId, { reportSessionConflict: false });
     if (session.cwd !== (await canonical(cwd))) throw new Error('CODEX_SESSION_PROJECT_MISMATCH');
     return this.launch(projectId, cwd, sessionId);
   }
@@ -660,7 +666,7 @@ export class CodexManager {
     expectedId?: string,
   ): Promise<CodexLaunch> {
     if (this.stopping) throw new CodexShutdownError();
-    await this.qualified();
+    await this.requireCli();
     if (this.stopping) throw new CodexShutdownError();
     const executable = this.options.getExecutable();
     const environment = this.environment();
@@ -875,6 +881,12 @@ export class CodexManager {
         if (!claimed && value.id !== undefined && identityRequests.has(value.id)) {
           claimed = true;
           identityRequests.delete(value.id);
+          if (record.expectedId && writerConflict(value.error, record.expectedId)) {
+            // The lock can be acquired after the metadata read, before TUI Resume.
+            void this.stopLaunch(record);
+            this.options.onResumeBlocked?.(record.expectedId);
+            return;
+          }
           if (value.error !== undefined)
             throw new Error('CODEX_TUI_THREAD_FAILED: ' + JSON.stringify(value.error));
           const result = z.object({ thread: threadSchema }).parse(value.result);

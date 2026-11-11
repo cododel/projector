@@ -57,6 +57,11 @@ contextBridge.exposeInMainWorld('projector', {
     ipcRenderer.on('projector:operation-status', listener);
     return () => ipcRenderer.removeListener('projector:operation-status', listener);
   },
+  onResumeBlocked: (callback: (sessionId: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, sessionId: string) => callback(sessionId);
+    ipcRenderer.on('projector:resume-blocked', listener);
+    return () => ipcRenderer.removeListener('projector:resume-blocked', listener);
+  },
   onRefresh: (callback: () => void) => {
     const listener = () => { if (!shuttingDown) callback(); };
     ipcRenderer.on('projector:refresh', listener);
