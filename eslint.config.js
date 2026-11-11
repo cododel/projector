@@ -5,6 +5,7 @@ export default tseslint.config(
     ignores: [
       'out/**',
       'dist/**',
+      'docs/references/yourturn/dist/**',
       'node_modules/**',
       '.tmp/**',
       'test-results/**',
@@ -17,5 +18,20 @@ export default tseslint.config(
   {
     files: ['scripts/**/*.mjs'],
     languageOptions: { globals: { process: 'readonly', console: 'readonly' } },
+  },
+  {
+    files: ['docs/references/yourturn/scripts/*.mjs'],
+    languageOptions: {
+      globals: {
+        AbortSignal: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        clearTimeout: 'readonly',
+        fetch: 'readonly',
+        process: 'readonly',
+        setTimeout: 'readonly',
+      },
+    },
   },
 );

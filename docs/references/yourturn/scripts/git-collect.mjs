@@ -44,7 +44,7 @@ async function git(args, cwd) {
       return err.stdout ?? "";
     }
     const detail = (err.stderr ?? "").trim() || err.message;
-    throw new Error(`git ${args[0]}: ${detail}`);
+    throw new Error(`git ${args[0]}: ${detail}`, { cause: err });
   }
 }
 
