@@ -2,6 +2,7 @@ import React from 'react';
 import type {Meta,StoryObj} from '@storybook/react-vite';
 import {expect,fn,waitFor} from 'storybook/test';
 import {ApplicationSettings} from '../../src/renderer/ApplicationSettings';
+import { GRAPHITE_TERMINAL } from '../../src/shared/terminal-theme';
 import {DEFAULT_SETTINGS} from '../../src/shared/application-workspace';
 import {harnesses,Isolated} from '../fixtures/components';
 import {CatalogSheet} from '../fixtures/CatalogSheet';
@@ -12,7 +13,21 @@ const harness:NonNullable<Story['play']>=async({canvas,userEvent})=>{await userE
 const shortcuts:NonNullable<Story['play']>=async({canvas,userEvent})=>{await userEvent.click(canvas.getByRole('button',{name:'Keyboard shortcuts'}));};
 const dirty:NonNullable<Story['play']>=async({canvas,userEvent})=>{await userEvent.selectOptions(canvas.getByRole('combobox',{name:'Plan placement'}),'tab');await expect(canvas.getByText('Unsaved changes')).toBeVisible();};
 export const General:Story={parameters:{catalog:{states:["settings.general"],transitions:[]}}};
+export const Appearance:Story={parameters:{catalog:{states:['settings.dark-appearance'],transitions:['settings.change-appearance']}},play:async({canvas,userEvent,args})=>{
+  await userEvent.selectOptions(canvas.getByRole('combobox',{name:'Application appearance'}),'dark');
+  await userEvent.click(canvas.getByRole('button',{name:/^Save$/}));
+  await expect(args.onSave).toHaveBeenCalledWith(expect.objectContaining({appearance:'dark',terminalTheme:'follow'}));
+}};
 export const Terminal:Story={parameters:{catalog:{states:["settings.terminal"],transitions:["settings.section"]}},play:terminal};
+export const ImportTheme:Story={parameters:{catalog:{states:['settings.theme-imported','settings.theme-invalid'],transitions:['settings.import-theme']}},play:async ctx=>{
+  await terminal(ctx);
+  const upload=ctx.canvas.getByLabelText('Import terminal color scheme') as HTMLInputElement;
+  await ctx.userEvent.upload(upload,new File(['{}'],'invalid.json',{type:'application/json'}));
+  await expect(await ctx.canvas.findByRole('alert')).toHaveTextContent('Invalid terminal color scheme');
+  await ctx.userEvent.upload(upload,new File([JSON.stringify(GRAPHITE_TERMINAL)],'graphite.json',{type:'application/json'}));
+  await waitFor(()=>expect(ctx.canvas.getByRole('combobox',{name:'Terminal color scheme'})).toHaveValue('custom'));
+  await expect(ctx.canvas.queryByRole('alert')).not.toBeInTheDocument();
+}};
 export const Harnesses:Story={parameters:{catalog:{states:["settings.harnesses", "settings.compatibility-unchecked"],transitions:[]}},play:harness};
 export const Shortcuts:Story={parameters:{catalog:{states:["settings.shortcuts", "settings.shortcut-unassigned"],transitions:[]}},play:shortcuts};
 export const Dirty:Story={parameters:{catalog:{states:["settings.dirty"],transitions:["settings.edit"]}},play:dirty};

@@ -47,7 +47,7 @@ export function DocumentAnnotations({ highlights, focused = '' }: { highlights: 
                   >
                     <path
                       d={path}
-                      fill="#4263da"
+                      fill="var(--annotation-fill)"
                       stroke="white"
                       strokeWidth="1.5"
                       strokeLinejoin="round"

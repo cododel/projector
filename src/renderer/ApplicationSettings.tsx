@@ -8,6 +8,7 @@ import {
   type ShortcutAction,
 } from '../shared/application-workspace';
 import type { HarnessSnapshot } from '../shared/harness';
+import { terminalColorSchemeSchema } from '../shared/terminal-theme';
 import { shortcutForEvent } from './shortcuts';
 
 const shortcutLabels: Record<ShortcutAction, string> = {
@@ -48,6 +49,7 @@ export function ApplicationSettings({
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [importingTheme, setImportingTheme] = useState(false);
   const [recording, setRecording] = useState<ShortcutAction | null>(null);
   const dialog = useRef<HTMLElement>(null);
   const initialFocus = useRef<HTMLButtonElement>(null);
@@ -102,6 +104,23 @@ export function ApplicationSettings({
   }, [busy, dirty, recording, onClose]);
   const field = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
+  async function importTheme(file: File) {
+    setError('');
+    if (file.size > 16384) {
+      setError('A terminal color scheme must be a JSON file of 16 KB or less.');
+      return;
+    }
+    setImportingTheme(true);
+    try {
+      const value: unknown = JSON.parse((await file.text()).replace(/^\uFEFF/, ''));
+      const scheme = terminalColorSchemeSchema.parse(value);
+      setDraft(current => ({ ...current, terminalTheme: 'custom', terminalCustomTheme: scheme }));
+    } catch {
+      setError('Invalid terminal color scheme. Choose one Windows Terminal scheme with a name and hex colors.');
+    } finally {
+      setImportingTheme(false);
+    }
+  }
   const row = (title: string, description: string, control: React.ReactNode, key?: string) => (
     <div className="settings-row" key={key}>
       <div>
@@ -141,7 +160,7 @@ export function ApplicationSettings({
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            if (busy) return;
+            if (busy || importingTheme) return;
             setError('');
             let args: unknown;
             try {
@@ -172,6 +191,19 @@ export function ApplicationSettings({
             {section === 'General' && (
               <>
                 {row(
+                  'Appearance',
+                  'The theme for the Projector interface.',
+                  <select aria-label="Application appearance" value={draft.appearance}
+                    onChange={event => {
+                      const value = event.target.value;
+                      if (value === 'system' || value === 'light' || value === 'dark') field('appearance', value);
+                    }}>
+                    <option value="system">Auto (system)</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>,
+                )}
+                {row(
                   'Open plans',
                   'Reuse the open document in this workspace.',
                   <select
@@ -199,6 +231,30 @@ export function ApplicationSettings({
             )}
             {section === 'Terminal' && (
               <>
+                {row(
+                  'Color scheme',
+                  'Changes terminal colors. Apps that cache their palette may need a restart.',
+                  <select aria-label="Terminal color scheme" value={draft.terminalTheme}
+                    onChange={event => {
+                      const value = event.target.value;
+                      if (value === 'follow' || value === 'light' || value === 'dark' || value === 'custom') field('terminalTheme', value);
+                    }}>
+                    <option value="follow">Follow application</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Graphite</option>
+                    {draft.terminalCustomTheme && <option value="custom">{draft.terminalCustomTheme.name} (custom)</option>}
+                  </select>,
+                )}
+                {row(
+                  'Import color scheme',
+                  'One Windows Terminal color scheme in a JSON file.',
+                  <input type="file" accept=".json,application/json" aria-label="Import terminal color scheme"
+                    disabled={busy || importingTheme} onChange={event => {
+                      const file = event.currentTarget.files?.[0];
+                      event.currentTarget.value = '';
+                      if (file) void importTheme(file);
+                    }} />,
+                )}
                 {row(
                   'Shell',
                   'Leave empty to use your system shell. Applies to newly started shells.',
@@ -395,7 +451,7 @@ export function ApplicationSettings({
             <button type="button" onClick={onClose} disabled={busy}>
               Cancel
             </button>
-            <button className="primary" disabled={busy || !dirty || metadataPending}>
+            <button className="primary" disabled={busy || importingTheme || !dirty || metadataPending}>
               Save
             </button>
           </footer>

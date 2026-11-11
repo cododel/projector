@@ -1,3 +1,4 @@
+import { LIGHT_TERMINAL, terminalColorSchemeSchema, terminalColorQueries, terminalColorReply } from '../shared/terminal-theme';
 import { diagnostic, bindDiagnosticError } from '../shared/test-diagnostics';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, stat, realpath, rm } from 'node:fs/promises';
@@ -19,6 +20,7 @@ import type {
 } from '../shared/terminal';
 
 const optionsSchema = z.object({
+  colorScheme: terminalColorSchemeSchema.optional(),
   scrollback: z.number().int().min(100).max(50000).optional(),
   maxReplayBytes: z
     .number()
@@ -115,6 +117,7 @@ export class TerminalService {
     options: TerminalOptions = {},
   ) {
     this.options = {
+      colorScheme: LIGHT_TERMINAL,
       scrollback: 10000,
       maxReplayBytes: 2 * 1024 * 1024,
       ...optionsSchema.parse(options),
@@ -237,6 +240,12 @@ export class TerminalService {
     terminal.parser.registerCsiHandler({prefix:'?',final:'h'}, encoding(true));
     terminal.parser.registerCsiHandler({prefix:'?',final:'l'}, encoding(false));
     terminal.parser.registerEscHandler({final:'c'}, () => { context.mouseEncoding = 0; return false; });
+    // Answer startup probes at the PTY owner: no renderer may be attached yet.
+    for (const slot of terminalColorQueries) terminal.parser.registerOscHandler(slot, data => {
+      if (data !== '?') return false;
+      context.pty?.write(terminalColorReply(slot, this.options.colorScheme));
+      return true;
+    });
     return context;
   }
   private get(id: string): Context {
@@ -411,7 +420,7 @@ export class TerminalService {
           cols: context.terminal.cols,
           rows: context.terminal.rows,
           cwd: context.record.cwd,
-          env: { ...process.env, TERM: 'xterm-256color', ...input.env },
+          env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', ...input.env },
         },
       );
       context.record.pid = context.pty.pid;

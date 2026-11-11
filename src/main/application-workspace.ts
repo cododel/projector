@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
+import { terminalColorSchemeSchema } from '../shared/terminal-theme';
 import { MetadataWriter } from './metadata-write';
 import {
   DEFAULT_SETTINGS, paneLeaves, workspaceKey,
@@ -33,13 +34,18 @@ const shortcutsSchema = z.record(z.enum([
   'nextPane', 'previousPane', 'bottomPanel', 'settings',
 ]), z.string().max(80).nullable());
 export const applicationSettingsSchema = z.object({
+  appearance: z.enum(['system', 'light', 'dark']).default(DEFAULT_SETTINGS.appearance),
   planPlacement: z.enum(['beside', 'tab']), restoreWorkspace: z.boolean(),
   shell: z.string().max(4096), shellArgs: z.array(z.string().max(4096)).max(50),
   terminalFont: z.string().min(1).max(200), terminalFontSize: z.number().int().min(8).max(36),
+  terminalTheme: z.enum(['follow', 'light', 'dark', 'custom']).default('follow'),
+  terminalCustomTheme: terminalColorSchemeSchema.nullable().default(null),
   terminalScrollback: z.number().int().min(100).max(50000),
   codexExecutable: z.string().min(1).max(4096), codexProfile: z.string().max(200),
   shortcuts: shortcutsSchema,
-}).strict();
+}).strict().refine(settings => settings.terminalTheme !== 'custom' || settings.terminalCustomTheme !== null, {
+  message: 'A custom terminal color scheme must be imported first.',
+});
 const sessionSchema = z.object({ projectId: id, sessionId: id.nullable(),
   tabs: z.array(z.object({ id, root: nodeSchema })), activeTabId: id.nullable(), activePaneId: id.nullable() });
 const bottomSchema = z.object({ tabs: z.array(id), activeTerminalId: id.nullable(),

@@ -30,7 +30,10 @@ function Fixture(){const [value,setValue]=useState(''),[open,setOpen]=useState(t
     platform: 'browser',
     format: 'iife',
   });
-  const css = await readFile(resolve('src/renderer/style.css'), 'utf8');
+  const [theme, styles] = await Promise.all(
+    ['theme.css', 'style.css'].map(file => readFile(resolve('src/renderer', file), 'utf8')),
+  );
+  const css = theme + styles.replace("@import './theme.css';", '');
   await writeFile(
     join(root, 'index.html'),
     `<html><head><style>${css}</style></head><body><div id="root"></div><script src="renderer.js"></script></body></html>`,

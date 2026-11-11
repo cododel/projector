@@ -50,6 +50,7 @@ test.beforeEach(async () => {
     platform: 'node',
     format: 'cjs',
     target: 'node24',
+    loader: { '.css': 'text' },
     external: ['electron'],
   });
   await build({
@@ -239,6 +240,13 @@ test('area annotation uses frozen viewport, private composer, and numbered captu
   await overlay.mouse.down();
   await overlay.mouse.move(230, 150);
   await overlay.mouse.up();
+  await overlay.emulateMedia({ colorScheme: null });
+  await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'dark'; });
+  await expect(overlay.locator('#composer')).toHaveCSS('background-color', 'rgb(23, 25, 29)');
+  await expect(overlay.locator('#rectangle')).toHaveCSS('border-top-color', 'rgb(150, 178, 215)');
+  await expect(external.locator('body')).toHaveCSS('background-color', 'rgb(238, 238, 255)');
+  await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'light'; });
+  await expect(overlay.locator('#composer')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
   await overlay.getByLabel('Area annotation comment').fill('Investigate this captured result');
   await overlay.screenshot({ path: '.tmp/tasks/annotation-polish-20261010/browser-composer.png' });
   await expect

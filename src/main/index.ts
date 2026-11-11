@@ -1,3 +1,4 @@
+import { terminalColorScheme } from '../shared/terminal-theme';
 import { observeElectron } from './test-diagnostics';
 import { diagnostic, observeDiagnosticStream } from '../shared/test-diagnostics';
 import { normalizeLegacyEnvironment, resolveApplicationData } from '../shared/brand-compat';
@@ -10,6 +11,7 @@ import {
   utilityProcess,
   clipboard,
   net,
+  nativeTheme,
   Menu,
   shell,
 } from 'electron';
@@ -588,6 +590,7 @@ void app
   .then(async () => {
     await workspace.load();
     await applicationWorkspace.load();
+    nativeTheme.themeSource = applicationWorkspace.snapshot().settings.appearance;
     if (!app.requestSingleInstanceLock()) {
       quitting = true;
       app.quit();
@@ -753,6 +756,15 @@ void app
       nodeOverride: process.env.PROJECTOR_NODE });
     await terminals.start(data, join(here, '../terminal/service.cjs'), {
       scrollback: applicationWorkspace.snapshot().settings.terminalScrollback,
+      colorScheme: terminalColorScheme(applicationWorkspace.snapshot().settings, nativeTheme.shouldUseDarkColors),
+    });
+    nativeTheme.on('updated', () => {
+      if (quitting) return;
+      const settings = applicationWorkspace.snapshot().settings;
+      if (settings.appearance === 'system' && settings.terminalTheme === 'follow') {
+        void terminals.configure({ colorScheme: terminalColorScheme(settings, nativeTheme.shouldUseDarkColors) })
+          .catch(console.error);
+      }
     });
     applicationWorkspace.retainTerminals(new Set((await terminals.snapshot()).map(record => record.id)));
     for (const terminal of await terminals.snapshot()) {
@@ -884,11 +896,17 @@ void app
           const profileChanged = previous.codexExecutable !== requested.codexExecutable || previous.codexProfile !== requested.codexProfile;
           const update = async () => {
             applicationWorkspace.settings(requested);
-            await terminals.configure({ scrollback: requested.terminalScrollback });
+            nativeTheme.themeSource = requested.appearance;
+            await terminals.configure({
+              scrollback: requested.terminalScrollback,
+              colorScheme: terminalColorScheme(requested, nativeTheme.shouldUseDarkColors),
+            });
             if (profileChanged) await codex.resetDiscovery();
             return applicationWorkspace.snapshot();
           };
           return profileChanged ? harnessMutation(update) : update();
+        }).finally(() => {
+          nativeTheme.themeSource = applicationWorkspace.snapshot().settings.appearance;
         });
       }
       if (['terminalScreen', 'terminalReplay', 'terminalInput', 'terminalResize', 'terminalStop', 'terminalRestart'].includes(name)) {

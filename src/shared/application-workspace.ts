@@ -1,3 +1,4 @@
+import type { TerminalColorScheme, TerminalThemeMode } from './terminal-theme';
 import type { WorkspaceTab } from './workspace';
 
 export type PaneContent =
@@ -35,6 +36,7 @@ export type ShortcutAction =
   | 'splitRight' | 'splitDown' | 'nextPane' | 'previousPane'
   | 'bottomPanel' | 'settings';
 export interface ApplicationSettings {
+  appearance: 'system' | 'light' | 'dark';
   planPlacement: 'beside' | 'tab';
   restoreWorkspace: boolean;
   shell: string;
@@ -42,6 +44,8 @@ export interface ApplicationSettings {
   terminalFont: string;
   terminalFontSize: number;
   terminalScrollback: number;
+  terminalTheme: TerminalThemeMode;
+  terminalCustomTheme: TerminalColorScheme | null;
   codexExecutable: string;
   codexProfile: string;
   shortcuts: Record<ShortcutAction, string | null>;
@@ -52,8 +56,9 @@ export const DEFAULT_SHORTCUTS: ApplicationSettings['shortcuts'] = {
   bottomPanel: 'Mod+J', settings: 'Mod+Comma',
 };
 export const DEFAULT_SETTINGS: ApplicationSettings = {
-  planPlacement: 'beside', restoreWorkspace: true, shell: '', shellArgs: [],
+  appearance: 'system', planPlacement: 'beside', restoreWorkspace: true, shell: '', shellArgs: [],
   terminalFont: 'Menlo, Monaco, monospace', terminalFontSize: 13,
+  terminalTheme: 'follow', terminalCustomTheme: null,
   terminalScrollback: 10000, codexExecutable: 'codex', codexProfile: '',
   shortcuts: DEFAULT_SHORTCUTS,
 };

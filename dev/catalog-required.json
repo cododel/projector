@@ -215,7 +215,10 @@
       "settings.shortcut-recording",
       "settings.shortcut-unassigned",
       "settings.shortcut-custom",
-      "settings.shortcut-conflict"
+      "settings.shortcut-conflict",
+      "settings.theme-imported",
+      "settings.theme-invalid",
+      "settings.dark-appearance"
     ],
     "transitions": [
       "settings.section",
@@ -225,7 +228,9 @@
       "settings.failure",
       "settings.shortcut",
       "settings.review",
-      "settings.search"
+      "settings.search",
+      "settings.import-theme",
+      "settings.change-appearance"
     ]
   },
   {
@@ -283,7 +288,8 @@
       "terminal-pane.codex-saved",
       "terminal-pane.codex-no-resume",
       "terminal-pane.active",
-      "terminal-pane.file-drop"
+      "terminal-pane.file-drop",
+      "terminal-pane.dark"
     ],
     "transitions": [
       "terminal-pane.stop",
@@ -944,7 +950,8 @@
       "application-screen.document",
       "application-screen.browser",
       "application-screen.terminal",
-      "application-screen.split"
+      "application-screen.split",
+      "application-screen.dark"
     ],
     "transitions": [
       "application-screen.project-session",

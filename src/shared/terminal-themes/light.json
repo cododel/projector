@@ -1,0 +1,23 @@
+{
+  "name": "Light",
+  "background": "#ffffff",
+  "foreground": "#263142",
+  "cursorColor": "#4a65df",
+  "selectionBackground": "#cdd7ff",
+  "black": "#263142",
+  "red": "#a52342",
+  "green": "#276239",
+  "yellow": "#785700",
+  "blue": "#284db3",
+  "purple": "#833881",
+  "cyan": "#17656d",
+  "white": "#485469",
+  "brightBlack": "#626e7c",
+  "brightRed": "#b12647",
+  "brightGreen": "#2b723e",
+  "brightYellow": "#795707",
+  "brightBlue": "#3558c1",
+  "brightPurple": "#8b3d88",
+  "brightCyan": "#16707a",
+  "brightWhite": "#39465a"
+}

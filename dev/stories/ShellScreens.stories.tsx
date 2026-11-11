@@ -166,12 +166,25 @@ export const TerminalToSplit: Story = {
     await expect(canvas.queryByRole('button', { name: 'Save' })).toBeNull();
   },
 };
+export const DarkWorkspace: Story = {
+  args: { screen: 'split', appearance: 'dark' },
+  render: (args) => <div data-appearance="dark"><ShellScreen {...args} /></div>,
+  parameters: { catalog: { states: ['application-screen.dark'] } },
+  play: async ({ canvasElement }) => {
+    await documentFrameIsRendered(canvasElement);
+    const frame = canvasElement.querySelector<HTMLIFrameElement>('iframe.document-frame')!;
+    await expect(frame.contentWindow!.getComputedStyle(frame.contentDocument!.documentElement).colorScheme).toBe('dark');
+    await expect(canvasElement.querySelector('.sidebar')).toHaveStyle({ backgroundColor: 'rgb(16, 17, 20)' });
+    await expect(canvasElement.querySelector('.terminal-pane')).toHaveStyle({ backgroundColor: 'rgb(23, 25, 29)' });
+    await expect(canvasElement.querySelector('.feedback-panel')).toHaveStyle({ backgroundColor: 'rgb(32, 34, 38)' });
+  },
+};
 export const StateSheet: Story = {
   render: () => (
     <div className="catalog-screen-sheet">
       <CatalogSheet
         height={740}
-        frames={['welcome', 'project', 'session', 'document', 'browser', 'terminal', 'split'].map(
+        frames={['welcome', 'project', 'session', 'document', 'browser', 'terminal', 'split', 'dark-workspace'].map(
           (name) => ({ label: name, storyId: `screens-application--${name}` }),
         )}
       />

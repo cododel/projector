@@ -1,0 +1,48 @@
+/* Shared by Projector windows and document surfaces. */
+:root {
+  color-scheme: light;
+  --hover-brightness: .96;
+  --graphite-ink: #eeeeef;
+  --graphite-surface: #17191d;
+  --graphite-raised: #25272b;
+  --graphite-inset: #202226;
+  --graphite-hover: #ffffff0e;
+  --graphite-input-border: #ffffff24;
+  --graphite-border: #ffffff18;
+  --graphite-accent: #96b2d7;
+  --graphite-accent-text: #b0cbef;
+  --graphite-muted: #98999b;
+  --graphite-subtle: #aeb0b4;
+  --graphite-accent-fill: #3d597c;
+  --graphite-selection: #394454;
+  --graphite-accent-soft: #2b3441;
+  --graphite-success: #a6bd91;
+  --graphite-warning: #d8be87;
+  --graphite-danger: #f0a5ad;
+  --graphite-warning-soft: #383021;
+  --graphite-success-soft: #283126;
+  --graphite-danger-soft: #38282c;
+  --ink: light-dark(#28323e, var(--graphite-ink));
+  --canvas: light-dark(#f5f6f8, #131518);
+  --surface: light-dark(#ffffff, var(--graphite-surface));
+  --chrome: light-dark(#f1f3f6, #101114);
+  --border: light-dark(#e1e5eb, var(--graphite-border));
+  --muted: light-dark(#626d7c, var(--graphite-muted));
+  --subtle: light-dark(#5c687d, var(--graphite-subtle));
+  --accent: light-dark(#3c59c4, var(--graphite-accent));
+  --accent-soft: light-dark(#eef1ff, var(--graphite-accent-soft));
+  --accent-fill: light-dark(#3c59c4, var(--graphite-accent-fill));
+  --selection: light-dark(#e3e8f7, var(--graphite-selection));
+  --panel: light-dark(#f8f9fc, var(--graphite-raised));
+  --danger: light-dark(#ad4638, var(--graphite-danger));
+  --warning: light-dark(#7b6026, var(--graphite-warning));
+  --annotation-fill: light-dark(#4263da, var(--graphite-accent-fill));
+  --annotation-focus: light-dark(#174ca0, #52749c);
+  --capture-outline: light-dark(#3285fa, var(--graphite-accent));
+  --inset: light-dark(#f2f4f8, var(--graphite-inset));
+}
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: dark; --hover-brightness: 1.12; }
+}
+[data-appearance='light'] { color-scheme: light; --hover-brightness: .96; }
+[data-appearance='dark'] { color-scheme: dark; --hover-brightness: 1.12; }

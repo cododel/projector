@@ -25,7 +25,7 @@ import { documentBlocks, documentWidgets } from './document';
 import { terminal } from './components';
 import { terminalAdapter } from './components-terminal';
 /** Same iframe/CSS/article presentation as the app, without the projector document bridge. */
-function CatalogDocumentFrame({ children }: { children: React.ReactNode }) {
+function CatalogDocumentFrame({ children, appearance }: { children: React.ReactNode; appearance: 'light' | 'dark' }) {
   const [mount, setMount] = useState<HTMLElement | null>(null);
   return (
     <>
@@ -33,7 +33,7 @@ function CatalogDocumentFrame({ children }: { children: React.ReactNode }) {
         className="document-frame"
         title="Projector document"
         sandbox="allow-scripts allow-same-origin"
-        srcDoc={`<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>${documentCSS}</style></head><body><div id="root"></div></body></html>`}
+        srcDoc={`<!doctype html><html lang="en" data-appearance="${appearance}"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>${documentCSS}</style></head><body><div id="root"></div></body></html>`}
         onLoad={(event) =>
           setMount(event.currentTarget.contentDocument?.getElementById('root') ?? null)
         }
@@ -44,9 +44,11 @@ function CatalogDocumentFrame({ children }: { children: React.ReactNode }) {
 }
 export function ShellScreen({
   screen,
+  appearance = 'light',
   onAction,
 }: {
   screen: string;
+  appearance?: 'light' | 'dark';
   onAction: (name: string) => void;
 }) {
   const [current, setCurrent] = useState(screen),
@@ -87,7 +89,7 @@ export function ShellScreen({
     originSession: null,
   };
   const document = (
-    <CatalogDocumentFrame>
+    <CatalogDocumentFrame appearance={appearance}>
       <div className="surface">
         <DocumentArticle>
           <DocumentContent
@@ -107,7 +109,7 @@ export function ShellScreen({
       record={{ ...terminal, projectId: 'example-project', cwd: '/example/project', status }}
       viewId="catalog-screen-terminal"
       active={false}
-      settings={DEFAULT_SETTINGS}
+      settings={{ ...DEFAULT_SETTINGS, appearance }}
       bridge={adapter.bridge}
       onFocus={() => onAction('focus')}
       onChange={() => onAction('terminal-change')}
@@ -192,7 +194,7 @@ export function ShellScreen({
               }}
               viewId="catalog-screen-split-terminal"
               active={false}
-              settings={DEFAULT_SETTINGS}
+              settings={{ ...DEFAULT_SETTINGS, appearance }}
               bridge={splitAdapter.bridge}
               onFocus={() => onAction('focus')}
               onChange={() => onAction('terminal-change')}

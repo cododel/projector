@@ -3,7 +3,7 @@ import { build } from 'esbuild';
 import { runInNewContext } from 'node:vm';
 
 for (const minify of [false,true]) test(`browser overlay geometry executes after ${minify ? 'minified' : 'ordinary'} bundling`, async () => {
-  const bundle = await build({ entryPoints:['src/main/browser-overlay-html.ts'], bundle:true, write:false, format:'cjs', platform:'node', minify });
+  const bundle = await build({ entryPoints:['src/main/browser-overlay-html.ts'], bundle:true, write:false, format:'cjs', platform:'node', loader: { '.css': 'text' }, minify });
   const module = { exports:{} as {browserOverlayHtml?: string} };
   runInNewContext(bundle.outputFiles[0].text,{module,exports:module.exports});
   const helpers = module.exports.browserOverlayHtml!.match(/const markerGeometry=[\s\S]*?(?=\nconst \$=)/)![0];

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { diagnostics } from './support/vitest-diagnostics';
 import { DiagnosticCollector } from './support/diagnostics';
 import { TerminalService } from '../src/terminal/engine';
+import { GRAPHITE_TERMINAL, LIGHT_TERMINAL } from '../src/shared/terminal-theme';
 import type { TerminalOutput, TerminalRecord } from '../src/shared/terminal';
 const services: TerminalService[] = [];
 const dirs: string[] = [];
@@ -455,4 +456,36 @@ it('owns a failed harness exit while retaining ordinary shell failures as extern
     if (kind === 'codex') expect(() => independent.assertClean()).toThrow('Unexpected error');
     else expect(() => independent.assertClean()).not.toThrow();
   }
+});
+
+it.each([
+  { scheme: LIGHT_TERMINAL, foreground: '2626/3131/4242', background: 'ffff/ffff/ffff' },
+  { scheme: GRAPHITE_TERMINAL, foreground: 'd2d2/d4d4/d9d9', background: '1717/1919/1d1d' },
+])('answers $scheme.name startup color probes before a terminal view attaches', async ({ scheme, foreground, background }) => {
+  const { data, service, output } = await setup();
+  await service.configure({ colorScheme: scheme });
+  await service.create({
+    projectId: 'project', cwd: data, kind: 'shell', executable: process.execPath,
+    args: ['-e', `
+      process.stdin.setRawMode(true);
+      process.stdin.setEncoding('utf8');
+      let received = '';
+      const finish = () => {
+        console.log('PALETTE:' + Buffer.from(received).toString('hex'));
+        process.exit(0);
+      };
+      process.stdin.on('data', chunk => {
+        received += chunk;
+        if (received.includes(']11;rgb:')) finish();
+      });
+      process.stdout.write('\\x1b]10;?\\x07\\x1b]11;');
+      setTimeout(() => process.stdout.write('?\\x1b\\\\'), 20);
+      setTimeout(finish, 500);
+    `],
+  });
+  await until(() => output.map(event => event.data).join('').includes('PALETTE:'));
+  const result = /PALETTE:([a-f\d]*)/.exec(output.map(event => event.data).join(''))?.[1] ?? '';
+  expect(Buffer.from(result, 'hex').toString()).toBe(
+    `\x1b]10;rgb:${foreground}\x1b\\\x1b]11;rgb:${background}\x1b\\`,
+  );
 });

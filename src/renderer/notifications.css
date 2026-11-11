@@ -1,26 +1,26 @@
 .notification-stack button { font: inherit; cursor: pointer; }
 .notification-stack button:disabled { cursor: default; opacity: .45; }
-.notification-stack button:focus-visible { outline: 2px solid var(--alert-color, #6faeff); outline-offset: 3px; }
+.notification-stack button:focus-visible { outline: 2px solid var(--alert-color, var(--accent)); outline-offset: 3px; }
 .notification-stack { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 12px; box-sizing: border-box; overflow-y: auto; scrollbar-width: thin; }
-.notification-alert { --alert-color: #6faeff; width: 100%; max-width: 520px; box-sizing: border-box; flex: none; overflow: hidden; border: 1px solid var(--alert-color); border-radius: 26px; background: #050505; color: #f5f5f7; box-shadow: 0 4px 12px #0004; transform-origin: center; animation: alert-in 180ms cubic-bezier(.22,1,.36,1) both; transition: height 220ms cubic-bezier(.22,1,.36,1); }
-.notification-alert.warning { --alert-color: #f5bd58; }
-.notification-alert.error { --alert-color: #ff647c; }
+.notification-alert { --alert-color: var(--accent); width: 100%; max-width: 520px; box-sizing: border-box; flex: none; overflow: hidden; border: 1px solid var(--alert-color); border-radius: 26px; background: var(--surface); color: var(--ink); box-shadow: 0 4px 12px #0004; transform-origin: center; animation: alert-in 180ms cubic-bezier(.22,1,.36,1) both; transition: height 220ms cubic-bezier(.22,1,.36,1); }
+.notification-alert.warning { --alert-color: var(--warning); }
+.notification-alert.error { --alert-color: var(--danger); }
 .notification-alert.leaving { animation: alert-out 180ms ease both; pointer-events: none; }
 .notification-alert-content { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; box-sizing: border-box; }
 .alert-icon { width: 20px; height: 20px; flex: none; color: var(--alert-color); }
 .alert-copy { min-width: 0; flex: 1; line-height: 1.45; overflow-wrap: anywhere; }
 .alert-copy strong { font-size: 13px; font-weight: 600; }
-.alert-copy p { margin: 4px 0 0; color: #aaaab2; white-space: pre-wrap; }
-.alert-copy pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #aaaab2; font: 12px/1.5 ui-monospace, monospace; }
+.alert-copy p { margin: 4px 0 0; color: var(--muted); white-space: pre-wrap; }
+.alert-copy pre { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font: 12px/1.5 ui-monospace, monospace; }
 .alert-repeat { margin-left: 8px; color: var(--alert-color); font-size: 11px; }
 .alert-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.alert-actions button, .alert-details-toggle, .notification-overflow { border: 1px solid #ffffff30; background: #ffffff12; border-radius: 16px; color: #f5f5f7; padding: 5px 12px; }
-.alert-actions button:hover, .notification-overflow:hover { background: #ffffff25; }
+.alert-actions button, .alert-details-toggle, .notification-overflow { border: 1px solid var(--border); background: var(--panel); border-radius: 16px; color: var(--ink); padding: 5px 12px; }
+.alert-actions button:hover, .notification-overflow:hover { background: var(--selection); }
 .alert-details-toggle { margin-top: 8px; padding: 3px 8px; font-size: 11px; }
-.alert-dismiss { background: transparent; color: #939399; padding: 0; border: 0; width: 20px; height: 20px; flex: none; border-radius: 50%; }
-.alert-dismiss:hover { color: white; }
+.alert-dismiss { background: transparent; color: var(--muted); padding: 0; border: 0; width: 20px; height: 20px; flex: none; border-radius: 50%; }
+.alert-dismiss:hover { color: var(--ink); }
 .alert-dismiss svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.7; fill: none; }
-.notification-overflow { background: #050505; flex: none; }
+.notification-overflow { background: var(--surface); flex: none; }
 @keyframes alert-in { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: scale(1); } }
 @keyframes alert-out { to { opacity: 0; transform: scale(.94); } }
 @media (prefers-reduced-motion: reduce) { .notification-alert, .notification-alert.leaving { animation-duration: 0s; transition: none; } }

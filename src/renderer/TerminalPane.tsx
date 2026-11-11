@@ -1,8 +1,9 @@
+import { terminalColorScheme, terminalColorQueries, terminalThemeMode, xtermTheme } from '../shared/terminal-theme';
 import { useErrorReporter } from './useNotifications';
 import { useNotificationEnvironment } from './NotificationContext';
 import { terminalWheelController } from './terminal-wheel-controller';
 import { terminalFilePaths } from './terminal-drop';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -14,6 +15,13 @@ import type {
   TerminalReplay,
   TerminalScreen,
 } from '../shared/terminal';
+
+const darkAppearance = () => window.matchMedia('(prefers-color-scheme: dark)');
+function subscribeAppearance(listener: () => void) {
+  const media = darkAppearance();
+  media.addEventListener('change', listener);
+  return () => media.removeEventListener('change', listener);
+}
 
 export interface TerminalBridge {
   invoke(method: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -42,6 +50,10 @@ export function TerminalPane({
   onActivateForDrop?(): Promise<boolean>;
 }): React.JSX.Element {
   const { controller: notifications } = useNotificationEnvironment();
+  const prefersDark = useSyncExternalStore(subscribeAppearance, () => darkAppearance().matches);
+  const scheme = terminalColorScheme(settings, prefersDark);
+  const themeMode = terminalThemeMode(settings, prefersDark);
+  const appliedScheme = useRef('');
   const container = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -88,14 +100,13 @@ export function TerminalPane({
       fontSize: settings.terminalFontSize,
       scrollback: settings.terminalScrollback,
       cursorBlink: true,
-      theme: {
-        background: '#ffffff',
-        foreground: '#263142',
-        cursor: '#4a65df',
-        selectionBackground: '#cdd7ff',
-      },
+      theme: xtermTheme(scheme),
+      minimumContrastRatio: 4.5,
       allowProposedApi: false,
     });
+    appliedScheme.current = JSON.stringify(scheme);
+    // The PTY service already answered these, including during replay.
+    for (const slot of terminalColorQueries) terminal.parser.registerOscHandler(slot, data => data === '?');
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(container.current);
@@ -289,9 +300,22 @@ export function TerminalPane({
     viewId,
     bridge,
   ]);
+  useEffect(() => {
+    const key = JSON.stringify(scheme);
+    if (terminalRef.current && key !== appliedScheme.current) {
+      terminalRef.current.options.theme = xtermTheme(scheme);
+      appliedScheme.current = key;
+    }
+  }, [scheme]);
   const cleanup = !running && Boolean(record.error);
   return (
     <section
+      data-terminal-theme={themeMode}
+      style={{
+        backgroundColor: scheme.background,
+        color: scheme.foreground,
+        colorScheme: themeMode === 'custom' ? undefined : themeMode,
+      }}
       className={`terminal-pane ${active ? 'active' : ''} ${draggingFiles ? 'terminal-file-drop' : ''}`}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes('Files')) return;

@@ -1,13 +1,20 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import mermaid from 'mermaid';
 import type { WidgetDefinition } from '../../document/types';
 import { markerGeometry } from '../../shared/annotation-marker';
 type Value = string | string[];
+const darkAppearance = () => window.matchMedia('(prefers-color-scheme: dark)');
+function subscribeAppearance(listener: () => void) {
+  const media = darkAppearance();
+  media.addEventListener('change', listener);
+  return () => media.removeEventListener('change', listener);
+}
+
 export function AnnotationBadge({ number }: { number: number }): React.JSX.Element {
   const { cx, cy, path } = markerGeometry({ x: 3.75, y: 24.25 }, { width: 28, height: 28 });
   return (
     <svg className="annotation-number" viewBox="0 0 28 28" aria-hidden="true">
-      <path d={path} fill="#4263da" stroke="white" strokeWidth="1.5" strokeLinejoin="round" />
+      <path d={path} fill="var(--annotation-fill)" stroke="white" strokeWidth="1.5" strokeLinejoin="round" />
       <text
         x={cx}
         y={cy}
@@ -27,12 +34,34 @@ export function AnnotationBadge({ number }: { number: number }): React.JSX.Eleme
 export function Diagram({ source, renderDiagram = mermaid.render }: { source: string; renderDiagram?: (id: string, source: string) => Promise<{ svg: string }> }): React.JSX.Element {
   const container = useRef<HTMLDivElement>(null);
   const [error, setError] = useState('');
+  const dark = useSyncExternalStore(subscribeAppearance, () => darkAppearance().matches);
   useEffect(() => {
+    if (!container.current) return;
     let active = true;
+    const style = getComputedStyle(container.current);
+    const graphite = style.colorScheme === 'dark';
+    const color = (token: string) => style.getPropertyValue(`--graphite-${token}`).trim();
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: 'strict',
-      theme: 'neutral',
+      theme: graphite ? 'base' : 'neutral',
+      ...(graphite && {
+        themeVariables: {
+          darkMode: true,
+          background: color('surface'),
+          primaryColor: color('raised'),
+          secondaryColor: color('accent-soft'),
+          tertiaryColor: color('inset'),
+          primaryTextColor: color('ink'),
+          secondaryTextColor: color('ink'),
+          tertiaryTextColor: color('ink'),
+          primaryBorderColor: color('muted'),
+          lineColor: color('muted'),
+          edgeLabelBackground: color('inset'),
+          noteBkgColor: color('warning-soft'),
+          noteTextColor: color('ink'),
+        },
+      }),
       suppressErrorRendering: true,
     });
     void renderDiagram(`diagram-${crypto.randomUUID()}`, source)
@@ -45,7 +74,7 @@ export function Diagram({ source, renderDiagram = mermaid.render }: { source: st
     return () => {
       active = false;
     };
-  }, [source, renderDiagram]);
+  }, [source, renderDiagram, dark]);
   return error ? (
     <div className="diagram-error">
       Diagram unavailable: {error}

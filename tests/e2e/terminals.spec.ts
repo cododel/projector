@@ -1127,3 +1127,71 @@ test('legacy xterm mouse reports preserve high coordinate bytes through binary I
   const expected = Buffer.from([0x1b,0x5b,0x4d,0x61,col+33,row+33]).toString('hex');
   await expect(rows).toContainText('BINARY_HEX:'+expected);
 });
+
+test('dark application appearance and imported terminal colors apply without restarting the PTY', async () => {
+  const { page, projectId, launch } = await setup();
+  await page.emulateMedia({ colorScheme: null });
+  expect((await snapshot(page)).settings.appearance).toBe('system');
+  expect(await app!.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe('system');
+  // Drive Electron's appearance notifications without changing the host OS setting.
+  await app!.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'light'; });
+  await command(page, projectId, 'newTerminal');
+  const original = (await snapshot(page)).terminals[0];
+  const pane = page.locator('.terminal-pane');
+  await expect(pane).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await app!.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'dark'; });
+  await expect(pane.locator('.xterm-scrollable-element')).toHaveCSS('background-color', 'rgb(23, 25, 29)');
+  await expect(page.locator('.sidebar').first()).toHaveCSS('background-color', 'rgb(16, 17, 20)');
+  await app!.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'light'; });
+  await expect(pane.locator('.xterm-scrollable-element')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await app!.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'system'; });
+  async function settings() {
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Settings' });
+    await dialog.getByRole('button', { name: 'Terminal', exact: true }).click();
+    return dialog;
+  }
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  let dialog = page.getByRole('dialog', { name: 'Settings' });
+  await app!.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'light'; });
+  await expect(dialog.locator('nav')).toHaveCSS('background-color', 'rgb(247, 248, 251)');
+  await app!.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'dark'; });
+  await expect(dialog.locator('nav')).toHaveCSS('background-color', 'rgb(32, 34, 38)');
+  await app!.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'system'; });
+  await dialog.getByRole('combobox', { name: 'Application appearance' }).selectOption('dark');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(pane).toHaveCSS('background-color', 'rgb(23, 25, 29)');
+
+  await expect(page.locator('.sidebar').first()).toHaveCSS('background-color', 'rgb(16, 17, 20)');
+  await expect(pane.locator('.xterm-scrollable-element')).toHaveCSS('background-color', 'rgb(23, 25, 29)');
+  dialog = await settings();
+  await dialog.getByRole('combobox', { name: 'Terminal color scheme', exact: true }).selectOption('light');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(pane.locator('.xterm-scrollable-element')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await expect(pane.locator('.terminal-statusbar')).toHaveCSS('background-color', 'rgb(248, 249, 252)');
+  await expect(page.locator('.sidebar').first()).toHaveCSS('background-color', 'rgb(16, 17, 20)');
+  dialog = await settings();
+  const upload = dialog.getByLabel('Import terminal color scheme');
+  await upload.setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{"name":"Broken"}') });
+  await expect(dialog.getByRole('alert')).toContainText('Invalid terminal color scheme');
+  await expect(dialog.getByRole('combobox', { name: 'Terminal color scheme', exact: true })).toHaveValue('light');
+  const sample = JSON.parse(await readFile(resolve('src/shared/terminal-themes/light.json'), 'utf8'));
+  await upload.setInputFiles({
+    name: 'custom.json', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify({ ...sample, name: 'Custom fixture', background: '#def' })),
+  });
+  await expect(dialog.getByRole('combobox', { name: 'Terminal color scheme', exact: true })).toHaveValue('custom');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(pane.locator('.xterm-scrollable-element')).toHaveCSS('background-color', 'rgb(221, 238, 255)');
+  await expect(page.locator('.sidebar').first()).toHaveCSS('background-color', 'rgb(16, 17, 20)');
+  expect((await snapshot(page)).terminals[0]).toMatchObject({ id: original.id, pid: original.pid });
+  await app!.close();
+  app = await launch();
+  const reopened = await app.firstWindow();
+  await reopened.emulateMedia({ colorScheme: null });
+  await expect(reopened.locator('.sidebar').first()).toHaveCSS('background-color', 'rgb(16, 17, 20)');
+  const restored = await snapshot(reopened);
+  expect(restored.settings).toMatchObject({
+    appearance: 'dark', terminalTheme: 'custom', terminalCustomTheme: { name: 'Custom fixture', background: '#def' },
+  });
+});

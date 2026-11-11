@@ -1,3 +1,5 @@
+import type { TerminalColorScheme } from './terminal-theme';
+
 export type TerminalKind = 'shell' | 'codex';
 export type TerminalStatus = 'running' | 'exited' | 'inactive' | 'error';
 export interface TerminalRecord {
@@ -57,6 +59,7 @@ export interface TerminalResize {
   active: boolean;
 }
 export interface TerminalOptions {
+  colorScheme?: TerminalColorScheme;
   scrollback?: number;
   maxReplayBytes?: number;
 }

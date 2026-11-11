@@ -49,6 +49,7 @@ test.beforeEach(async () => {
     platform: 'node',
     format: 'cjs',
     target: 'node24',
+    loader: { '.css': 'text' },
     external: ['electron'],
   });
   await build({

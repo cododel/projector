@@ -45,9 +45,9 @@
     "reviewer": "catalog_components"
   },
   "settings-application-darwin.png": {
-    "sha256": "5c9b57fcebf277b86a5dec2d08074d20462fee81b558923b70bc1a5442d139a7",
-    "reviewedAt": "2026-10-13T20:28:40.034Z",
-    "reviewer": "catalog_components"
+    "sha256": "cfb93350ab048aac6251303ebc859b970e73d054ffc04a90c2e7df0175c83d3d",
+    "reviewedAt": "2026-11-11T19:34:38.956Z",
+    "reviewer": "root"
   },
   "layout-workspace-split-darwin.png": {
     "sha256": "0732dec5b19b3db51743ffc3ae40a1b2659007a1bc1c4cab0a990c9b2b054bac",
@@ -55,9 +55,9 @@
     "reviewer": "catalog_components"
   },
   "terminals-pane-darwin.png": {
-    "sha256": "b99bae9c00c956b75e8b431343ac3311c218dc7936117975715ed1be4bc17b6a",
-    "reviewedAt": "2026-10-13T20:28:40.034Z",
-    "reviewer": "catalog_components"
+    "sha256": "f9a0fd72a913110e743ea73695a30e78b4ad8b4e2e72fb48144fe6c271408520",
+    "reviewedAt": "2026-11-11T19:34:38.957Z",
+    "reviewer": "root"
   },
   "document-annotations-darwin.png": {
     "sha256": "0246c21ea5e1f4129ae0ff10fe124d226641a9a0ad3d59789fc43edacb5e7495",
@@ -141,9 +141,9 @@
     "reviewer": "catalog_shell"
   },
   "screens-application-darwin.png": {
-    "sha256": "36d5b11a97433d9231f4fb55f4e5ea3c82cf4c7bedfae545d5e6c37031330312",
-    "reviewedAt": "2026-10-13T20:28:40.034Z",
-    "reviewer": "catalog_shell"
+    "sha256": "f72bbd60e4c161394e6933db3af196a5b0cf63a75ecdc3ff215abc092ec34f2e",
+    "reviewedAt": "2026-11-11T21:57:49.081Z",
+    "reviewer": "root"
   },
   "shell-session-home-darwin.png": {
     "sha256": "64fe5f4fd2f82ae990ba384c34638501337fb2c7de4f41f8e139e4d3ec60c51b",

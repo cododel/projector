@@ -66,7 +66,7 @@ test('document area capture stays private until Save and opens its numbered froz
     });
     await writeFile(
       join(String(a.sourcePath), 'plan.mdx'),
-      '# Captured plan\n\nInspect this visual section.\n\n| Owner | Member |\n|---|---|\n| Allowed | Pending |',
+      '# Captured plan\n\nInspect this visual section.\n\n| Owner | Member |\n|---|---|\n| Allowed | Pending |\n\n```mermaid\ngraph LR; A-->B;\n```',
     );
     const r = await mcp.tool('publish_artifact', {
       artifactId: a.artifactId,
@@ -76,6 +76,16 @@ test('document area capture stays private until Save and opens its numbered froz
     await mcp.tool('show_artifact', { artifactId: a.artifactId, revisionId: r.revisionId });
     const frame = page.frameLocator('iframe');
     await expect(frame.getByRole('heading', { name: 'Captured plan' })).toBeVisible();
+    await page.emulateMedia({ colorScheme: null });
+    await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'dark'; });
+    await expect(page.locator('.feedback-panel')).toHaveCSS('background-color', 'rgb(32, 34, 38)');
+    await expect(frame.locator('html')).toHaveCSS('background-color', 'rgb(19, 21, 24)');
+    await expect(frame.locator('.plan-document tr').first()).toHaveCSS('background-color', 'rgb(37, 39, 43)');
+    await expect(frame.locator('.diagram svg .node rect').first()).toHaveCSS('fill', 'rgb(37, 39, 43)');
+    await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'light'; });
+    await expect(page.locator('.feedback-panel')).toHaveCSS('background-color', 'rgb(250, 251, 252)');
+    await expect(frame.locator('html')).toHaveCSS('background-color', 'rgb(245, 246, 248)');
+    await expect(frame.locator('.plan-document tr').first()).toHaveCSS('background-color', 'rgb(242, 245, 250)');
     const fixedHeader = await page.locator('.plan-header').boundingBox();
     await expect(titlebar.getByRole('tab', { name: 'Plan', exact: true })).toBeVisible();
     await expect(page.locator('.workspace [role=tablist]')).toHaveCount(0);

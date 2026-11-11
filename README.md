@@ -53,6 +53,24 @@ Keep Projector running. If the runtime is absent, the bridge prints a diagnostic
 
 If the operator IPC connection drops during a call, the app reports `UNKNOWN_RESULT` instead of claiming that an uncertain mutation failed or repeating it. An operation may already have completed; reconcile its persisted result before retrying. Projector does not automatically replay mutations.
 
+## Appearance and terminal color schemes
+
+Projector follows the system appearance by default. In **Settings → General → Appearance**,
+choose **Auto (system)**, **Light**, or **Dark**. Dark mode uses the Graphite palette
+from [Herdr](https://github.com/herdrdev/herdr-app/blob/17eac390c346a731ba1ac14816ad91dc7cd2209b/src/settings.rs).
+The terminal follows the application by default. In **Settings → Terminal → Color scheme**,
+you can choose an independent Light, Graphite or custom palette. To use your
+own palette, import a single [Windows Terminal color scheme](https://learn.microsoft.com/windows/terminal/customize-settings/color-schemes)
+JSON object and click **Save**. Use the built-in [Light](src/shared/terminal-themes/light.json)
+or [Graphite](src/shared/terminal-themes/graphite.json) files as examples. A scheme needs a
+name, foreground, background, and all 16 ANSI colors as `#RGB` or `#RRGGBB`.
+`cursorColor` and `selectionBackground` are optional. Importing a new custom
+scheme replaces the previous custom scheme; switching to a built-in keeps it.
+
+Changing the scheme updates open terminal panes without stopping their processes.
+Apps that cache their startup palette (including some Codex TUI versions) may
+need to be reopened to redraw their own hard-coded or previously generated colors.
+
 ## Package a local macOS app
 
 ```sh
