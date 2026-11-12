@@ -338,10 +338,15 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await expect(page.locator('.feedback-panel')).toBeVisible();
   await page.mouse.up();
   await expect(resize).toHaveAttribute('aria-valuenow', '260');
+  await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+  await resize.hover({ position: { x: 3, y: 150 } });
   const collapseBounds = (await resize.boundingBox())!;
-  await page.mouse.move(collapseBounds.x + 3, dragY);
+  const collapseY = collapseBounds.y + 150;
+  await page.mouse.move(collapseBounds.x + 3, collapseY);
   await page.mouse.down();
-  await page.mouse.move(collapseBounds.x + 90, dragY, { steps: 4 });
+  await expect(page.locator('.sidebar-resize-shield')).toBeVisible();
+  await page.mouse.move(collapseBounds.x + 95, collapseY, { steps: 4 });
+  await expect(page.locator('.feedback-panel')).toBeHidden();
   await page.mouse.up();
   await expect(page.locator('.sidebar-resize-shield')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Show feedback sidebar' })).toBeVisible();
