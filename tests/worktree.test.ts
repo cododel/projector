@@ -16,7 +16,7 @@ it('recognizes linked worktrees and nested directories without labeling ordinary
     await mkdir(primary);
     await mkdir(plain);
     const git = (...args: string[]) => execute('git', ['-C', primary, ...args]);
-    await git('init');
+    await git('init', '--initial-branch=main');
     await git(
       '-c',
       'user.name=Test',

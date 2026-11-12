@@ -95,8 +95,11 @@ test('per-operation waiting updates independently; visible-time info pauses for 
   await expect(waiting).toHaveCSS('border-top-color', 'rgb(240, 165, 173)');
   const originalTop = await waiting.evaluate(el => (el as HTMLElement).offsetTop);
   await waiting.getByRole('button', { name: 'Dismiss Storage operation needs attention', exact: true }).click();
-  await overlay.waitForFunction(() => document.querySelector('[data-operation="op-two"].leaving'));
-  expect(await waiting.evaluate(el => (el as HTMLElement).offsetTop)).toBe(originalTop);
+  const exitPosition = await overlay.waitForFunction(() => {
+    const leaving = document.querySelector<HTMLElement>('[data-operation="op-two"].leaving');
+    return leaving ? { top: leaving.offsetTop } : null;
+  });
+  expect(await exitPosition.jsonValue()).toEqual({ top: originalTop });
   await expect(waiting).toHaveCount(0);
   await emit(true, 'op-two'); await emit(false, 'op-two', 'Unknown write outcome');
   await expect(waiting).toContainText('Unknown write outcome');

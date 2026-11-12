@@ -27,6 +27,7 @@ test('closing a new session before its first turn removes the unavailable row an
       projector: { invoke(name: string): Promise<ApplicationWorkspaceSnapshot & { harnesses: HarnessSnapshot; terminals: TerminalRecord[] }> }
     }).projector.invoke('applicationSnapshot'));
     await expect.poll(async () => (await snapshot()).harnesses.sessions.length).toBe(1);
+    await expect(page.locator('.terminal-pane.active .xterm-helper-textarea')).toBeFocused();
     const before = await snapshot();
     const session = before.harnesses.sessions[0];
     await page.evaluate(id => (window as unknown as {

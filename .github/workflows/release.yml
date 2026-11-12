@@ -1,0 +1,132 @@
+name: Build release
+
+'on':
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Verify release tag
+        if: github.ref_type == 'tag'
+        run: node -e 'if (process.env.GITHUB_REF_NAME !== "v" + require("./package.json").version) throw new Error("Tag must match package.json version")'
+      - run: pnpm install --frozen-lockfile
+      - name: Install Codex CLI for integration tests
+        run: npm install --global @openai/codex@0.167.1
+      - run: pnpm check
+
+  package:
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            platform: mac
+            arch: arm64
+          - runner: windows-latest
+            platform: win
+            arch: x64
+          - runner: ubuntu-latest
+            platform: linux
+            arch: x64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Build Sparkle helper
+        if: runner.os == 'macOS'
+        run: node scripts/build-sparkle.mjs
+      - name: Package Projector
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: pnpm exec electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+      - name: Verify macOS signature
+        if: runner.os == 'macOS'
+        run: codesign --verify --deep --strict dist/release/mac-arm64/Projector.app
+      - name: Smoke-test packaged Node, MCP and native PTY
+        run: node scripts/smoke-release.mjs
+      - name: Exercise relocated macOS release app
+        if: runner.os == 'macOS'
+        env:
+          PROJECTOR_E2E_RELEASE_APP: dist/release/mac-arm64/Projector.app
+        run: pnpm exec playwright test tests/e2e/packaged.spec.ts
+      - name: Generate signed Sparkle appcast
+        if: runner.os == 'macOS' && github.ref_type == 'tag' && github.event_name == 'push'
+        env:
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          node scripts/verify-sparkle-key.mjs
+          mkdir -p .tmp/appcast
+          cp dist/release/*-mac-arm64.zip .tmp/appcast/
+          printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" | .tmp/sparkle/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/" \
+            .tmp/appcast
+          cp .tmp/appcast/appcast.xml dist/release/appcast.xml
+      - name: Verify installers and update metadata
+        run: node scripts/verify-release.mjs ${{ matrix.platform }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: projector-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/release/*.dmg
+            dist/release/*.zip
+            dist/release/*.exe
+            dist/release/*.AppImage
+            dist/release/*.blockmap
+            dist/release/*.yml
+            !dist/release/builder-debug.yml
+            !dist/release/*-mac.yml
+            dist/release/appcast.xml
+          if-no-files-found: error
+
+  draft:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: projector-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(--draft --verify-tag --generate-notes --title "Projector ${GITHUB_REF_NAME}")
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            args+=(--prerelease --latest=false)
+          fi
+          gh release create "$GITHUB_REF_NAME" release-artifacts/* --repo "$GITHUB_REPOSITORY" "${args[@]}"

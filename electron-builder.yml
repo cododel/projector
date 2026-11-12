@@ -1,0 +1,33 @@
+appId: dev.cododel.projector
+productName: Projector
+electronLanguages: [en, en-US]
+directories:
+  output: dist/release
+files:
+  - out/**/*
+  - '!**/*.map'
+  - LICENSE
+asar: false
+npmRebuild: false
+afterPack: scripts/release-resources.mjs
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+publish:
+  provider: github
+  owner: cododel
+  repo: projector
+  private: false
+mac:
+  category: public.app-category.developer-tools
+  identity: '-'
+  hardenedRuntime: false
+  notarize: false
+  target: [dmg, zip]
+win:
+  target: nsis
+  executableName: Projector
+nsis:
+  artifactName: ${productName}-${version}-windows-${arch}-setup.${ext}
+linux:
+  category: Development
+  target: AppImage
+  executableName: projector

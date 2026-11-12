@@ -29,7 +29,7 @@ async function choose(page: Page, path: string) {
   }, path);
   await page.getByRole('button', { name: '+ Open project folder' }).click();
 }
-// Hidden checks exercise real Menu templates and actions without activating an OS menu.
+// Intercept the native popup to inspect its real menu template and invoke actions.
 // Native presentation/focus is verified separately in the visible acceptance run.
 async function interceptMenus() {
   await app.evaluate(({ Menu }) => {
@@ -330,6 +330,9 @@ test('agent-created unpublished plan has native project actions and retains priv
   }
   expect(attachment.mimeType).toBe('image/svg+xml');
   expect(Buffer.from(encoded, 'base64').toString()).toContain('>1</text>');
+  // Close the document view before moving its project outside the application.
+  await openProjectOverview(page);
+  await expect(page.locator('iframe')).toHaveCount(0);
   // Unavailable projects expose Locate folder in the same menu and cannot start a session.
   await rename(project, join(root, 'moved-project'));
   const other = join(root, 'other');

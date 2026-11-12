@@ -254,7 +254,7 @@ test('version summary and approval revocation are visible and separate from Save
     'approved',
     'revoked',
   ]);
-  if (process.env.PROJECTOR_E2E_VISIBLE === '1') {
+  {
     await frame.getByRole('textbox', { name: 'Reason' }).fill('Private renderer recovery');
     await expect(page.getByText('Unsaved working changes', { exact: false })).toBeVisible();
     diagnostics.phase('renderer-crash');

@@ -6,17 +6,13 @@ axe in both motion modes, and reviewed state-sheet screenshots without updating
 baselines. Its exact-source execution report is separate from story presence and
 native Electron qualification. See [the catalogue guide](../../dev/README.md).
 
-`pnpm check` runs typecheck, lint, unit/infrastructure tests and hidden Electron E2E.
-`pnpm test:e2e` retains the hidden, no-focus default. This mode covers app logic,
-persistence, DOM interactions and MCP; it does not prove native desktop composition,
-window focus, physical input or browser/overlay hit testing on the desktop.
-Hidden E2E runs independent scenarios in up to four workers (bounded by available
-CPU parallelism). Each scenario owns disposable app data, authenticated loopback endpoints and fixture
-servers on dynamically assigned ports. The build completes once before E2E;
-steps inside each scenario remain ordered. Use `pnpm exec playwright test --workers=1`
-for a sequential diagnostic run. Visible E2E remains on one worker because windows
-share OS focus.
-With dependencies already installed, the hidden gate needs no external network:
+`pnpm check` runs typecheck, lint, unit/infrastructure tests and Electron E2E.
+`pnpm test:e2e` and direct Playwright runs use normal, focusable Electron windows.
+Each runner uses one worker because native windows share a desktop. GitHub
+Actions divides the PR and main suites across three runners. Each test uses
+disposable app data and its own loopback endpoints.
+
+With dependencies installed, the default E2E suite can run offline:
 packaging uses the pinned local Electron distribution rather than downloading
 another copy. Its E2E forbids network access in the packaging process even with
 a warm download cache and sets `PROJECTOR_PACKAGE_OUTPUT` to its disposable
@@ -25,20 +21,17 @@ there is no download fallback. The empty dependency fixture for hook tests uses
 pnpm offline mode. Dependency installation and the opt-in/full Codex model test
 still require their own external services.
 
-`pnpm check:full` deliberately takes window focus on macOS. It runs static and unit
-checks, the hidden-window guarantee in hidden mode, every remaining E2E in ordinary
-window mode, including the authenticated Codex integration.
-No skipped test is accepted in either full E2E selection. A missing dependency,
-authentication or failing test blocks the gate; no fallback is used.
-The Codex test uses the configured CLI/model and can consume model usage.
+`pnpm check:full` runs static checks, units and the same Electron suite with
+the authenticated Codex integration enabled. The full suite fails on skipped
+tests. The integration uses the configured CLI/model and can consume model usage.
 
 `pnpm hooks:install` installs the tracked `.githooks/pre-push` using local
 `core.hooksPath`, refusing existing user hooks. No pre-commit is installed.
 Pre-push exports each distinct pushed commit into a disposable directory, installs
-its frozen dependencies and runs its `check:full`. Dirty worktree changes cannot
+its frozen dependencies and runs typecheck, lint and unit/infrastructure tests. Dirty worktree changes cannot
 mask a defect in the pushed source. Delete-only pushes do not run tests. Temporary
 copies are removed on ordinary completion/failure. Push is blocked on failure.
-The hook must be committed along with the full-check scripts before pushing them.
+The hook must be committed along with its test scripts before pushing them.
 
 These checks use Playwright and Electron APIs without Accessibility or Screen
 Recording permissions, Swift helpers or system-wide input injection. Visible

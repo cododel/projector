@@ -111,14 +111,14 @@ describe('legacy environment compatibility', () => {
       BLUEPRINT_DATA: '/legacy',
       PROJECTOR_DATA: '/preferred',
       BLUEPRINT_RUNTIME_DESCRIPTOR: '/legacy/endpoint.json',
-      BLUEPRINT_E2E_VISIBLE: '0',
+      BLUEPRINT_E2E_HARNESS_INTERVAL_MS: '1000',
       BLUEPRINT_UNUSED: undefined,
       OTHER: 'unchanged',
     };
     normalizeLegacyEnvironment(env);
     expect(env.PROJECTOR_DATA).toBe('/preferred');
     expect(env.PROJECTOR_RUNTIME_DESCRIPTOR).toBe('/legacy/endpoint.json');
-    expect(env.PROJECTOR_E2E_VISIBLE).toBe('0');
+    expect(env.PROJECTOR_E2E_HARNESS_INTERVAL_MS).toBe('1000');
     expect(env.BLUEPRINT_DATA).toBe('/legacy');
     expect(env.BLUEPRINT_RUNTIME_DESCRIPTOR).toBe('/legacy/endpoint.json');
     expect(env.OTHER).toBe('unchanged');

@@ -113,7 +113,7 @@ test('project session title fades and scrolls only during hover or focus', async
     primary = join(root, 'primary');
   await mkdir(primary);
   const git = (...args: string[]) => promisify(execFile)('git', ['-C', primary, ...args]);
-  await git('init');
+  await git('init', '--initial-branch=main');
   await git(
     '-c',
     'user.name=Test',

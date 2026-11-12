@@ -2,6 +2,19 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { VisibleLifetime, type Notification, type NotificationOverlayBridge } from '../shared/notifications';
 import './notifications.css';
 
+function observeResizeAfterDelivery(callback: () => void, ...elements: Element[]) {
+  let frame = 0;
+  const observer = new ResizeObserver(() => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(callback);
+  });
+  for (const element of elements) observer.observe(element);
+  return () => {
+    observer.disconnect();
+    cancelAnimationFrame(frame);
+  };
+}
+
 function Alert({ notice, leaving, visible, bridge, lifetime, exitTop, windowFocused, nativeHover }: {
   notice: Notification; leaving: boolean; visible: boolean; bridge: NotificationOverlayBridge; lifetime: VisibleLifetime; exitTop?: number; windowFocused: boolean; nativeHover?: boolean;
 }): React.JSX.Element {
@@ -16,8 +29,9 @@ function Alert({ notice, leaving, visible, bridge, lifetime, exitTop, windowFocu
     // Layout height excludes the entry scale; measuring the transformed box
     // clips the card and moves sibling origins by about 6% during mounting.
     const measure = () => setHeight(content.current!.offsetHeight + 2);
-    measure(); const observer = new ResizeObserver(measure); observer.observe(content.current!);
-    return () => observer.disconnect();
+    measure();
+    // Applying the outer height during resize delivery can resize its content.
+    return observeResizeAfterDelivery(measure, content.current!);
   }, []);
   useEffect(() => {
     const observer = new IntersectionObserver(entries => setInView(entries[0].intersectionRatio >= 0.99), { threshold: [0, 0.99, 1] });
@@ -108,12 +122,9 @@ export function NotificationStack({ notifications, visible, maxHeight, bridge, h
       positions.current = next;
     };
     reflow();
-    // Alert height is measured by its own component. Those layout changes do
-    // not render this parent, so keep the reflow origin current before painting.
-    const observer = new ResizeObserver(reflow);
-    observer.observe(root);
-    for (const element of root.querySelectorAll('.notification-alert')) observer.observe(element);
-    return () => observer.disconnect();
+    // Alert height changes do not render the parent. Update the reflow positions
+    // outside resize delivery because animations can change scrollable overflow.
+    return observeResizeAfterDelivery(reflow, root, ...root.querySelectorAll('.notification-alert'));
   });
   useEffect(() => {
     const animations = reflows.current;
@@ -129,8 +140,9 @@ export function NotificationStack({ notifications, visible, maxHeight, bridge, h
       if (previous.current.length) lastHeight.current = height;
       bridge.command({ type: 'layout', width: 544, height: height + 16 });
     };
-    measure(); const observer = new ResizeObserver(measure); observer.observe(stack.current!);
-    return () => observer.disconnect();
+    measure();
+    // Resizing the native window changes the viewport measured by this observer.
+    return observeResizeAfterDelivery(measure, stack.current!);
   }, [bridge]);
   return <div ref={stack} className="notification-stack" role="group" aria-label="Notifications"
     style={{ maxHeight: Math.max(1, maxHeight - 16), minHeight: leaving.length && !notifications.length ? Math.min(lastHeight.current, maxHeight - 16) : undefined }}

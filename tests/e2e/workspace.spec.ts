@@ -301,19 +301,34 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await page.mouse.down();
   await page.mouse.move(dragX + 134, dragY, { steps: 4 }); // 176: still at minimum
   await expect(page.locator('.feedback-panel')).toBeVisible();
-  await page.mouse.move(dragX + 136, dragY); // 174: collapse while still holding
-  const rightEdgeOffsets = await page.locator('.app').evaluate(async (el) => {
-    const offsets: number[] = [];
-    while (el.classList.contains('sidebar-animating')) {
-      const handle = el
-        .querySelector('[aria-label="Resize feedback sidebar"]')!
-        .getBoundingClientRect();
-      const panel = el.querySelector('.feedback-viewport')!.getBoundingClientRect();
-      offsets.push(Math.abs(handle.x + handle.width / 2 - panel.left));
-      await new Promise(requestAnimationFrame);
-    }
-    return offsets;
+  await page.locator('.app').evaluate(el => {
+    const result = new Promise<number[]>(resolve => {
+      const offsets: number[] = [];
+      const sample = () => {
+        if (!el.classList.contains('sidebar-animating')) {
+          resolve(offsets);
+          return;
+        }
+        const handle = el
+          .querySelector('[aria-label="Resize feedback sidebar"]')!
+          .getBoundingClientRect();
+        const panel = el.querySelector('.feedback-viewport')!.getBoundingClientRect();
+        offsets.push(Math.abs(handle.x + handle.width / 2 - panel.left));
+        requestAnimationFrame(sample);
+      };
+      const observer = new MutationObserver(() => {
+        if (!el.classList.contains('sidebar-animating')) return;
+        observer.disconnect();
+        sample();
+      });
+      observer.observe(el, { attributes: true, attributeFilter: ['class'] });
+    });
+    Object.assign(window, { feedbackResizeProbe: result });
   });
+  await page.mouse.move(dragX + 136, dragY); // 174: collapse while still holding
+  const rightEdgeOffsets = await page.evaluate(() =>
+    (window as unknown as { feedbackResizeProbe: Promise<number[]> }).feedbackResizeProbe,
+  );
   expect(rightEdgeOffsets.length).toBeGreaterThan(0);
   expect(Math.max(...rightEdgeOffsets)).toBeLessThan(1);
   await expect(page.getByRole('button', { name: 'Show feedback sidebar' })).toBeVisible();
@@ -323,10 +338,15 @@ test('project Plans workspaces, local comments, browser close and restart preser
   await expect(page.locator('.feedback-panel')).toBeVisible();
   await page.mouse.up();
   await expect(resize).toHaveAttribute('aria-valuenow', '260');
+  await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+  await resize.hover({ position: { x: 3, y: 150 } });
   const collapseBounds = (await resize.boundingBox())!;
-  await page.mouse.move(collapseBounds.x + 3, dragY);
+  const collapseY = collapseBounds.y + 150;
+  await page.mouse.move(collapseBounds.x + 3, collapseY);
   await page.mouse.down();
-  await page.mouse.move(collapseBounds.x + 90, dragY, { steps: 4 });
+  await expect(page.locator('.sidebar-resize-shield')).toBeVisible();
+  await page.mouse.move(collapseBounds.x + 95, collapseY, { steps: 4 });
+  await expect(page.locator('.feedback-panel')).toBeHidden();
   await page.mouse.up();
   await expect(page.locator('.sidebar-resize-shield')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Show feedback sidebar' })).toBeVisible();

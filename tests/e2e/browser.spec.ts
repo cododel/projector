@@ -499,9 +499,12 @@ test('live hover selects a table cell and markers follow DOM geometry, sticky sc
         .setZoomFactor(1.25),
     url,
   );
-  await expect
-    .poll(async () => (await nativeMarkerTips()).find((tip) => tip.y > stickyTip.y + 20)?.x)
-    .toBeCloseTo(20 + (cell.x + 30) * 1.25);
+  // Chromium quantizes the native view and page zoom to display pixels.
+  const expectedZoomedX = 20 + (cell.x + 30) * 1.25;
+  await expect.poll(async () => {
+    const tip = (await nativeMarkerTips()).find((tip) => tip.y > stickyTip.y + 20);
+    return tip ? Math.abs(tip.x - expectedZoomedX) : Infinity;
+  }).toBeLessThanOrEqual(1);
   // Changing the semantic state removes live markers rather than pretending old coordinates remain valid.
   await external.locator('#target-cell').evaluate((el) => {
     el.textContent = 'Different result';
@@ -669,6 +672,7 @@ test('arbitrary regions retain document coordinates on stable layout and hide af
       page.url().startsWith('data:text/html;base64,') &&
       Buffer.from(page.url().split(',')[1], 'base64').toString().includes('id="layer"'),
   );
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
   await overlay.mouse.move(40, 240);
   await overlay.mouse.down();
   await overlay.mouse.move(180, 285);
@@ -704,6 +708,7 @@ test('arbitrary regions retain document coordinates on stable layout and hide af
       globalThis.browserTest.manager.command({ tabId: id, action: 'annotate' }),
     tab.id,
   );
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
   await overlay.mouse.move(30, 15);
   await overlay.mouse.down();
   await overlay.mouse.move(170, 40);
@@ -845,6 +850,7 @@ test('unrelated continuous updates do not prevent capturing a stable selected el
     tab.id,
   );
   const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
   await overlay.mouse.click(60, 50);
   await expect(overlay.getByLabel('Area annotation comment')).toBeVisible();
   const draft = (await app.evaluate(() => globalThis.browserTest.drafts.at(-1))) as {
@@ -870,6 +876,11 @@ test('disposing a browser owner retires IPC from an overlay whose native close i
     globalThis.browserTest.manager.dispose();
   });
   try {
+    expect(await app.evaluate(({ BrowserWindow, WebContentsView }) =>
+      BrowserWindow.getAllWindows().flatMap(window => window.contentView.children.filter(
+        view => view instanceof WebContentsView && view.webContents !== window.webContents,
+      )).length,
+    )).toBe(0);
     const result = await overlay.evaluate(async () => {
       const bridge = (window as unknown as {projectorCapture:{invoke(action:string,value:unknown):Promise<unknown>}}).projectorCapture;
       try { await bridge.invoke('hover',{x:60,y:50}); return 'resolved'; }
@@ -879,6 +890,7 @@ test('disposing a browser owner retires IPC from an overlay whose native close i
     expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(0);
   } finally {
     await app.evaluate(() => (globalThis as unknown as {releaseRetiredOverlay():void}).releaseRetiredOverlay());
+    await expect.poll(() => overlay.isClosed()).toBe(true);
   }
 });
 
@@ -946,6 +958,7 @@ test('continuous selected-content changes stay recoverable and do not reject the
     tab.id,
   );
   const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
   await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
   await overlay.mouse.click(60, 50);
   await expect(overlay.getByRole('status')).toContainText('CAPTURE_CHANGED');
@@ -1206,6 +1219,7 @@ test('browser finishComment flushes latest text, cancels empty and blocks transi
       tab.id,
     );
     const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+    await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
     await overlay.mouse.move(80, 80);
     await overlay.mouse.down();
     await overlay.mouse.move(220, 150);
@@ -1302,6 +1316,7 @@ test('captured viewport pixels identify the current page and reject wrong or sta
       tab.id,
     );
     const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
+    await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
     await overlay.mouse.move(50, 50);
     await overlay.mouse.down();
     await overlay.mouse.move(160, 110);
@@ -1362,6 +1377,9 @@ test('trusted overlay forwards repeated wheel to page and nested sticky table', 
   const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
   await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
   for (const target of ['page', 'nested'] as const) {
+    // Chromium groups wheel events into a gesture for up to 500ms. Start a
+    // separate gesture when switching from the page to the nested scroller.
+    if (target === 'nested') await overlay.waitForTimeout(550);
     await overlay.mouse.move(target === 'page' ? 740 : 250, target === 'page' ? 450 : 200);
     const scroll = () =>
       external.evaluate(

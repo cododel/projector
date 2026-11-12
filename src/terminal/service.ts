@@ -38,6 +38,7 @@ const engine = new TerminalService(
 const opening = engine.open();
 let chain = opening;
 let quitting = false;
+let shutdownAckTimer: ReturnType<typeof setTimeout> | undefined;
 async function operation(request: TerminalRequest): Promise<unknown> {
   if (quitting && request.method !== 'shutdown')
     throw new TerminalError('TERMINAL_CLOSED', 'Terminal service is shutting down.');
@@ -77,6 +78,10 @@ async function operation(request: TerminalRequest): Promise<unknown> {
 }
 process.parentPort.on('message', (event) => {
   const input = event.data;
+  if (input?.type === 'shutdown-ack' && shutdownAckTimer) {
+    clearTimeout(shutdownAckTimer);
+    process.exit(0);
+  }
   if (
     input?.type === 'output-ack' &&
     typeof input.id === 'string' &&
@@ -101,7 +106,10 @@ process.parentPort.on('message', (event) => {
       try {
         const result = await operation(request.data);
         send({ type: 'response', id: request.data.id, result: result ?? null });
-        if (request.data.method === 'shutdown') setImmediate(() => process.exit(0));
+        if (request.data.method === 'shutdown') {
+          // The parent can observe process exit before the queued reply arrives.
+          shutdownAckTimer = setTimeout(() => process.exit(1), 10000);
+        }
       } catch (error) {
         send({
           type: 'response',

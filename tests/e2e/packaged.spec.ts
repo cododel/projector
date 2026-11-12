@@ -20,21 +20,27 @@ test('relocated packaged app uses its own stdio helper without system Node and p
   let child: ChildProcessWithoutNullStreams | undefined;
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
-    const { stdout } = await promisify(execFile)(
-      process.execPath,
-      ['--import', resolve('tests/fixtures/offline-network.mjs'), 'scripts/package-mac.mjs'],
-      {
-        cwd: resolve('.'),
-        timeout: 90000,
-        env: {
-          ...process.env,
-          PROJECTOR_NODE: process.execPath,
-          PROJECTOR_PACKAGE_OUTPUT: join(root, 'package'),
+    const releaseApp = process.env.PROJECTOR_E2E_RELEASE_APP;
+    let source: string;
+    if (releaseApp) {
+      source = resolve(releaseApp);
+    } else {
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        ['--import', resolve('tests/fixtures/offline-network.mjs'), 'scripts/package-mac.mjs'],
+        {
+          cwd: resolve('.'),
+          timeout: 90000,
+          env: {
+            ...process.env,
+            PROJECTOR_NODE: process.execPath,
+            PROJECTOR_PACKAGE_OUTPUT: join(root, 'package'),
+          },
         },
-      },
-    );
-    const source = stdout.trim().split('\n').at(-1)!;
-    expect(source).toBe(join(root, 'package', `Projector-darwin-${process.arch}`, 'Projector.app'));
+      );
+      source = stdout.trim().split('\n').at(-1)!;
+      expect(source).toBe(join(root, 'package', `Projector-darwin-${process.arch}`, 'Projector.app'));
+    }
     const plist = await promisify(execFile)('/usr/bin/plutil', [
       '-convert',
       'json',
@@ -102,6 +108,12 @@ test('relocated packaged app uses its own stdio helper without system Node and p
       page.getByRole('heading', { name: 'Make decisions before implementation' }),
     ).toBeVisible();
     expect(await app.evaluate(({ app }) => app.isPackaged)).toBe(true);
+    if (releaseApp) {
+      expect(await app.evaluate(({ Menu }) =>
+        Menu.getApplicationMenu()?.items[0].submenu?.items
+          .find(item => item.label === 'Check for Updates…')?.visible,
+      )).toBe(true);
+    }
     const setup: McpSetup = await page.evaluate(async () => {
       const bridge = (
         window as unknown as { projector: { invoke: (name: string) => Promise<McpSetup> } }

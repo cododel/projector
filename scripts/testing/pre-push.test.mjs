@@ -22,12 +22,16 @@ test('a defective pushed commit fails even when the dirty worktree fixes it', as
   const root = await mkdtemp(join(tmpdir(), 'bp-push-test-'));
   const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
   try {
-    git('init');
+    git('init', '--initial-branch=main');
     git('config', 'user.name', 'Test');
     git('config', 'user.email', 'test@example.invalid');
     await writeFile(
       join(root, 'package.json'),
-      JSON.stringify({ scripts: { 'check:full': 'node -e "process.exit(7)"' } }),
+      JSON.stringify({ scripts: {
+        typecheck: 'node --version',
+        lint: 'node --version',
+        test: 'node -e "process.exit(process.env.GIT_DIR ? 8 : 7)"',
+      } }),
     );
     execFileSync('pnpm', ['install', '--lockfile-only', '--offline'], { cwd: root, stdio: 'pipe' });
     git('add', 'package.json', 'pnpm-lock.yaml');
@@ -35,12 +39,25 @@ test('a defective pushed commit fails even when the dirty worktree fixes it', as
     const sha = git('rev-parse', 'HEAD');
     await writeFile(
       join(root, 'package.json'),
-      JSON.stringify({ scripts: { 'check:full': 'node -e "process.exit(0)"' } }),
+      JSON.stringify({ scripts: {
+        typecheck: 'node --version', lint: 'node --version', test: 'node --version',
+      } }),
     );
-    await assert.rejects(
-      validatePush(root, `refs/heads/main ${sha} refs/heads/main ${'0'.repeat(40)}`, { captureOutput: true }),
-      /check:full failed/,
-    );
+    const previousGitDir = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(root, '.git');
+    try {
+      await assert.rejects(
+        validatePush(root, `refs/heads/main ${sha} refs/heads/main ${'0'.repeat(40)}`, { captureOutput: true }),
+        /pnpm test failed \(7\)/,
+      );
+      git('add', 'package.json');
+      git('commit', '-m', 'passing fixture without E2E scripts');
+      const passingSha = git('rev-parse', 'HEAD');
+      await validatePush(root, `refs/heads/main ${passingSha} refs/heads/main ${sha}`, { captureOutput: true });
+    } finally {
+      if (previousGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previousGitDir;
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

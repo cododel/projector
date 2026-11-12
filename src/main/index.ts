@@ -24,6 +24,7 @@ import { runtimeLimits } from '../shared/runtime-limits';
 import { getGuide } from '../guide';
 import { atomicJson } from '../runtime/files';
 import { getMcpSetup } from './mcp-setup';
+import { checkForUpdates, updatesAvailable } from './updates';
 import { BrowserManager, type BrowserTab } from './browser';
 import { NotificationOverlay } from './notifications';
 import { Workspace } from './workspace';
@@ -35,14 +36,12 @@ import { CodexManager, sessionInUse } from './codex';
 import { paneLeaves } from '../shared/application-workspace';
 import { matchShortcut } from '../shared/keyboard-shortcuts';
 import type { McpSetup } from '../shared/protocol';
-import { auditE2EWindows, e2eWindowOptions, isBackgroundE2E } from './e2e-window';
 import { safeBrowserBounds, validateArea } from './browser-policy';
 import { z } from 'zod';
 const here = dirname(fileURLToPath(import.meta.url));
 const developmentUrl = app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL;
 observeElectron(app);
 normalizeLegacyEnvironment();
-auditE2EWindows(app);
 app.setName('Projector');
 const applicationData = resolveApplicationData(app.getPath('appData'));
 app.setPath('userData', applicationData);
@@ -93,7 +92,8 @@ const codex = new CodexManager({
     return {
       'mcp_servers.projector.command': mcpSetup.executable,
       'mcp_servers.projector.args': mcpSetup.args,
-      'mcp_servers.projector.env.PROJECTOR_RUNTIME_DESCRIPTOR': mcpSetup.descriptorPath,
+      ...Object.fromEntries(Object.entries(mcpSetup.env).map(([key, value]) =>
+        [`mcp_servers.projector.env.${key}`, value])),
     };
   },
   onIdentity: (terminalId, sessionId) => {
@@ -291,10 +291,17 @@ const requests = new Map<
     name: string;
   }
 >();
+function sendOperationStatus(status: { waiting: boolean; operationId: string; operation: string; error?: string }): void {
+  const contents = window?.webContents;
+  if (!contents || contents.isDestroyed() || contents.isCrashed()) return;
+  const frame = contents.mainFrame;
+  if (!frame || frame.isDestroyed() || frame.detached) return;
+  frame.send('projector:operation-status', status);
+}
 function failRpcRequests(): void {
   for (const [operationId, pending] of requests) {
     clearTimeout(pending.timer);
-    window?.webContents.send('projector:operation-status', { waiting: false, operationId, operation: pending.name, error: 'Runtime disconnected. Reconcile the operation before retrying.' });
+    sendOperationStatus({ waiting: false, operationId, operation: pending.name, error: 'Runtime disconnected. Reconcile the operation before retrying.' });
     pending.reject(
       new Error(
         'UNKNOWN_RESULT: Projector runtime disconnected. An operation may have completed; reconcile before retrying. Restart Projector and reconnect MCP.',
@@ -312,7 +319,7 @@ function rpc(name: string, args: unknown = {}): Promise<unknown> {
     }
     const id = randomUUID();
     const timer = setTimeout(() => {
-      window?.webContents.send('projector:operation-status', { waiting: true, operationId: id, operation: name });
+      sendOperationStatus({ waiting: true, operationId: id, operation: name });
     }, 10000);
     requests.set(id, { resolve, reject, timer, name });
     try {
@@ -366,8 +373,9 @@ async function showCapturedAnnotation(artifactId: string, annotationId: string, 
 }
 function createWindow(background = false) {
   window = new BrowserWindow(
-    e2eWindowOptions({
+    {
       width: 1360,
+      enableLargerThanScreen: Boolean(process.env.PROJECTOR_TEST_DIAGNOSTICS),
       height: 900,
       minWidth: 980,
       minHeight: 650,
@@ -381,7 +389,7 @@ function createWindow(background = false) {
         contextIsolation: true,
         sandbox: true,
       },
-    }),
+    },
   );
   notifications = new NotificationOverlay(window, join(here, '../preload/notifications.cjs'));
   browser = new BrowserManager(window, {
@@ -478,7 +486,7 @@ function createWindow(background = false) {
   });
   const recoverShell = async (reason: string) => {
     const target = window;
-    if (!target || target.isDestroyed() || quitting || isBackgroundE2E()) return;
+    if (!target || target.isDestroyed() || quitting) return;
     const answer = await dialog.showMessageBox(target, {
       type: 'warning',
       message: 'Projector view stopped responding',
@@ -519,7 +527,7 @@ function createWindow(background = false) {
     editingScopes.clear();
     if (!quitting) void rpc('editing', { active: false }).catch(() => {});
   });
-  if (background && !isBackgroundE2E()) {
+  if (background) {
     const created = window;
     created.once('ready-to-show', () => {
       if (!created.isDestroyed()) created.showInactive();
@@ -533,15 +541,19 @@ app.on('activate', () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+let installAfterCleanup: (() => void) | undefined;
 app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
-  notifications?.dispose();
-  notifications = null;
-  if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
-    window.webContents.send('projector:shutdown');
-  void quitAfterCleanup();
+  // Let Electron unwind the cancelled quit before closing native child windows.
+  setImmediate(() => {
+    notifications?.dispose();
+    notifications = null;
+    if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
+      window.webContents.send('projector:shutdown');
+    void quitAfterCleanup();
+  });
 });
 async function quitAfterCleanup() {
   harnessSync.stop();
@@ -583,7 +595,8 @@ async function quitAfterCleanup() {
     try { runtime.postMessage('quit'); }
     catch { runtime.removeListener('exit', finished); finished(); }
   });
-  app.quit();
+  if (installAfterCleanup) installAfterCleanup();
+  else app.quit();
 }
 void app
   .whenReady()
@@ -598,7 +611,7 @@ void app
     }
     app.on('second-instance', () => {
       if (!window) createWindow();
-      if (!isBackgroundE2E()) window?.show();
+      window?.show();
     });
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
@@ -606,6 +619,15 @@ void app
           label: 'Projector',
           submenu: [
             { role: 'about' },
+            {
+              label: 'Check for Updates…',
+              visible: updatesAvailable(),
+              click: () => void checkForUpdates(install => {
+                if (quitting) return;
+                installAfterCleanup = install;
+                app.quit();
+              }),
+            },
             { label: 'Settings…', click: () => window?.webContents.send('projector:open-settings') },
             { label: 'Closing a window keeps Projector runtime running', enabled: false },
             { type: 'separator' },
@@ -693,7 +715,7 @@ void app
           if (!pending) return;
           clearTimeout(pending.timer);
           requests.delete(response.id);
-          window?.webContents.send('projector:operation-status', { waiting: false, operationId: response.id, operation: pending.name,
+          sendOperationStatus({ waiting: false, operationId: response.id, operation: pending.name,
             ...(response.error ? { error: response.error.code + ': ' + response.error.message } : {}) });
           if (response.error)
             pending.reject(
@@ -753,7 +775,7 @@ void app
     });
     mcpSetup = await getMcpSetup({ isPackaged: app.isPackaged, development: Boolean(developmentUrl),
       appPath: app.getAppPath(), resourcesPath: process.resourcesPath, descriptorPath,
-      nodeOverride: process.env.PROJECTOR_NODE });
+      userDataPath: applicationData, nodeOverride: process.env.PROJECTOR_NODE });
     await terminals.start(data, join(here, '../terminal/service.cjs'), {
       scrollback: applicationWorkspace.snapshot().settings.terminalScrollback,
       colorScheme: terminalColorScheme(applicationWorkspace.snapshot().settings, nativeTheme.shouldUseDarkColors),
@@ -1613,6 +1635,7 @@ void app
           appPath: app.getAppPath(),
           resourcesPath: process.resourcesPath,
           descriptorPath,
+          userDataPath: applicationData,
           nodeOverride: process.env.PROJECTOR_NODE,
         });
       }

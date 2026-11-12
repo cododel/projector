@@ -160,13 +160,12 @@ try {
   const config = join(task, `performance-${basename(root)}.config.ts`);
   await writeFile(
     config,
-    `import { defineConfig } from '@playwright/test';\nexport default defineConfig({testDir:${JSON.stringify(resolve('tests/e2e'))},testMatch:'stage-performance.spec.ts',workers:1,timeout:600000,globalSetup:${JSON.stringify(resolve('tests/e2e/window-audit-setup.ts'))},globalTeardown:${JSON.stringify(resolve('tests/e2e/window-audit-teardown.ts'))},outputDir:${JSON.stringify(join(task, `performance-results-${basename(root)}`))},use:{trace:'retain-on-failure'}});\n`,
+    `import { defineConfig } from '@playwright/test';\nexport default defineConfig({testDir:${JSON.stringify(resolve('tests/e2e'))},testMatch:'stage-performance.spec.ts',workers:1,timeout:600000,outputDir:${JSON.stringify(join(task, `performance-results-${basename(root)}`))},use:{trace:'retain-on-failure'}});\n`,
   );
   const child = spawn('pnpm', ['exec', 'playwright', 'test', '--config', config], {
     stdio: 'inherit',
     env: {
       ...process.env,
-      PROJECTOR_E2E_BACKGROUND: '1',
       PROJECTOR_PERFORMANCE_ROOT: root,
       PROJECTOR_PERFORMANCE_DIAGNOSE_TABS: process.argv.includes('--diagnose-tabs') ? '1' : '0',
       PROJECTOR_PERFORMANCE_REPORT: join(

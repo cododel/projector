@@ -295,6 +295,7 @@ export class TerminalManager {
       const exited = new Promise<void>((resolve) => worker.once('exit', () => resolve()));
       try {
         await this.request('shutdown');
+        worker.postMessage({ type: 'shutdown-ack' });
         await exited;
       } catch (error) {
         for (const entry of this.records)

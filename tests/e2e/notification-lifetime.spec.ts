@@ -20,15 +20,13 @@ for (const mode of ['normal', 'reentrant', 'layout'] as const) {
         stdin: { contents: `
 import { app, BrowserWindow, protocol } from 'electron';
 import { NotificationOverlay } from ${JSON.stringify(resolve('src/main/notifications.ts'))};
-import { e2eWindowOptions, auditE2EWindows } from ${JSON.stringify(resolve('src/main/e2e-window.ts'))};
 import { installProcessDiagnostics } from ${JSON.stringify(resolve('src/shared/test-diagnostics.ts'))};
 installProcessDiagnostics('main');
-auditE2EWindows(app);
 app.setPath('userData', ${JSON.stringify(data)});
 app.setPath('sessionData', ${JSON.stringify(data)});
 void app.whenReady().then(async () => {
 protocol.handle('projector', () => new Response('<!doctype html><html lang="en"><title>Local notification lifetime probe</title><body>Local renderer boundary</body></html>', {headers:{'Content-Type':'text/html'}}));
-const parent = new BrowserWindow(e2eWindowOptions({show:false,width:1000,height:700,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}}));
+const parent = new BrowserWindow({width:1000,height:700,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
 await parent.loadURL('data:text/html,<title>Local parent</title><h1>Notification lifetime</h1>');
 let owner;
 globalThis.overlayProbe = {
@@ -60,7 +58,7 @@ app.on('before-quit',()=>owner?.dispose());
 `, resolveDir: resolve('.'), sourcefile: 'notification-lifetime-probe.ts', loader: 'ts' },
         outfile: entry, bundle: true, platform: 'node', format: 'esm', target: 'node24', external: ['electron'],
       });
-      app = await electron.launch({ args: [entry], env: { ...process.env, PROJECTOR_DATA: data, PROJECTOR_E2E_BACKGROUND: '1' } });
+      app = await electron.launch({ args: [entry], env: { ...process.env, PROJECTOR_DATA: data } });
       await expect.poll(() => app!.evaluate(() => Boolean((globalThis as unknown as { overlayProbe?: ProbeApi }).overlayProbe))).toBe(true);
       const result = await app.evaluate((_electron, mode) => (globalThis as unknown as { overlayProbe: ProbeApi }).overlayProbe.run(mode), mode);
       expect(result).toEqual({ closed: 1, threw: null, parentAlive: true, children: 0 });
