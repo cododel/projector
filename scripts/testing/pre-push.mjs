@@ -16,7 +16,17 @@ export function pushedCommits(input) {
 }
 
 export async function validatePush(root, input, { captureOutput = false } = {}) {
-  for (const commit of pushedCommits(input)) {
+  const commits = pushedCommits(input);
+  if (!commits.length) return;
+
+  // Git's hook environment still points at the source repository, even in a different cwd.
+  const gitVariables = execFileSync('git', ['-C', root, 'rev-parse', '--local-env-vars'], {
+    encoding: 'utf8',
+  }).trim().split('\n');
+  const checkEnv = { ...process.env };
+  for (const name of gitVariables) delete checkEnv[name];
+
+  for (const commit of commits) {
     const directory = await mkdtemp(join(tmpdir(), 'projector-pre-push-'));
     try {
       // Export the immutable pushed object, without .git or personal worktree data.
@@ -30,6 +40,7 @@ export async function validatePush(root, input, { captureOutput = false } = {}) 
       for (const args of [['install', '--frozen-lockfile'], ['check:full']]) {
         const result = spawnSync('pnpm', args, {
           cwd: directory,
+          env: checkEnv,
           stdio: captureOutput ? 'pipe' : 'inherit',
         });
         if (captureOutput) {

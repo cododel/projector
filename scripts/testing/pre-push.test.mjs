@@ -27,7 +27,7 @@ test('a defective pushed commit fails even when the dirty worktree fixes it', as
     git('config', 'user.email', 'test@example.invalid');
     await writeFile(
       join(root, 'package.json'),
-      JSON.stringify({ scripts: { 'check:full': 'node -e "process.exit(7)"' } }),
+      JSON.stringify({ scripts: { 'check:full': 'node -e "process.exit(process.env.GIT_DIR ? 8 : 7)"' } }),
     );
     execFileSync('pnpm', ['install', '--lockfile-only', '--offline'], { cwd: root, stdio: 'pipe' });
     git('add', 'package.json', 'pnpm-lock.yaml');
@@ -37,10 +37,17 @@ test('a defective pushed commit fails even when the dirty worktree fixes it', as
       join(root, 'package.json'),
       JSON.stringify({ scripts: { 'check:full': 'node -e "process.exit(0)"' } }),
     );
-    await assert.rejects(
-      validatePush(root, `refs/heads/main ${sha} refs/heads/main ${'0'.repeat(40)}`, { captureOutput: true }),
-      /check:full failed/,
-    );
+    const previousGitDir = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(root, '.git');
+    try {
+      await assert.rejects(
+        validatePush(root, `refs/heads/main ${sha} refs/heads/main ${'0'.repeat(40)}`, { captureOutput: true }),
+        /check:full failed \(7\)/,
+      );
+    } finally {
+      if (previousGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previousGitDir;
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
