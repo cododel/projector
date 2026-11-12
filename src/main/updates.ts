@@ -44,7 +44,7 @@ async function checkSparkle() {
     feed = `${releases}/download/${release.tag_name}/appcast.xml`;
   }
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(sparkleHelper, [join(process.resourcesPath, '..'), feed], {
+    const child = spawn(sparkleHelper, [join(process.resourcesPath, '..', '..'), feed], {
       stdio: ['ignore', 'ignore', 'inherit'],
     });
     child.once('error', reject);
