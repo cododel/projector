@@ -170,7 +170,8 @@ export class NotificationOverlay {
   private closeWithParent = (event: Electron.Event): void => {
     // Retire the native child before macOS tears down its parent window graph.
     this.retireChild();
-    queueMicrotask(() => {
+    // Recreate the child only after the native close callback has returned.
+    setImmediate(() => {
       if (!this.disposed && !this.parent.isDestroyed() && event.defaultPrevented) this.publish(this.notices);
     });
   };
