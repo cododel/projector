@@ -307,7 +307,8 @@ test('explicit notification focus reaches controls after a cold child is created
       waiting: true, operationId: 'cold-focus', operation: 'cold child',
     });
   });
-  await page.getByRole('button', { name: 'Notifications · 1', exact: true }).click();
+  await page.getByRole('toolbar', { name: 'Window toolbar' })
+    .getByRole('button', { name: 'Notifications · 1', exact: true }).click();
   const cold = await notificationWindow(app!);
   await expect(cold.locator('[data-operation="cold-focus"]')).toBeVisible();
   const visible = await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => !w.getParentWindow())!.isVisible());
