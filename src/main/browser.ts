@@ -1631,10 +1631,13 @@ export class BrowserManager {
     if (this.overlayContents) retiredOverlayContents.add(this.overlayContents);
     for (const marker of this.markerViews.values()) retiredOverlayContents.add(marker.contents);
     this.releaseOverlayHandler();
+    if (this.overlay && !this.window.isDestroyed()) this.window.contentView.removeChildView(this.overlay);
     this.clearMarkers();
     ++this.captureGeneration;
-    for (const { contents } of [...this.tabs.values()])
-      if (!contents.isDestroyed()) contents.close();
+    for (const tab of [...this.tabs.values()]) {
+      this.detachTab(tab);
+      if (!tab.contents.isDestroyed()) tab.contents.close();
+    }
     this.tabs.clear();
     this.attachedTabs.clear();
     this.visibleViews?.clear();

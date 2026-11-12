@@ -873,6 +873,11 @@ test('disposing a browser owner retires IPC from an overlay whose native close i
     globalThis.browserTest.manager.dispose();
   });
   try {
+    expect(await app.evaluate(({ BrowserWindow, WebContentsView }) =>
+      BrowserWindow.getAllWindows().flatMap(window => window.contentView.children.filter(
+        view => view instanceof WebContentsView && view.webContents !== window.webContents,
+      )).length,
+    )).toBe(0);
     const result = await overlay.evaluate(async () => {
       const bridge = (window as unknown as {projectorCapture:{invoke(action:string,value:unknown):Promise<unknown>}}).projectorCapture;
       try { await bridge.invoke('hover',{x:60,y:50}); return 'resolved'; }
@@ -882,6 +887,7 @@ test('disposing a browser owner retires IPC from an overlay whose native close i
     expect(await app.evaluate(() => globalThis.browserTest.drafts.length)).toBe(0);
   } finally {
     await app.evaluate(() => (globalThis as unknown as {releaseRetiredOverlay():void}).releaseRetiredOverlay());
+    await expect.poll(() => overlay.isClosed()).toBe(true);
   }
 });
 
