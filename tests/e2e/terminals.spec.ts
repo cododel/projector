@@ -458,6 +458,9 @@ test('utility crash removes ended processes and an explicit new terminal receive
   });
   await expect.poll(async () => (await snapshot(page)).terminals).toEqual([]);
   await expect.poll(() => alive(terminal.pid!)).toBe(false);
+  await expect(invoke(page, 'terminalResize', {
+    id: terminal.id, viewId: pane.id, cols: 90, rows: 24, active: true,
+  })).resolves.toEqual({ resized: false });
   diagnostics.phase('test');
   await command(page, projectId, 'newTerminal', { operationId: randomUUID() });
   const fresh = (await snapshot(page)).terminals[0];

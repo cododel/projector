@@ -226,7 +226,7 @@ export class TerminalManager {
     await this.request('input', { id, data, viewId, encoding });
   }
   async resize(id: string, dimensions: TerminalResize) {
-    if (this.closing) return { resized: false };
+    if (this.closing || !this.worker) return { resized: false };
     return z.object({resized:z.boolean()}).parse(await this.request('resize', { id, ...dimensions }));
   }
   async stop(id: string): Promise<void> {
