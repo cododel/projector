@@ -1365,6 +1365,9 @@ test('trusted overlay forwards repeated wheel to page and nested sticky table', 
   const overlay = await pageAt((page) => page.url().startsWith('data:text/html;base64,'));
   await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
   for (const target of ['page', 'nested'] as const) {
+    // Chromium groups wheel events into a gesture for up to 500ms. Start a
+    // separate gesture when switching from the page to the nested scroller.
+    if (target === 'nested') await overlay.waitForTimeout(550);
     await overlay.mouse.move(target === 'page' ? 740 : 250, target === 'page' ? 450 : 200);
     const scroll = () =>
       external.evaluate(
