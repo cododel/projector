@@ -77,9 +77,33 @@ need to be reopened to redraw their own hard-coded or previously generated color
 pnpm package:mac
 ```
 
-This builds an **unsigned** `dist/Projector-darwin-<architecture>/Projector.app` for the build machine's architecture. Packaging requires macOS Node.js **24.20.0**; it copies that Node executable, its license and the compiled bridge into the `.app`. `PROJECTOR_NODE` can select an equivalent official Node distribution at build time. Use the same architecture for Node and Electron. Packaging uses the already installed, version-checked Electron distribution and does not download from GitHub; missing or mismatched dependencies fail explicitly. This is a local development package; Developer ID signing, notarization, cross-architecture release builds and public distribution are not implemented yet.
+This builds an **unsigned** `dist/Projector-darwin-<architecture>/Projector.app` for the build machine's architecture. Packaging requires macOS Node.js **24.20.0**; it copies that Node executable, its license and the compiled bridge into the `.app`. `PROJECTOR_NODE` can select an equivalent official Node distribution at build time. Use the same architecture for Node and Electron. Packaging uses the already installed, version-checked Electron distribution and does not download from GitHub; missing or mismatched dependencies fail explicitly. This command produces the local development package. Use a GitHub release build to exercise the update menu.
 
 Open the generated `.app` and use its **MCP connection** dialog to get the command at its current location. The packaged helper needs neither a Node entry in `PATH` nor the source project. Missing helper resources are reported explicitly; the app does not emit a configuration that falls back to an external Node installation.
+
+## GitHub CI and releases
+
+GitHub Actions runs `pnpm check` on macOS for pull requests and pushes to `main`.
+The release workflow builds macOS arm64 (DMG and ZIP), Windows x64 (NSIS), and
+Linux x64 (AppImage). It runs the macOS checks again and exercises a native PTY
+from each packaged Electron runtime before collecting release assets.
+
+Configure `SPARKLE_PUBLIC_ED_KEY` as a repository variable and
+`SPARKLE_EDDSA_PRIVATE_KEY` as an Actions secret. Use a dedicated Sparkle Ed25519
+key pair for Projector and keep the private key for subsequent releases. The
+private key is the base64 seed exported by Sparkle's `generate_keys -x`. See
+[Sparkle's key setup](https://sparkle-project.org/documentation/#1-generate-a-privatepublic-key-pair).
+A manual workflow run produces Actions artifacts. Pushing a tag exactly matching
+`v<package.json version>` additionally signs the Sparkle appcast and creates a
+draft GitHub Release. Review the installers and update assets together before
+publishing the draft. Tags with a prerelease suffix are marked as prereleases.
+
+Use **Projector → Check for Updates…** in a release build. macOS verifies the
+Sparkle appcast and ZIP against the bundled public key. Windows NSIS and Linux
+AppImage use electron-updater and the manifests in the same published release.
+The AppImage must be runnable from a writable location for in-place updates.
+macOS packages use ad-hoc signing without Apple notarization, and Windows packages
+are unsigned. The desktop acceptance matrix covers macOS.
 
 ## Demonstration cycle
 
@@ -156,7 +180,7 @@ Local `pnpm check` runs hidden E2E without activating windows; it does not prove
 
 ## Status
 
-See `ALPHA-1.md` for the implemented subset and `PRD.md` for the target product. Alpha 1 supports source launch and local unsigned macOS packaging; signed distribution is deferred. npm delivery through `npx`/`bunx` is recorded in `docs/issues/[OPEN]-2026-10-09-mcp-npm-stdio-distribution.md` and is not available yet. Automatic steer, chat/file annotation, arbitrary TSX prototypes and prototype case replay remain deferred. Browser and document area annotation captures the full visible viewport and original click/release point; it does not guarantee replay of dynamic page state. Browser capture checks the selected target/region together with navigation, viewport, scroll and zoom. Unrelated page activity does not by itself reject a capture. Same-document history updates before selection keep the uncaptured tool active; navigation during capture still rejects the attempt. Changes within the selection may be retried up to three times; persistent target changes ask the operator to select again without creating a partial comment. Current Codex TUI, workspace/runtime gates and their remaining manual boundaries are recorded in [the acceptance matrix](docs/acceptance/CURRENT-STAGE.md); previous saved-state evidence is retained separately. Historical Submit evidence is preserved separately. Annotation state context, hover selection and conditional live markers require their own acceptance results; their documentation is not a claim that testing is complete.
+See `ALPHA-1.md` for the implemented subset and `PRD.md` for the target product. Alpha 1 supports source launch and local unsigned macOS packaging. GitHub release packaging and update setup are described above. npm delivery through `npx`/`bunx` is recorded in `docs/issues/[OPEN]-2026-10-09-mcp-npm-stdio-distribution.md` and is not available yet. Automatic steer, chat/file annotation, arbitrary TSX prototypes and prototype case replay remain deferred. Browser and document area annotation captures the full visible viewport and original click/release point; it does not guarantee replay of dynamic page state. Browser capture checks the selected target/region together with navigation, viewport, scroll and zoom. Unrelated page activity does not by itself reject a capture. Same-document history updates before selection keep the uncaptured tool active; navigation during capture still rejects the attempt. Changes within the selection may be retried up to three times; persistent target changes ask the operator to select again without creating a partial comment. Current Codex TUI, workspace/runtime gates and their remaining manual boundaries are recorded in [the acceptance matrix](docs/acceptance/CURRENT-STAGE.md); previous saved-state evidence is retained separately. Historical Submit evidence is preserved separately. Annotation state context, hover selection and conditional live markers require their own acceptance results; their documentation is not a claim that testing is complete.
 
 ## Current-stage completion
 

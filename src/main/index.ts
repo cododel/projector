@@ -24,6 +24,7 @@ import { runtimeLimits } from '../shared/runtime-limits';
 import { getGuide } from '../guide';
 import { atomicJson } from '../runtime/files';
 import { getMcpSetup } from './mcp-setup';
+import { checkForUpdates, updatesAvailable } from './updates';
 import { BrowserManager, type BrowserTab } from './browser';
 import { NotificationOverlay } from './notifications';
 import { Workspace } from './workspace';
@@ -93,7 +94,8 @@ const codex = new CodexManager({
     return {
       'mcp_servers.projector.command': mcpSetup.executable,
       'mcp_servers.projector.args': mcpSetup.args,
-      'mcp_servers.projector.env.PROJECTOR_RUNTIME_DESCRIPTOR': mcpSetup.descriptorPath,
+      ...Object.fromEntries(Object.entries(mcpSetup.env).map(([key, value]) =>
+        [`mcp_servers.projector.env.${key}`, value])),
     };
   },
   onIdentity: (terminalId, sessionId) => {
@@ -533,6 +535,7 @@ app.on('activate', () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+let installAfterCleanup: (() => void) | undefined;
 app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
@@ -583,7 +586,8 @@ async function quitAfterCleanup() {
     try { runtime.postMessage('quit'); }
     catch { runtime.removeListener('exit', finished); finished(); }
   });
-  app.quit();
+  if (installAfterCleanup) installAfterCleanup();
+  else app.quit();
 }
 void app
   .whenReady()
@@ -606,6 +610,15 @@ void app
           label: 'Projector',
           submenu: [
             { role: 'about' },
+            {
+              label: 'Check for Updates…',
+              visible: updatesAvailable(),
+              click: () => void checkForUpdates(install => {
+                if (quitting) return;
+                installAfterCleanup = install;
+                app.quit();
+              }),
+            },
             { label: 'Settings…', click: () => window?.webContents.send('projector:open-settings') },
             { label: 'Closing a window keeps Projector runtime running', enabled: false },
             { type: 'separator' },
@@ -753,7 +766,7 @@ void app
     });
     mcpSetup = await getMcpSetup({ isPackaged: app.isPackaged, development: Boolean(developmentUrl),
       appPath: app.getAppPath(), resourcesPath: process.resourcesPath, descriptorPath,
-      nodeOverride: process.env.PROJECTOR_NODE });
+      userDataPath: applicationData, nodeOverride: process.env.PROJECTOR_NODE });
     await terminals.start(data, join(here, '../terminal/service.cjs'), {
       scrollback: applicationWorkspace.snapshot().settings.terminalScrollback,
       colorScheme: terminalColorScheme(applicationWorkspace.snapshot().settings, nativeTheme.shouldUseDarkColors),
@@ -1613,6 +1626,7 @@ void app
           appPath: app.getAppPath(),
           resourcesPath: process.resourcesPath,
           descriptorPath,
+          userDataPath: applicationData,
           nodeOverride: process.env.PROJECTOR_NODE,
         });
       }
