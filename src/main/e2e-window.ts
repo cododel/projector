@@ -15,6 +15,7 @@ export function e2eWindowOptions(
     ...options,
     show: false,
     focusable: false,
+    enableLargerThanScreen: true,
     webPreferences: { ...options.webPreferences, backgroundThrottling: false },
   };
 }
@@ -31,8 +32,10 @@ export function showBackgroundE2EWindow(win: BrowserWindow): void {
 // Observe native events from before window creation, including packaged launches.
 // Record display separately from activation and focus violations.
 export function auditE2EWindows(app: App): void {
+  if (!isBackgroundE2E()) return;
+  if (process.platform === 'darwin') app.setActivationPolicy('prohibited');
   const path = process.env.PROJECTOR_E2E_WINDOW_AUDIT;
-  if (!isBackgroundE2E() || !path) return;
+  if (!path) return;
   const record = (event: string, windowId?: number) =>
     appendFileSync(path, JSON.stringify({ event, windowId, pid: process.pid }) + '\n');
   app.on('did-become-active', () => record('app-active'));

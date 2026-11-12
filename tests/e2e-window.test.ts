@@ -24,6 +24,7 @@ describe('test window mode', () => {
     expect(options).toMatchObject({
       show: false,
       focusable: false,
+      enableLargerThanScreen: true,
       width: 900,
       webPreferences: {
         preload: '/test/preload.cjs',

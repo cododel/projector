@@ -11,7 +11,7 @@ native Electron qualification. See [the catalogue guide](../../dev/README.md).
 persistence, DOM interactions and MCP; it does not prove native desktop composition,
 window focus, physical input or browser/overlay hit testing on the desktop.
 Inactive-window E2E runs independent scenarios in up to four workers (bounded by available
-CPU parallelism). Each scenario owns disposable app data, authenticated loopback endpoints and fixture
+CPU parallelism) locally. GitHub Actions uses one worker per runner and splits PR and main E2E across three shards. Each scenario owns disposable app data, authenticated loopback endpoints and fixture
 servers on dynamically assigned ports. The build completes once before E2E;
 steps inside each scenario remain ordered. Use `pnpm exec playwright test --workers=1`
 for a sequential diagnostic run. Visible E2E remains on one worker because windows

@@ -499,9 +499,12 @@ test('live hover selects a table cell and markers follow DOM geometry, sticky sc
         .setZoomFactor(1.25),
     url,
   );
-  await expect
-    .poll(async () => (await nativeMarkerTips()).find((tip) => tip.y > stickyTip.y + 20)?.x)
-    .toBeCloseTo(20 + (cell.x + 30) * 1.25);
+  // Chromium quantizes the native view and page zoom to display pixels.
+  const expectedZoomedX = 20 + (cell.x + 30) * 1.25;
+  await expect.poll(async () => {
+    const tip = (await nativeMarkerTips()).find((tip) => tip.y > stickyTip.y + 20);
+    return tip ? Math.abs(tip.x - expectedZoomedX) : Infinity;
+  }).toBeLessThanOrEqual(1);
   // Changing the semantic state removes live markers rather than pretending old coordinates remain valid.
   await external.locator('#target-cell').evaluate((el) => {
     el.textContent = 'Different result';

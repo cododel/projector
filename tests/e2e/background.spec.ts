@@ -29,13 +29,14 @@ test('background startup and second-instance handling show the native window wit
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows().find(win => !win.getParentWindow())!;
       return {
+        width: window.getBounds().width,
         visible: window.isVisible(),
         alwaysOnTop: window.isAlwaysOnTop(),
         focused: window.isFocused(),
         focusable: window.isFocusable(),
         throttled: window.webContents.getBackgroundThrottling(),
       };
-    })).toEqual({ visible: true, alwaysOnTop: true, focused: false, focusable: false, throttled: false });
+    })).toEqual({ width: 1360, visible: true, alwaysOnTop: true, focused: false, focusable: false, throttled: false });
     const image = await app.evaluate(async ({ BrowserWindow }) => {
       const capture = await BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.capturePage();
       return { empty: capture.isEmpty(), size: capture.getSize() };

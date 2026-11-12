@@ -20,7 +20,7 @@ export default defineConfig({
   // Hidden scenarios have disposable app data, sockets and dynamically assigned ports.
   // Visible windows share OS focus and must remain sequential.
   fullyParallel: background,
-  workers: background ? Math.min(4, availableParallelism()) : 1,
+  workers: background && !process.env.CI ? Math.min(4, availableParallelism()) : 1,
   timeout: 60000,
   globalSetup: './tests/e2e/window-audit-setup.ts',
   globalTeardown: './tests/e2e/window-audit-teardown.ts',

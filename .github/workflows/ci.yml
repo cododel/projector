@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   check:
-    name: Projector checks (macOS)
+    name: Static and unit checks (macOS)
     runs-on: macos-latest
     timeout-minutes: 25
     steps:
@@ -23,14 +23,38 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
       - name: Install Codex CLI for integration tests
         run: npm install --global @openai/codex@0.167.1
-      - run: pnpm check
+      - run: pnpm test
+
+  e2e:
+    name: Electron E2E (macOS, shard ${{ matrix.shard }}/3)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install Codex CLI for integration tests
+        run: npm install --global @openai/codex@0.167.1
+      - run: pnpm test:e2e --shard=${{ matrix.shard }}/3
       - name: Upload test diagnostics
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: macos-test-diagnostics
+          name: macos-test-diagnostics-${{ matrix.shard }}
           path: |
             .tmp/test-results/
             .tmp/e2e-window-audit-*/

@@ -83,7 +83,7 @@ Open the generated `.app` and use its **MCP connection** dialog to get the comma
 
 ## GitHub CI and releases
 
-GitHub Actions runs `pnpm check` on macOS for pull requests and pushes to `main`.
+GitHub Actions runs the `pnpm check` stages on macOS for pull requests and pushes to `main`. Electron E2E runs in three shards.
 The release workflow builds macOS arm64 (DMG and ZIP), Windows x64 (NSIS), and
 Linux x64 (AppImage). It runs the macOS checks again and exercises a native PTY
 from each packaged Electron runtime before collecting release assets.
