@@ -38,7 +38,6 @@ test('installed Codex receives Ctrl+D and Ctrl+C through xterm for independently
         LANG: 'en_US.UTF-8',
         PROJECTOR_DATA: data,
         PROJECTOR_RUNTIME_DESCRIPTOR: join(root, 'endpoint.json'),
-        PROJECTOR_E2E_BACKGROUND: process.env.PROJECTOR_E2E_BACKGROUND ?? '1',
         ...(process.env.PROJECTOR_E2E_WINDOW_AUDIT
           ? { PROJECTOR_E2E_WINDOW_AUDIT: process.env.PROJECTOR_E2E_WINDOW_AUDIT }
           : {}),

@@ -32,7 +32,6 @@ test('qualifies the current-stage dataset at production boundaries', async () =>
       ...process.env,
       PROJECTOR_DATA: join(root, 'data'),
       PROJECTOR_RUNTIME_DESCRIPTOR: socket,
-      PROJECTOR_E2E_BACKGROUND: '1',
     },
   });
   let mcp: Mcp | undefined;

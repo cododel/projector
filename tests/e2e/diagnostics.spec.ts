@@ -177,7 +177,7 @@ test('functional behavior passes while diagnostics fail', async ({diagnostics}) 
   const home = ${JSON.stringify(join(root, 'home'))};
   await mkdir(data); await mkdir(home);
   const descriptor = ${JSON.stringify(join(root, 'runtime.json'))};
-  const app = await electron.launch({args:[${JSON.stringify(entry)}],env:{...process.env,PROJECTOR_DATA:data,CODEX_HOME:home,PROJECTOR_RUNTIME_DESCRIPTOR:descriptor,PROJECTOR_E2E_BACKGROUND:'1',PROJECTOR_E2E_CODEX_EXECUTABLE:${JSON.stringify(resolve('tests/fixtures/codex-cli.mjs'))},CODEX_FIXTURE_EMPTY:'1'}});
+  const app = await electron.launch({args:[${JSON.stringify(entry)}],env:{...process.env,PROJECTOR_DATA:data,CODEX_HOME:home,PROJECTOR_RUNTIME_DESCRIPTOR:descriptor,PROJECTOR_E2E_CODEX_EXECUTABLE:${JSON.stringify(resolve('tests/fixtures/codex-cli.mjs'))},CODEX_FIXTURE_EMPTY:'1'}});
   let cleanupError = false;
   let mcp: Mcp | undefined, server: Server | undefined;
   try {
@@ -218,7 +218,7 @@ test('functional behavior passes while diagnostics fail', async ({diagnostics}) 
     });
     const child = spawn('pnpm', ['exec', 'playwright', 'test', '--config', config], {
       cwd: resolve('.'),
-      env: { ...process.env, PROJECTOR_E2E_BACKGROUND: '1' },
+      env: { ...process.env },
       stdio: 'pipe',
     });
     let text = '';

@@ -29,7 +29,7 @@ async function choose(page: Page, path: string) {
   }, path);
   await page.getByRole('button', { name: '+ Open project folder' }).click();
 }
-// Hidden checks exercise real Menu templates and actions without activating an OS menu.
+// Intercept the native popup to inspect its real menu template and invoke actions.
 // Native presentation/focus is verified separately in the visible acceptance run.
 async function interceptMenus() {
   await app.evaluate(({ Menu }) => {

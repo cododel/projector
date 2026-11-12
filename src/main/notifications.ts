@@ -1,6 +1,5 @@
 import { BrowserWindow, ipcMain, screen, webContents, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { notificationsSchema, notificationCommandSchema, type Notification, type NotificationCommand } from '../shared/notifications';
-import { e2eWindowOptions } from './e2e-window';
 
 let current: NotificationOverlay | null = null;
 let bound = false;
@@ -106,15 +105,20 @@ export class NotificationOverlay {
     this.notices = notices;
     if (!notices.length) this.focusPending = false;
     if (!this.child && notices.length) {
-      const child = new BrowserWindow(e2eWindowOptions({ parent: this.parent, frame: false, transparent: true,
+      const child = new BrowserWindow({ parent: this.parent, frame: false, transparent: true,
         backgroundColor: '#00000000', hasShadow: false, resizable: false, movable: false,
         minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true, show: false, acceptFirstMouse: true,
-        width: 544, height: 100, webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false } }));
+        width: 544, height: 100, webPreferences: { preload: this.preload, sandbox: true, contextIsolation: true, nodeIntegration: false } });
       this.child = child;
       child.setIgnoreMouseEvents(true, { forward: true });
       child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       child.webContents.on('will-navigate', event => event.preventDefault());
-      child.on('closed', () => { this.stopPointer(); this.child = null; this.ready = false; });
+      child.on('closed', () => {
+        if (this.child !== child) return;
+        this.stopPointer();
+        this.child = null;
+        this.ready = false;
+      });
       const contents = child.webContents;
       void child.loadURL('projector://app/notifications.html').catch(error => {
         if (!this.disposed && !retired.has(contents)) console.error(error);
@@ -153,11 +157,14 @@ export class NotificationOverlay {
   }
   private retireChild(): void {
     this.stopPointer();
-    if (this.child && !this.child.isDestroyed()) {
-      retired.add(this.child.webContents);
-      this.child.destroy();
-    }
-    this.child = null; this.ready = false;
+    const child = this.child;
+    this.child = null;
+    this.ready = false;
+    if (!child || child.isDestroyed()) return;
+    retired.add(child.webContents);
+    // Unlink the native child while its parent is live, before destroying it.
+    if (!this.parent.isDestroyed()) child.setParentWindow(null);
+    if (!child.isDestroyed()) child.destroy();
   }
   private closeWithParent = (event: Electron.Event): void => {
     // Retire the native child before macOS tears down its parent window graph.

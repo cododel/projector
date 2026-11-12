@@ -2,10 +2,8 @@ import { observeElectron } from '../../src/main/test-diagnostics';
 import { app, BrowserWindow } from 'electron';
 import { join } from 'node:path';
 import { BrowserManager, type BrowserCapture } from '../../src/main/browser';
-import { auditE2EWindows, e2eWindowOptions, showBackgroundE2EWindow } from '../../src/main/e2e-window';
 
 observeElectron(app);
-auditE2EWindows(app);
 app.setName('Projector Browser Test');
 app.setPath('userData', process.env.PROJECTOR_BROWSER_TEST_DATA!);
 app.setPath('sessionData', process.env.PROJECTOR_BROWSER_TEST_DATA!);
@@ -20,13 +18,12 @@ declare global {
 }
 void app.whenReady().then(async () => {
   const window = new BrowserWindow(
-    e2eWindowOptions({
+    {
       width: 900,
       height: 700,
       webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
-    }),
+    },
   );
-  showBackgroundE2EWindow(window);
   const drafts: unknown[] = [];
   const annotations: TestState['annotations'] = [];
   const manager = new BrowserManager(

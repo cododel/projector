@@ -36,14 +36,12 @@ import { CodexManager, sessionInUse } from './codex';
 import { paneLeaves } from '../shared/application-workspace';
 import { matchShortcut } from '../shared/keyboard-shortcuts';
 import type { McpSetup } from '../shared/protocol';
-import { auditE2EWindows, e2eWindowOptions, showBackgroundE2EWindow, isBackgroundE2E } from './e2e-window';
 import { safeBrowserBounds, validateArea } from './browser-policy';
 import { z } from 'zod';
 const here = dirname(fileURLToPath(import.meta.url));
 const developmentUrl = app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL;
 observeElectron(app);
 normalizeLegacyEnvironment();
-auditE2EWindows(app);
 app.setName('Projector');
 const applicationData = resolveApplicationData(app.getPath('appData'));
 app.setPath('userData', applicationData);
@@ -368,8 +366,9 @@ async function showCapturedAnnotation(artifactId: string, annotationId: string, 
 }
 function createWindow(background = false) {
   window = new BrowserWindow(
-    e2eWindowOptions({
+    {
       width: 1360,
+      enableLargerThanScreen: Boolean(process.env.PROJECTOR_TEST_DIAGNOSTICS),
       height: 900,
       minWidth: 980,
       minHeight: 650,
@@ -383,9 +382,8 @@ function createWindow(background = false) {
         contextIsolation: true,
         sandbox: true,
       },
-    }),
+    },
   );
-  showBackgroundE2EWindow(window);
   notifications = new NotificationOverlay(window, join(here, '../preload/notifications.cjs'));
   browser = new BrowserManager(window, {
     onShortcut: applicationShortcut,
@@ -481,7 +479,7 @@ function createWindow(background = false) {
   });
   const recoverShell = async (reason: string) => {
     const target = window;
-    if (!target || target.isDestroyed() || quitting || isBackgroundE2E()) return;
+    if (!target || target.isDestroyed() || quitting) return;
     const answer = await dialog.showMessageBox(target, {
       type: 'warning',
       message: 'Projector view stopped responding',
@@ -522,7 +520,7 @@ function createWindow(background = false) {
     editingScopes.clear();
     if (!quitting) void rpc('editing', { active: false }).catch(() => {});
   });
-  if (background && !isBackgroundE2E()) {
+  if (background) {
     const created = window;
     created.once('ready-to-show', () => {
       if (!created.isDestroyed()) created.showInactive();
@@ -603,7 +601,7 @@ void app
     }
     app.on('second-instance', () => {
       if (!window) createWindow();
-      if (!isBackgroundE2E()) window?.show();
+      window?.show();
     });
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([

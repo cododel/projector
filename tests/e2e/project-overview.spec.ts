@@ -71,7 +71,7 @@ test('project overview owns plans and archives without changing history; project
   const capture = async (mode: string) => {
     const directory = resolve('.tmp/tasks/shell-simplification-20261013/visual');
     await mkdir(directory, {recursive:true});
-    await page.screenshot({path:join(directory, `${process.env.PROJECTOR_UI_VARIANT ?? (process.env.PROJECTOR_E2E_VISIBLE === '1' ? 'visible' : 'hidden')}-${mode}.png`)});
+    await page.screenshot({path:join(directory, `${process.env.PROJECTOR_UI_VARIANT ?? 'visible'}-${mode}.png`)});
   };
   await capture('project');
   await sidebar.getByRole('button', {name:'Expand sessions in project',exact:true}).click();
