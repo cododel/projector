@@ -330,6 +330,9 @@ test('agent-created unpublished plan has native project actions and retains priv
   }
   expect(attachment.mimeType).toBe('image/svg+xml');
   expect(Buffer.from(encoded, 'base64').toString()).toContain('>1</text>');
+  // Close the document view before moving its project outside the application.
+  await openProjectOverview(page);
+  await expect(page.locator('iframe')).toHaveCount(0);
   // Unavailable projects expose Locate folder in the same menu and cannot start a session.
   await rename(project, join(root, 'moved-project'));
   const other = join(root, 'other');

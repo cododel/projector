@@ -16,8 +16,18 @@ function Alert({ notice, leaving, visible, bridge, lifetime, exitTop, windowFocu
     // Layout height excludes the entry scale; measuring the transformed box
     // clips the card and moves sibling origins by about 6% during mounting.
     const measure = () => setHeight(content.current!.offsetHeight + 2);
-    measure(); const observer = new ResizeObserver(measure); observer.observe(content.current!);
-    return () => observer.disconnect();
+    measure();
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      // Applying the outer height during resize delivery can resize the observed content.
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    });
+    observer.observe(content.current!);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
   }, []);
   useEffect(() => {
     const observer = new IntersectionObserver(entries => setInView(entries[0].intersectionRatio >= 0.99), { threshold: [0, 0.99, 1] });
