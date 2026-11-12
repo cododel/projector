@@ -219,7 +219,9 @@ test('document area capture stays private until Save and opens its numbered froz
     const left = await hideAndSample('.sidebar-viewport', 'Hide projects sidebar');
     const leftMoving = left.slice(0, -1);
     expect(leftMoving.some(sample => sample.width > 0 && sample.width < 250)).toBe(true);
-    expect(left.at(-1)?.width).toBe(0);
+    await expect.poll(() =>
+      page.locator('.sidebar-viewport').evaluate(el => el.getBoundingClientRect().width),
+    ).toBe(0);
     expect(leftMoving.every(sample => sample.treeWidth === treeWidth && sample.duration === '0.25s')).toBe(true);
 
     const feedbackWidth = (await page.locator('.feedback-panel').boundingBox())!.width;
