@@ -291,10 +291,17 @@ const requests = new Map<
     name: string;
   }
 >();
+function sendOperationStatus(status: { waiting: boolean; operationId: string; operation: string; error?: string }): void {
+  const contents = window?.webContents;
+  if (!contents || contents.isDestroyed() || contents.isCrashed()) return;
+  const frame = contents.mainFrame;
+  if (!frame || frame.isDestroyed() || frame.detached) return;
+  frame.send('projector:operation-status', status);
+}
 function failRpcRequests(): void {
   for (const [operationId, pending] of requests) {
     clearTimeout(pending.timer);
-    window?.webContents.send('projector:operation-status', { waiting: false, operationId, operation: pending.name, error: 'Runtime disconnected. Reconcile the operation before retrying.' });
+    sendOperationStatus({ waiting: false, operationId, operation: pending.name, error: 'Runtime disconnected. Reconcile the operation before retrying.' });
     pending.reject(
       new Error(
         'UNKNOWN_RESULT: Projector runtime disconnected. An operation may have completed; reconcile before retrying. Restart Projector and reconnect MCP.',
@@ -312,7 +319,7 @@ function rpc(name: string, args: unknown = {}): Promise<unknown> {
     }
     const id = randomUUID();
     const timer = setTimeout(() => {
-      window?.webContents.send('projector:operation-status', { waiting: true, operationId: id, operation: name });
+      sendOperationStatus({ waiting: true, operationId: id, operation: name });
     }, 10000);
     requests.set(id, { resolve, reject, timer, name });
     try {
@@ -705,7 +712,7 @@ void app
           if (!pending) return;
           clearTimeout(pending.timer);
           requests.delete(response.id);
-          window?.webContents.send('projector:operation-status', { waiting: false, operationId: response.id, operation: pending.name,
+          sendOperationStatus({ waiting: false, operationId: response.id, operation: pending.name,
             ...(response.error ? { error: response.error.code + ': ' + response.error.message } : {}) });
           if (response.error)
             pending.reject(
