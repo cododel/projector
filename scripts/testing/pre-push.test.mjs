@@ -22,7 +22,7 @@ test('a defective pushed commit fails even when the dirty worktree fixes it', as
   const root = await mkdtemp(join(tmpdir(), 'bp-push-test-'));
   const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
   try {
-    git('init');
+    git('init', '--initial-branch=main');
     git('config', 'user.name', 'Test');
     git('config', 'user.email', 'test@example.invalid');
     await writeFile(

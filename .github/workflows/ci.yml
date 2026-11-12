@@ -23,6 +23,8 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install Codex CLI for integration tests
+        run: npm install --global @openai/codex@0.167.1
       - run: pnpm check
       - name: Upload test diagnostics
         if: failure()

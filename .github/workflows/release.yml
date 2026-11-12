@@ -29,6 +29,8 @@ jobs:
         if: github.ref_type == 'tag'
         run: node -e 'if (process.env.GITHUB_REF_NAME !== "v" + require("./package.json").version) throw new Error("Tag must match package.json version")'
       - run: pnpm install --frozen-lockfile
+      - name: Install Codex CLI for integration tests
+        run: npm install --global @openai/codex@0.167.1
       - run: pnpm check
 
   package:
