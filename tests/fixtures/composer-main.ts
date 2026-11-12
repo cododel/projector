@@ -1,7 +1,7 @@
 import { observeElectron } from '../../src/main/test-diagnostics';
 import { app, BrowserWindow } from 'electron';
 import { join } from 'node:path';
-import { auditE2EWindows, e2eWindowOptions } from '../../src/main/e2e-window';
+import { auditE2EWindows, e2eWindowOptions, showBackgroundE2EWindow } from '../../src/main/e2e-window';
 
 const root = process.env.PROJECTOR_COMPOSER_TEST_DATA!;
 observeElectron(app);
@@ -16,6 +16,7 @@ void app.whenReady().then(() => {
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
     }),
   );
+  showBackgroundE2EWindow(window);
   void window.loadFile(join(root, 'index.html'));
 });
 app.on('window-all-closed', () => app.quit());

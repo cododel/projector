@@ -1,4 +1,4 @@
-import type { App, BrowserWindowConstructorOptions } from 'electron';
+import type { App, BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
 import { appendFileSync } from 'node:fs';
 
 // Set by Playwright, never by the application's normal launch commands.
@@ -19,8 +19,17 @@ export function e2eWindowOptions(
   };
 }
 
+export function showBackgroundE2EWindow(win: BrowserWindow): void {
+  if (!isBackgroundE2E()) return;
+  win.once('ready-to-show', () => {
+    if (win.isDestroyed()) return;
+    win.setAlwaysOnTop(true, 'normal', -1);
+    win.showInactive();
+  });
+}
+
 // Observe native events from before window creation, including packaged launches.
-// Recording a violation must not turn it into a passing test by hiding the window.
+// Record display separately from activation and focus violations.
 export function auditE2EWindows(app: App): void {
   const path = process.env.PROJECTOR_E2E_WINDOW_AUDIT;
   if (!isBackgroundE2E() || !path) return;

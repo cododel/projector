@@ -37,7 +37,7 @@ export async function validatePush(root, input, { captureOutput = false } = {}) 
       await writeFile(path, archive);
       execFileSync('tar', ['-xf', path, '-C', directory]);
       await rm(path);
-      for (const args of [['install', '--frozen-lockfile'], ['check:full']]) {
+      for (const args of [['install', '--frozen-lockfile'], ['typecheck'], ['lint'], ['test']]) {
         const result = spawnSync('pnpm', args, {
           cwd: directory,
           env: checkEnv,

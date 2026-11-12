@@ -2,7 +2,7 @@ import { observeElectron } from '../../src/main/test-diagnostics';
 import { app, BrowserWindow } from 'electron';
 import { join } from 'node:path';
 import { BrowserManager, type BrowserCapture } from '../../src/main/browser';
-import { auditE2EWindows, e2eWindowOptions } from '../../src/main/e2e-window';
+import { auditE2EWindows, e2eWindowOptions, showBackgroundE2EWindow } from '../../src/main/e2e-window';
 
 observeElectron(app);
 auditE2EWindows(app);
@@ -26,6 +26,7 @@ void app.whenReady().then(async () => {
       webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
     }),
   );
+  showBackgroundE2EWindow(window);
   const drafts: unknown[] = [];
   const annotations: TestState['annotations'] = [];
   const manager = new BrowserManager(

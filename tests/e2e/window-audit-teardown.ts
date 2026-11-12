@@ -16,9 +16,11 @@ export default async function teardown() {
         .split('\n')
         .map((line) => event.parse(JSON.parse(line)))
     : [];
-  const violations = events.filter((value) => value.event !== 'window-created');
+  const violations = events.filter((value) => value.event !== 'window-created' && value.event !== 'window-show');
+  const created = events.filter(value => value.event === 'window-created').length;
+  const shown = events.filter(value => value.event === 'window-show').length;
   console.log(
-    `Background Electron audit: ${events.length - violations.length} windows, ${violations.length} activation/show/focus events. Log: ${path}`,
+    `Background Electron audit: ${created} windows, ${shown} show events, ${violations.length} activation/focus violations. Log: ${path}`,
   );
   if (violations.length)
     throw new Error(`Background E2E interrupted the desktop: ${JSON.stringify(violations)}`);

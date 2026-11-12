@@ -15,7 +15,7 @@ process.env.CODEX_FIXTURE_EMPTY = '1';
 export default defineConfig({
   testDir: 'tests/e2e',
   outputDir: resolve('.tmp/test-results', randomUUID()),
-  // This guarantee requires hidden windows and is run separately by check:full.
+  // This guarantee requires inactive windows and is run separately by check:full.
   testIgnore: ['**/background.spec.ts', '**/stage-performance.spec.ts'],
   workers: 1,
   timeout: 60000,

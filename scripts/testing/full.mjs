@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 
-// Every command fails closed. The background-only guarantee is not skipped in
+// Every command fails closed. The inactive-window guarantee is not skipped in
 // the full gate: it runs in its own mode before the ordinary-window suite.
 for (const args of [
   ['typecheck'],

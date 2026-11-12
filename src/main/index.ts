@@ -36,7 +36,7 @@ import { CodexManager, sessionInUse } from './codex';
 import { paneLeaves } from '../shared/application-workspace';
 import { matchShortcut } from '../shared/keyboard-shortcuts';
 import type { McpSetup } from '../shared/protocol';
-import { auditE2EWindows, e2eWindowOptions, isBackgroundE2E } from './e2e-window';
+import { auditE2EWindows, e2eWindowOptions, showBackgroundE2EWindow, isBackgroundE2E } from './e2e-window';
 import { safeBrowserBounds, validateArea } from './browser-policy';
 import { z } from 'zod';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -385,6 +385,7 @@ function createWindow(background = false) {
       },
     }),
   );
+  showBackgroundE2EWindow(window);
   notifications = new NotificationOverlay(window, join(here, '../preload/notifications.cjs'));
   browser = new BrowserManager(window, {
     onShortcut: applicationShortcut,

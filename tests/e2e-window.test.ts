@@ -6,7 +6,7 @@ import { e2eWindowOptions } from '../src/main/e2e-window';
 import teardown from './e2e/window-audit-teardown';
 
 describe('test window mode', () => {
-  test('background windows retain isolation and preload while allowing hidden rendering', () => {
+  test('background windows retain isolation and preload before the inactive show', () => {
     const options = e2eWindowOptions(
       {
         show: true,
@@ -57,7 +57,10 @@ describe('test window mode', () => {
       await expect(teardown()).rejects.toThrow('Background E2E interrupted the desktop');
       await writeFile(
         path,
-        JSON.stringify({ event: 'window-created', pid: 1, windowId: 2 }) + '\n',
+        [
+          { event: 'window-created', pid: 1, windowId: 2 },
+          { event: 'window-show', pid: 1, windowId: 2 },
+        ].map(entry => JSON.stringify(entry)).join('\n') + '\n',
       );
       await expect(teardown()).resolves.toBeUndefined();
     } finally {

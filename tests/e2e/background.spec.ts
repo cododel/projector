@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-test('background startup and second-instance handling keep the native window hidden without disabling the renderer', async () => {
+test('background startup and second-instance handling show the native window without activating it', async () => {
   test.skip(process.env.PROJECTOR_E2E_BACKGROUND !== '1', 'Background-mode guarantee only.');
   const root = await mkdtemp(join(tmpdir(), 'bp-background-'));
   const app = await electron.launch({
@@ -26,17 +26,16 @@ test('background startup and second-instance handling keep the native window hid
     await app.evaluate(({ app }) => {
       app.emit('second-instance');
     });
-    expect(
-      await app.evaluate(({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows().map((window) => ({
-          visible: window.isVisible(),
-          focused: window.isFocused(),
-          focusable: window.isFocusable(),
-          throttled: window.webContents.getBackgroundThrottling(),
-        })),
-      ),
-    ).toEqual([{ visible: false, focused: false, focusable: false, throttled: false },
-      { visible: false, focused: false, focusable: false, throttled: false }]);
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows().find(win => !win.getParentWindow())!;
+      return {
+        visible: window.isVisible(),
+        alwaysOnTop: window.isAlwaysOnTop(),
+        focused: window.isFocused(),
+        focusable: window.isFocusable(),
+        throttled: window.webContents.getBackgroundThrottling(),
+      };
+    })).toEqual({ visible: true, alwaysOnTop: true, focused: false, focusable: false, throttled: false });
     const image = await app.evaluate(async ({ BrowserWindow }) => {
       const capture = await BrowserWindow.getAllWindows().find(window => !window.getParentWindow())!.webContents.capturePage();
       return { empty: capture.isEmpty(), size: capture.getSize() };
