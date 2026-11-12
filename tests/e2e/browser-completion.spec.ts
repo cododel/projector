@@ -257,6 +257,7 @@ test('capture deadline rejects a late frame before private draft or editor creat
       p.url().startsWith('data:text/html;base64,') &&
       Buffer.from(p.url().split(',')[1], 'base64').toString().includes('id="layer"'),
   );
+  await expect(overlay.getByRole('status')).toContainText('Click an element or drag an area');
   await overlay.mouse.click(60, 50);
   await expect(overlay.getByRole('status')).toContainText('Capture timed out');
   await page.waitForTimeout(500);
