@@ -32,6 +32,7 @@ const runtime = run(
   [
     '-e',
     `
+  const { writeSync } = require('node:fs');
   const { spawn } = require(${JSON.stringify(join(app, 'node_modules', 'node-pty'))});
   const child = spawn(${JSON.stringify(windows ? 'cmd.exe' : '/bin/sh')},
     ${JSON.stringify(windows ? ['/d', '/c', 'echo projector-pty-ok'] : ['-c', 'echo projector-pty-ok'])},
@@ -40,7 +41,9 @@ const runtime = run(
   child.onData(data => { output += data });
   child.onExit(({ exitCode }) => {
     if (exitCode !== 0 || !output.includes('projector-pty-ok')) process.exit(1);
-    console.log(JSON.stringify({ version: process.versions.electron, arch: process.arch }));
+    writeSync(1, JSON.stringify({ version: process.versions.electron, arch: process.arch }) + '\\n');
+    // ConPTY can keep the probe's event loop alive after its child has exited.
+    if (process.platform === 'win32') setImmediate(() => process.exit(0));
   });
 `,
   ],
