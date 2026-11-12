@@ -171,12 +171,14 @@ test('document area capture stays private until Save and opens its numbered froz
     await expect(page.locator('.sidebar')).toBeVisible();
     await expect(page.locator('.sidebar-resize-shield')).toHaveCount(0);
     await expect(page.locator('.app')).not.toHaveClass(/sidebar-animating/);
+    await leftResize.hover({ position: { x: 3, y: 150 } });
     const handle = (await leftResize.boundingBox())!;
     const dragX = handle.x + 3;
     const dragY = handle.y + 150;
     await page.mouse.move(dragX, dragY);
     await page.mouse.down();
-    await page.mouse.move(dragX - 111, dragY);
+    await expect(page.locator('.sidebar-resize-shield')).toBeVisible();
+    await page.mouse.move(dragX - 120, dragY, { steps: 4 });
     await expect(page.locator('.sidebar')).toBeHidden();
     await page.mouse.up();
     await expect(page.getByRole('button', { name: 'Show projects sidebar' })).toBeVisible();
