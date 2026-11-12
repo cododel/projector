@@ -546,11 +546,14 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
-  notifications?.dispose();
-  notifications = null;
-  if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
-    window.webContents.send('projector:shutdown');
-  void quitAfterCleanup();
+  // Let Electron unwind the cancelled quit before closing native child windows.
+  setImmediate(() => {
+    notifications?.dispose();
+    notifications = null;
+    if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
+      window.webContents.send('projector:shutdown');
+    void quitAfterCleanup();
+  });
 });
 async function quitAfterCleanup() {
   harnessSync.stop();

@@ -162,8 +162,9 @@ export class NotificationOverlay {
     this.ready = false;
     if (!child || child.isDestroyed()) return;
     retired.add(child.webContents);
+    if (child.isVisible()) child.hide();
     // Unlink the native child while its parent is live, before destroying it.
-    if (!this.parent.isDestroyed()) child.setParentWindow(null);
+    if (!child.isDestroyed() && !this.parent.isDestroyed()) child.setParentWindow(null);
     if (!child.isDestroyed()) child.destroy();
   }
   private closeWithParent = (event: Electron.Event): void => {
