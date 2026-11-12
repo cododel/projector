@@ -52,12 +52,11 @@ test('owned TUI binds protocol ID, exact Resume and manual saved-state handoff w
   const projectId = await choose(project), otherId = await choose(other);
   const settings = (await snapshot(page)).settings;
   await invoke(page, 'applicationSettings', { ...settings, codexExecutable: resolve('tests/fixtures/codex-cli.mjs') });
-  await expect.poll(async () => (await snapshot(page)).harnesses.sessions.some(session => session.id === exact && session.projectId === projectId)).toBe(true);
-  let value = await snapshot(page);
-  expect(value.harnesses.sessions).toEqual(expect.arrayContaining([
+  await expect.poll(async () => (await snapshot(page)).harnesses.sessions).toEqual(expect.arrayContaining([
     expect.objectContaining({ id: exact, projectId, processState: 'unknown' }),
     expect.objectContaining({ id: 'other-worktree', projectId: otherId, processState: 'unknown' }),
   ]));
+  let value = await snapshot(page);
   expect(value.harnesses.sessions.some(session => session.archived)).toBe(false);
   expect(value.terminals).toEqual([]);
   await expect(page.getByRole('button', { name: 'Guardian review', exact: true })).toBeVisible();
